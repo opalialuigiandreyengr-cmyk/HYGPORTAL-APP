@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { colors, spacing } from '../theme';
+import { colors, fontWeights, spacing } from '../theme';
 import type { ProfileLoadResult } from '../types/domain';
 
 export function ProfilePanel({
@@ -60,7 +60,7 @@ export function ProfilePanel({
       </Text>
       <View style={styles.profileRows}>
         <ProfileRow label="Company" value={profile.companyName} />
-        <ProfileRow label="Store" value={profile.storeName} />
+        <ProfileRow label="Store / Department" value={profile.storeName || profile.departmentName} />
         <ProfileRow label="Position" value={profile.positionName} />
         <ProfileRow label="Level" value={profile.authorityLevel ? `Level ${profile.authorityLevel}` : null} />
         <ProfileRow label="Function" value={profile.functionName} />
@@ -108,7 +108,7 @@ const styles = StyleSheet.create({
   profileTitle: {
     color: colors.text,
     fontSize: 18,
-    fontWeight: '800',
+    fontWeight: fontWeights.heavy,
     marginBottom: spacing.xs,
   },
   profileMuted: {
@@ -148,7 +148,7 @@ const styles = StyleSheet.create({
   smallButtonText: {
     color: '#ffffff',
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: fontWeights.bold,
   },
   requestTile: {
     width: '47%',
@@ -164,7 +164,7 @@ const styles = StyleSheet.create({
   requestTitle: {
     color: colors.text,
     fontSize: 16,
-    fontWeight: '800',
+    fontWeight: fontWeights.heavy,
   },
   requestDetail: {
     color: colors.muted,
@@ -187,7 +187,7 @@ const styles = StyleSheet.create({
   summaryValue: {
     color: colors.text,
     fontSize: 28,
-    fontWeight: '800',
+    fontWeight: fontWeights.heavy,
     marginTop: 4,
   },
 });

@@ -23,6 +23,7 @@ type AssignmentRow = {
   area_id: string | null;
   cluster_id: string | null;
   store_id: string | null;
+  department_id: string | null;
   position_id: string;
   function_id: string;
 };
@@ -180,7 +181,7 @@ export async function loadEmployeeProfile(authUserId: string): Promise<ProfileLo
   const employee = employeeResponse.data;
   const assignmentResponse = await supabase
     .from('employee_assignments')
-    .select('company_id, area_id, cluster_id, store_id, position_id, function_id')
+    .select('company_id, area_id, cluster_id, store_id, department_id, position_id, function_id')
     .eq('employee_id', employee.id)
     .eq('is_primary', true)
     .is('effective_to', null)
@@ -217,6 +218,7 @@ export async function loadEmployeeProfile(authUserId: string): Promise<ProfileLo
       areaName: await getName('areas', assignment.area_id),
       clusterName: await getName('clusters', assignment.cluster_id),
       storeName: await getName('stores', assignment.store_id),
+      departmentName: await getName('departments', assignment.department_id),
       functionName: await getName('functions', assignment.function_id),
       positionName: positionResponse.data?.name ?? null,
       authorityLevel: (positionResponse.data?.authority_level ?? null) as EmployeeProfileSummary['authorityLevel'],

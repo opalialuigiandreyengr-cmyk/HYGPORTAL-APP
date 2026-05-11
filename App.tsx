@@ -47,6 +47,7 @@ export default function App() {
   const [signedInUser, setSignedInUser] = useState<User | null>(null);
   const [profileResult, setProfileResult] = useState<ProfileLoadResult | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showLoginErrors, setShowLoginErrors] = useState(false);
   const [isLoadingProfile, setIsLoadingProfile] = useState(false);
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary>({
     pending_requests: 0,
@@ -83,10 +84,11 @@ export default function App() {
       return;
     }
     if (!email.trim() || !password) {
-      Alert.alert('Missing details', 'Enter your email and password.');
+      setShowLoginErrors(true);
       return;
     }
 
+    setShowLoginErrors(false);
     setIsSubmitting(true);
     const { data, error } = await supabase.auth.signInWithPassword({
       email: email.trim(),
@@ -209,6 +211,8 @@ export default function App() {
       email={email}
       password={password}
       isSubmitting={isSubmitting}
+      emailError={showLoginErrors && !email.trim() ? 'Required' : ''}
+      passwordError={showLoginErrors && !password ? 'Required' : ''}
       onEmailChange={setEmail}
       onPasswordChange={setPassword}
       onSubmit={signIn}

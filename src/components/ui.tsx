@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 
-import { colors, radius, spacing, typography } from '../theme';
+import { colors, fontWeights, radius, spacing, typography } from '../theme';
 
 export function AppScreen({
   children,
@@ -86,18 +86,21 @@ export function IconTextField({
   label,
   icon,
   inputProps,
+  error,
 }: {
   label: string;
   icon: ReactNode;
   inputProps: TextInputProps;
+  error?: string;
 }) {
   return (
     <>
       <Text style={styles.inputLabel}>{label}</Text>
-      <View style={styles.iconInputShell}>
+      <View style={[styles.iconInputShell, error ? styles.inputInvalid : null, error ? styles.inputWithError : null]}>
         {icon}
         <TextInput placeholderTextColor="#94a3b8" {...inputProps} style={[styles.iconInput, inputProps.style]} />
       </View>
+      {error ? <Text style={styles.fieldError}>{error}</Text> : null}
     </>
   );
 }
@@ -148,7 +151,7 @@ const styles = StyleSheet.create({
   buttonText: {
     color: colors.surface,
     fontSize: 14,
-    fontWeight: '900',
+    fontWeight: fontWeights.heavy,
     textTransform: 'uppercase',
   },
   goldButtonText: {
@@ -168,6 +171,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  inputInvalid: {
+    borderColor: colors.semantic.danger,
+  },
+  inputWithError: {
+    marginBottom: 4,
+  },
+  fieldError: {
+    color: colors.semantic.danger,
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
     marginBottom: spacing.sm,
   },
   iconInput: {

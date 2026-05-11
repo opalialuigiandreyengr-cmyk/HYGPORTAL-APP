@@ -43,6 +43,7 @@ export type EmployeeProfileSummary = {
   areaName?: string | null;
   clusterName?: string | null;
   storeName?: string | null;
+  departmentName?: string | null;
   positionName?: string | null;
   authorityLevel?: AuthorityLevel | null;
   functionName?: string | null;

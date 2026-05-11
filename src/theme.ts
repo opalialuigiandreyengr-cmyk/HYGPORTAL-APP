@@ -34,10 +34,18 @@ export const radius = {
   md: 8,
 };
 
+export const fontWeights = {
+  regular: '400' as const,
+  medium: '500' as const,
+  semibold: '600' as const,
+  bold: '700' as const,
+  heavy: '800' as const,
+};
+
 export const typography = {
   label: {
     fontSize: 12,
-    fontWeight: '800' as const,
+    fontWeight: fontWeights.bold,
     letterSpacing: 0,
     textTransform: 'uppercase' as const,
   },
@@ -48,11 +56,11 @@ export const typography = {
   title: {
     fontSize: 24,
     lineHeight: 30,
-    fontWeight: '900' as const,
+    fontWeight: fontWeights.heavy,
   },
   hero: {
     fontSize: 19,
     lineHeight: 23,
-    fontWeight: '900' as const,
+    fontWeight: fontWeights.heavy,
   },
 };

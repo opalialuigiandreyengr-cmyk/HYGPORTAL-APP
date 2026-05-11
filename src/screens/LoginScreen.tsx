@@ -4,7 +4,7 @@ import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { CalendarCheck, FileCheck2, LockKeyhole, Mail, ShieldCheck } from 'lucide-react-native';
 
 import { AppScreen, Card, Divider, IconTextField, PrimaryButton } from '../components/ui';
-import { colors, radius, spacing, typography } from '../theme';
+import { colors, fontWeights, radius, spacing, typography } from '../theme';
 
 const hygLogo = require('../../assets/HYG LOGO.png');
 
@@ -12,6 +12,8 @@ type LoginScreenProps = {
   email: string;
   password: string;
   isSubmitting: boolean;
+  emailError?: string;
+  passwordError?: string;
   onEmailChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
   onSubmit: () => void;
@@ -22,6 +24,8 @@ export function LoginScreen({
   email,
   password,
   isSubmitting,
+  emailError,
+  passwordError,
   onEmailChange,
   onPasswordChange,
   onSubmit,
@@ -60,6 +64,7 @@ export function LoginScreen({
           <IconTextField
             label="Email"
             icon={<Mail size={17} color={colors.muted} strokeWidth={2.5} />}
+            error={emailError}
             inputProps={{
               value: email,
               onChangeText: onEmailChange,
@@ -74,6 +79,7 @@ export function LoginScreen({
           <IconTextField
             label="Password"
             icon={<LockKeyhole size={17} color={colors.muted} strokeWidth={2.5} />}
+            error={passwordError}
             inputProps={{
               value: password,
               onChangeText: onPasswordChange,
@@ -186,7 +192,7 @@ const styles = StyleSheet.create({
   featureText: {
     color: '#e2e8f0',
     fontSize: 12,
-    fontWeight: '800',
+    fontWeight: fontWeights.bold,
   },
   title: {
     ...typography.title,
@@ -215,13 +221,13 @@ const styles = StyleSheet.create({
   profilePromptText: {
     color: colors.text,
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: fontWeights.semibold,
     textAlign: 'center',
   },
   profileLinkText: {
     color: colors.brand.goldStrong,
     fontSize: 12,
-    fontWeight: '900',
+    fontWeight: fontWeights.heavy,
     textAlign: 'center',
   },
 });
