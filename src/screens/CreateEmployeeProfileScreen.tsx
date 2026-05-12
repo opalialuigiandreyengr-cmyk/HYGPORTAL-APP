@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { createElement, type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Picker } from '@react-native-picker/picker';
@@ -6,7 +6,7 @@ import { BriefcaseBusiness, CalendarDays, CheckCircle2, ChevronDown, ChevronLeft
 
 import { AppScreen, Card, Divider } from '../components/ui';
 import { isSupabaseConfigured } from '../lib/supabase';
-import { checkEmployeeProfileDuplicate, createEmployeeProfile } from '../services/createProfile';
+import { checkEmployeeProfileDuplicate, createEmployeeProfile, loadEmployeeAssignmentOptions, type EmployeeAssignmentOption } from '../services/createProfile';
 import { colors, fontWeights, radius, spacing, typography } from '../theme';
 import { dateStringToDate, formatDateInput } from '../utils/dateTime';
 
@@ -71,24 +71,19 @@ const initialForm: FormState = {
 const genderOptions = ['Male', 'Female', 'Other'];
 const civilStatusOptions = ['Single', 'Married', 'Separated', 'Widowed'];
 const companyOptions = ['HYG', 'Company A', 'Company B', 'Company C'];
-const workUnitOptions = [
+const fallbackWorkUnitOptions = [
   'IT',
   'Maintenance',
   'Logistics',
   'Accounting',
   'Inventory',
   'Operations',
-  'Payroll',
   'HR',
   'Marketing',
-  'Purchasing',
-  'Warehouse',
-  'Audit',
-  'Training',
   'Admin',
   'Customer Service',
 ];
-const positionOptions = [
+const fallbackPositionOptions = [
   'Crew',
   'Supervisor',
   'Store Manager',
@@ -100,6 +95,7 @@ const positionOptions = [
   'Finance Director',
   'General Manager',
   'Staff',
+  'IT Staff',
   'Officer',
   'Specialist',
   'Analyst',
@@ -127,10 +123,22 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false);
   const [liveDuplicateMessage, setLiveDuplicateMessage] = useState('');
+  const [assignmentOptions, setAssignmentOptions] = useState<EmployeeAssignmentOption[]>([]);
   const [submitStatus, setSubmitStatus] = useState('');
   const [profileSaved, setProfileSaved] = useState(false);
 
   const age = useMemo(() => calculateAge(form.birthDate), [form.birthDate]);
+  const workUnitOptions = useMemo(() => {
+    const departmentNames = Array.from(new Set(assignmentOptions.map((option) => option.department_name).filter(Boolean)));
+    return departmentNames.length ? departmentNames : fallbackWorkUnitOptions;
+  }, [assignmentOptions]);
+  const positionOptions = useMemo(() => {
+    const scopedPositions = assignmentOptions
+      .filter((option) => option.department_name === form.workUnit && option.position_name)
+      .map((option) => option.position_name as string);
+    const uniqueScopedPositions = Array.from(new Set(scopedPositions));
+    return uniqueScopedPositions.length ? uniqueScopedPositions : fallbackPositionOptions;
+  }, [assignmentOptions, form.workUnit]);
   const requiredMissing = !form.lastName.trim() || !form.firstName.trim() || !form.cellphone.trim();
   const assignmentMissing = !form.company.trim() || !form.workUnit.trim() || !form.position.trim() || !form.dateHired.trim();
 
@@ -172,6 +180,12 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
     setIosSelectValue(form[config.field]);
     setPressedOption('');
   }
+
+  useEffect(() => {
+    loadEmployeeAssignmentOptions()
+      .then(setAssignmentOptions)
+      .catch(() => setAssignmentOptions([]));
+  }, []);
 
   function openDatePicker(field: 'birthDate' | 'dateHired') {
     setTempDate(dateStringToDate(form[field] || formatDateInput(new Date())));
@@ -338,8 +352,10 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
             <DateField
               label="Birth Date"
               value={form.birthDate || 'Select date'}
+              rawValue={form.birthDate}
               meta={age ? `Age ${age}` : 'Age auto-calculates'}
               onPress={() => openDatePicker('birthDate')}
+              onChangeValue={(value) => updateField('birthDate', value)}
             />
             <FieldRow>
               <FieldCell><SelectField label="Gender" value={form.gender} onPress={() => openSelect({ title: 'Gender', field: 'gender', options: genderOptions })} /></FieldCell>
@@ -382,7 +398,9 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
                 <DateField
                   label="Date Hired *"
                   value={form.dateHired || 'Select date'}
+                  rawValue={form.dateHired}
                   onPress={() => openDatePicker('dateHired')}
+                  onChangeValue={(value) => updateField('dateHired', value)}
                   error={showAssignmentErrors && !form.dateHired.trim() ? 'Required' : ''}
                 />
               </FieldCell>
@@ -463,7 +481,11 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
         onPressOut={() => setPressedOption('')}
         onClose={() => setActiveSelect(null)}
         onSelect={(field, value) => {
-          updateField(field, value);
+          if (field === 'workUnit' && value !== form.workUnit) {
+            setForm((current) => ({ ...current, workUnit: value, position: '' }));
+          } else {
+            updateField(field, value);
+          }
           setActiveSelect(null);
         }}
       />
@@ -542,7 +564,44 @@ function FieldCell({ children }: { children: ReactNode }) {
   return <View style={styles.fieldCell}>{children}</View>;
 }
 
-function DateField({ label, value, meta, onPress, error }: { label: string; value: string; meta?: string; onPress: () => void; error?: string }) {
+function DateField({
+  label,
+  value,
+  rawValue,
+  meta,
+  onPress,
+  onChangeValue,
+  error,
+}: {
+  label: string;
+  value: string;
+  rawValue?: string;
+  meta?: string;
+  onPress: () => void;
+  onChangeValue?: (value: string) => void;
+  error?: string;
+}) {
+  if (Platform.OS === 'web') {
+    return (
+      <>
+        <Text style={styles.inputLabel}>{label}</Text>
+        <View style={styles.webDateShell}>
+          {createElement('input', {
+            type: 'date',
+            value: rawValue || '',
+            onChange: (event: { currentTarget: { value: string } }) => onChangeValue?.(event.currentTarget.value),
+            style: {
+              ...webDateInputStyle,
+              ...(error ? webDateInputErrorStyle : null),
+            },
+          })}
+          {meta ? <Text style={styles.webDateMeta}>{meta}</Text> : null}
+        </View>
+        {error ? <Text style={styles.fieldError}>{error}</Text> : null}
+      </>
+    );
+  }
+
   return (
     <>
       <Text style={styles.inputLabel}>{label}</Text>
@@ -558,6 +617,26 @@ function DateField({ label, value, meta, onPress, error }: { label: string; valu
     </>
   );
 }
+
+const webDateInputStyle: CSSProperties = {
+  minHeight: 46,
+  width: '100%',
+  borderRadius: radius.md,
+  border: `1px solid ${colors.border}`,
+  backgroundColor: colors.surface,
+  color: colors.text,
+  fontSize: 15,
+  fontWeight: fontWeights.bold,
+  marginBottom: spacing.sm,
+  padding: `0 ${spacing.md}px`,
+  boxSizing: 'border-box',
+  outline: 'none',
+};
+
+const webDateInputErrorStyle: CSSProperties = {
+  borderColor: colors.semantic.danger,
+  marginBottom: 4,
+};
 
 function SelectField({ label, value, onPress, error }: { label: string; value: string; onPress: () => void; error?: string }) {
   return (
@@ -877,6 +956,7 @@ function calculateAge(value: string) {
 
 const styles = StyleSheet.create({
   topBar: {
+    marginTop: spacing.md,
     marginBottom: spacing.sm,
   },
   backButton: {
@@ -1312,5 +1392,15 @@ const styles = StyleSheet.create({
     color: colors.surface,
     fontSize: 14,
     fontWeight: fontWeights.bold,
+  },
+  webDateShell: {
+    marginBottom: spacing.sm,
+  },
+  webDateMeta: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+    marginTop: -4,
+    marginBottom: spacing.xs,
   },
 });

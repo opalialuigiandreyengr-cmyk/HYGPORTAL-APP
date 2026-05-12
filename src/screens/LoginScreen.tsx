@@ -3,7 +3,7 @@ import { type ReactNode } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { CalendarCheck, FileCheck2, LockKeyhole, Mail, ShieldCheck } from 'lucide-react-native';
 
-import { AppScreen, Card, Divider, IconTextField, PrimaryButton } from '../components/ui';
+import { AppScreen, Card, IconTextField, PrimaryButton } from '../components/ui';
 import { colors, fontWeights, radius, spacing, typography } from '../theme';
 
 const hygLogo = require('../../assets/HYG LOGO.png');
@@ -18,6 +18,7 @@ type LoginScreenProps = {
   onPasswordChange: (value: string) => void;
   onSubmit: () => void;
   onCreateProfile: () => void;
+  onRegisterAccount: () => void;
 };
 
 export function LoginScreen({
@@ -30,6 +31,7 @@ export function LoginScreen({
   onPasswordChange,
   onSubmit,
   onCreateProfile,
+  onRegisterAccount,
 }: LoginScreenProps) {
   return (
     <AppScreen variant="dark" keyboardAware>
@@ -62,7 +64,7 @@ export function LoginScreen({
           <Text style={styles.subtitle}>Use your assigned employee account.</Text>
 
           <IconTextField
-            label="Email"
+            label="Username"
             icon={<Mail size={17} color={colors.muted} strokeWidth={2.5} />}
             error={emailError}
             inputProps={{
@@ -70,8 +72,8 @@ export function LoginScreen({
               onChangeText: onEmailChange,
               autoCapitalize: 'none',
               autoCorrect: false,
-              keyboardType: 'email-address',
-              placeholder: 'name@company.com',
+              keyboardType: 'default',
+              placeholder: 'Username',
               returnKeyType: 'next',
             }}
           />
@@ -98,8 +100,14 @@ export function LoginScreen({
             onPress={onSubmit}
           />
 
-          <Text style={styles.notice}>Contact HR Admin if you cannot sign in.</Text>
-          <Divider />
+          <View style={styles.profilePrompt}>
+            <Text style={styles.profilePromptText}>Already have an employee profile? </Text>
+            <Pressable onPress={onRegisterAccount} hitSlop={8}>
+              <Text style={styles.profileLinkText}>Register here.</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.promptSeparator} />
 
           <View style={styles.profilePrompt}>
             <Text style={styles.profilePromptText}>No employee profile yet? </Text>
@@ -216,7 +224,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     flexWrap: 'wrap',
-    marginTop: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  promptSeparator: {
+    height: 1,
+    backgroundColor: colors.border,
+    marginTop: spacing.md,
+    marginBottom: spacing.xs,
+    marginHorizontal: spacing.lg,
   },
   profilePromptText: {
     color: colors.text,

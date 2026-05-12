@@ -16,11 +16,13 @@ export function PickerField({
   onValueChange,
   options,
   disabledOptions = [],
+  labels = {},
 }: {
   value: string;
   onValueChange: (value: string) => void;
   options: string[];
   disabledOptions?: string[];
+  labels?: Record<string, string>;
 }) {
   return (
     <View style={styles.pickerShell}>
@@ -28,7 +30,7 @@ export function PickerField({
         {options.map((option) => (
           <Picker.Item
             key={option}
-            label={disabledOptions.includes(option) ? `${option} - unavailable` : option}
+            label={disabledOptions.includes(option) ? `${labels[option] ?? option} - unavailable` : labels[option] ?? option}
             value={option}
             enabled={!disabledOptions.includes(option)}
           />

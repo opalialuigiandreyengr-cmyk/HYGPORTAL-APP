@@ -31,6 +31,11 @@ export type DuplicateEmployeeProfileResult = {
   duplicate_email?: boolean;
 };
 
+export type EmployeeAssignmentOption = {
+  department_name: string;
+  position_name: string | null;
+};
+
 function optionalDate(value: string) {
   return value.trim() || null;
 }
@@ -86,4 +91,14 @@ export async function checkEmployeeProfileDuplicate(input: Pick<
   }
 
   return data as DuplicateEmployeeProfileResult;
+}
+
+export async function loadEmployeeAssignmentOptions() {
+  const { data, error } = await supabase.rpc('employee_assignment_options');
+
+  if (error) {
+    throw new Error([error.message, error.details, error.hint].filter(Boolean).join(' '));
+  }
+
+  return (data ?? []) as EmployeeAssignmentOption[];
 }
