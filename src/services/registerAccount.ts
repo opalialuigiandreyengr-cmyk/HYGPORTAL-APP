@@ -30,7 +30,7 @@ export function normalizeUsername(username: string) {
 }
 
 export async function resolveLoginEmail(username: string) {
-  const loginIdentifier = username.trim().toLowerCase();
+  const loginIdentifier = normalizeUsername(username);
   if (!loginIdentifier) {
     throw new Error('Enter a valid username.');
   }
@@ -41,6 +41,10 @@ export async function resolveLoginEmail(username: string) {
 
   if (error) {
     throw new Error(errorMessage(error));
+  }
+
+  if (!data) {
+    throw new Error('No login account found for this username.');
   }
 
   return data as string;

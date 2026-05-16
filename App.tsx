@@ -43,9 +43,15 @@ import { loadEmployeeProfile } from './src/services/profile';
 import { resolveLoginEmail } from './src/services/registerAccount';
 import { loadMyRequests, type MyRequest } from './src/services/requests';
 import { AppToast, type AppToastMessage } from './src/components/AppToast';
+import { ApplyEsarfScreen } from './src/screens/ApplyEsarfScreen';
 import { CreateEmployeeProfileScreen } from './src/screens/CreateEmployeeProfileScreen';
+import { DashboardScreen } from './src/screens/DashboardScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
+import { NotificationsScreen } from './src/screens/NotificationsScreen';
+import { ProfileTabScreen } from './src/screens/ProfileTabScreen';
 import { RegisterAccountScreen } from './src/screens/RegisterAccountScreen';
+import { RequestsTabScreen } from './src/screens/RequestsTabScreen';
+import { BottomTabBar } from './src/components/BottomTabBar';
 import { colors, spacing } from './src/theme';
 import type { ProfileLoadResult, RequestTypeCode } from './src/types/domain';
 import {
@@ -66,6 +72,7 @@ import {
 type PortalTab = 'home' | 'requests' | 'approvals' | 'profile';
 type PublicScreen = 'login' | 'create_profile' | 'register_account';
 type AdminScreen = 'home' | 'authority' | 'departments' | 'routes' | 'approvers';
+type QuickRequestScreen = 'apply_esarf';
 const SUPER_ADMIN_EMAIL = 'hygportal@gmail.com';
 const hygLogo = require('./assets/HYG LOGO.png');
 const authorityLevelColors = [
@@ -96,6 +103,7 @@ export default function App() {
   });
   const [dashboardStatus, setDashboardStatus] = useState('');
   const [activeRequestType, setActiveRequestType] = useState<RequestTypeCode | null>(null);
+  const [activeQuickRequestScreen, setActiveQuickRequestScreen] = useState<QuickRequestScreen | null>(null);
   const [activeTab, setActiveTab] = useState<PortalTab>('home');
   const [publicScreen, setPublicScreen] = useState<PublicScreen>('login');
   const [adminScreen, setAdminScreen] = useState<AdminScreen>('home');
@@ -159,14 +167,14 @@ export default function App() {
       if (message.toLowerCase().includes('no login account')) {
         setAppToast({
           tone: 'warning',
-          title: 'Account not registered',
-          message: 'Employee profile found. Please register your login account first.',
+          title: 'Account not found',
+          message: 'No login account found for this username. Register your account first.',
         });
       } else {
         setAppToast({
           tone: 'error',
-          title: 'Wrong username',
-          message: 'Username is incorrect.',
+          title: 'Login failed',
+          message: message || 'Unable to verify username. Please try again.',
         });
       }
       return;
@@ -231,42 +239,9 @@ export default function App() {
             setSignedInUser(null);
             setProfileResult(null);
             setActiveTab('home');
+            setActiveQuickRequestScreen(null);
             setAdminScreen('home');
           }}
-        />,
-      );
-    }
-
-    const tabBar = <PortalTabBar activeTab={activeTab} onChange={setActiveTab} />;
-
-    if (activeTab === 'requests') {
-      return withToast(<MyRequestsScreen onBack={() => setActiveTab('home')} footer={tabBar} />);
-    }
-
-    if (activeTab === 'approvals') {
-      return withToast(<ApprovalsScreen onBack={() => setActiveTab('home')} footer={tabBar} />);
-    }
-
-    if (activeTab === 'profile') {
-      return withToast(
-        <ProfileScreen
-          user={signedInUser}
-          isLoading={isLoadingProfile}
-          result={profileResult}
-          onRefresh={() => loadProfileForUser(signedInUser)}
-          onSignOut={async () => {
-            await supabase.auth.signOut();
-            setSignedInUser(null);
-            setProfileResult(null);
-            setActiveTab('home');
-            setDashboardSummary({
-              pending_requests: 0,
-              pending_approvals: 0,
-              offset_balance: 0,
-              leave_credit_remaining: 7,
-            });
-          }}
-          footer={tabBar}
         />,
       );
     }
@@ -285,46 +260,68 @@ export default function App() {
       );
     }
 
+    if (activeQuickRequestScreen === 'apply_esarf') {
+      return withToast(
+        <ApplyEsarfScreen
+          initials={profileResult?.status === 'linked'
+            ? profileResult.profile.fullName.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()
+            : (signedInUser.email ?? 'U').slice(0, 2).toUpperCase()}
+          onBack={() => setActiveQuickRequestScreen(null)}
+          onSubmitted={async () => {
+            setActiveQuickRequestScreen(null);
+            await refreshDashboard();
+          }}
+        />,
+      );
+    }
+
+    const signOut = async () => {
+      await supabase.auth.signOut();
+      setSignedInUser(null);
+      setProfileResult(null);
+      setActiveTab('home');
+      setActiveQuickRequestScreen(null);
+      setDashboardSummary({ pending_requests: 0, pending_approvals: 0, offset_balance: 0, leave_credit_remaining: 7 });
+    };
+
+    let tabContent: ReactNode = null;
+    if (activeTab === 'requests') {
+      tabContent = <RequestsTabScreen />;
+    } else if (activeTab === 'approvals') {
+      tabContent = <NotificationsScreen />;
+    } else if (activeTab === 'profile') {
+      tabContent = (
+        <ProfileTabScreen
+          email={signedInUser.email ?? ''}
+          username={email}
+          isLoading={isLoadingProfile}
+          result={profileResult}
+          onToast={setAppToast}
+          onSignOut={signOut}
+        />
+      );
+    } else {
+      tabContent = (
+        <DashboardScreen
+          userEmail={signedInUser.email ?? 'Employee'}
+          summary={dashboardSummary}
+          profileResult={profileResult}
+          isLoadingProfile={isLoadingProfile}
+          onRefreshDashboard={refreshDashboard}
+          onRefreshProfile={() => loadProfileForUser(signedInUser)}
+          onRequestType={setActiveRequestType}
+        />
+      );
+    }
+
     return withToast(
-      <View style={styles.safeArea}>
-        <StatusBar style="dark" />
-        <ScrollView contentContainerStyle={styles.page}>
-          <View style={styles.header}>
-            <Text style={styles.kicker}>New HYG Portal</Text>
-            <Text style={styles.title}>Employee Center</Text>
-            <Text style={styles.subtitle}>
-              Signed in as {signedInUser.email ?? 'Employee'}.
-            </Text>
-          </View>
-
-          <ProfilePanel
-            isLoading={isLoadingProfile}
-            result={profileResult}
-            onRefresh={() => loadProfileForUser(signedInUser)}
-          />
-
-          <View style={styles.summaryGrid}>
-            <SummaryCard label="Pending Requests" value={String(dashboardSummary.pending_requests)} />
-            <SummaryCard label="For Approval" value={String(dashboardSummary.pending_approvals)} />
-            <SummaryCard label="Offset Balance" value={`${dashboardSummary.offset_balance.toFixed(1)}h`} />
-            <SummaryCard label="Leave Credit" value={`${dashboardSummary.leave_credit_remaining.toFixed(1)}d`} />
-          </View>
-
-          <Pressable style={styles.secondaryButton} onPress={refreshDashboard}>
-            <Text style={styles.secondaryButtonText}>Refresh Dashboard</Text>
-          </Pressable>
-
-          {dashboardStatus ? <Text style={styles.submitStatus}>{dashboardStatus}</Text> : null}
-
-          <View style={styles.requestGrid}>
-            <RequestTile title="Overtime" detail="2 approvers" onPress={() => setActiveRequestType('overtime')} />
-            <RequestTile title="Offset Earn" detail="2 approvers" onPress={() => setActiveRequestType('offset_earn')} />
-            <RequestTile title="Use Offset" detail="1 approver" onPress={() => setActiveRequestType('use_offset')} />
-            <RequestTile title="Leave" detail="1 approver" onPress={() => setActiveRequestType('leave')} />
-          </View>
-
-          {tabBar}
-        </ScrollView>
+      <View style={{ flex: 1 }}>
+        {tabContent}
+        <BottomTabBar
+          activeTab={activeTab}
+          onChange={setActiveTab}
+          onApplyEsarf={() => setActiveQuickRequestScreen('apply_esarf')}
+        />
       </View>,
     );
   }

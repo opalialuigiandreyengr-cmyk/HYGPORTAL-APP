@@ -36,6 +36,10 @@ export type EmployeeAssignmentOption = {
   position_name: string | null;
 };
 
+export type EmployeeCompanyOption = {
+  company_name: string;
+};
+
 function optionalDate(value: string) {
   return value.trim() || null;
 }
@@ -101,4 +105,31 @@ export async function loadEmployeeAssignmentOptions() {
   }
 
   return (data ?? []) as EmployeeAssignmentOption[];
+}
+
+export async function loadEmployeeCompanyOptions() {
+  const { data, error } = await supabase.rpc('employee_company_options');
+
+  if (!error) {
+    return (data ?? []) as EmployeeCompanyOption[];
+  }
+
+  const fallback = await supabase
+    .from('companies')
+    .select('name')
+    .eq('is_active', true)
+    .order('name', { ascending: true });
+
+  if (fallback.error) {
+    throw new Error([
+      error.message,
+      error.details,
+      error.hint,
+      fallback.error.message,
+      fallback.error.details,
+      fallback.error.hint,
+    ].filter(Boolean).join(' '));
+  }
+
+  return (fallback.data ?? []).map((company) => ({ company_name: company.name })) as EmployeeCompanyOption[];
 }

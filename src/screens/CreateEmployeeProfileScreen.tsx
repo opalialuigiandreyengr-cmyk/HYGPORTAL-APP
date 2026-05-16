@@ -6,7 +6,13 @@ import { BriefcaseBusiness, CalendarDays, CheckCircle2, ChevronDown, ChevronLeft
 
 import { AppScreen, Card, Divider } from '../components/ui';
 import { isSupabaseConfigured } from '../lib/supabase';
-import { checkEmployeeProfileDuplicate, createEmployeeProfile, loadEmployeeAssignmentOptions, type EmployeeAssignmentOption } from '../services/createProfile';
+import {
+  checkEmployeeProfileDuplicate,
+  createEmployeeProfile,
+  loadEmployeeAssignmentOptions,
+  loadEmployeeCompanyOptions,
+  type EmployeeAssignmentOption,
+} from '../services/createProfile';
 import { colors, fontWeights, radius, spacing, typography } from '../theme';
 import { dateStringToDate, formatDateInput } from '../utils/dateTime';
 
@@ -70,11 +76,21 @@ const initialForm: FormState = {
 
 const genderOptions = ['Male', 'Female', 'Other'];
 const civilStatusOptions = ['Single', 'Married', 'Separated', 'Widowed'];
-const companyOptions = ['HYG', 'Company A', 'Company B', 'Company C'];
+const fallbackCompanyOptions = [
+  'Cakes Haven Incorporation',
+  'Cakes and Occasions Corporation',
+  'Chatime',
+  'Chawnah Foods INC.',
+  'DU99 7-Eleven',
+  'Fresh Berry Foods Corporation',
+  'Icebergs',
+  'Taters',
+];
 const fallbackWorkUnitOptions = [
   'IT',
   'Maintenance',
   'Logistics',
+  'ACCOUNTING AND INVENTORY',
   'Accounting',
   'Inventory',
   'Operations',
@@ -85,8 +101,17 @@ const fallbackWorkUnitOptions = [
 ];
 const fallbackPositionOptions = [
   'Crew',
+  'Service Crew',
+  'Kitchen Crew',
+  'Cashier',
+  'Barista',
+  'Baker',
+  'Cake Decorator',
   'Supervisor',
+  'Area Supervisor',
   'Store Manager',
+  'Assistant Store Manager',
+  'Branch Manager',
   'Department Manager',
   'Cluster Manager',
   'Area Manager',
@@ -96,6 +121,17 @@ const fallbackPositionOptions = [
   'General Manager',
   'Staff',
   'IT Staff',
+  'IT Manager',
+  'Accounting Staff',
+  'Inventory Staff',
+  'Warehouse Staff',
+  'Logistics Staff',
+  'Maintenance Staff',
+  'Maintenance Technician',
+  'HR Staff',
+  'Admin Staff',
+  'Marketing Staff',
+  'Purchasing Staff',
   'Officer',
   'Specialist',
   'Analyst',
@@ -123,6 +159,7 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false);
   const [liveDuplicateMessage, setLiveDuplicateMessage] = useState('');
+  const [companyOptions, setCompanyOptions] = useState<string[]>(fallbackCompanyOptions);
   const [assignmentOptions, setAssignmentOptions] = useState<EmployeeAssignmentOption[]>([]);
   const [submitStatus, setSubmitStatus] = useState('');
   const [profileSaved, setProfileSaved] = useState(false);
@@ -182,6 +219,21 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
   }
 
   useEffect(() => {
+    loadEmployeeCompanyOptions()
+      .then((options) => {
+        const names = Array.from(new Set([
+          ...options.map((option) => option.company_name).filter(Boolean),
+          ...fallbackCompanyOptions,
+        ]));
+        if (!names.length) {
+          return;
+        }
+
+        setCompanyOptions(names);
+        setForm((current) => names.includes(current.company) ? current : { ...current, company: names[0] });
+      })
+      .catch(() => setCompanyOptions(fallbackCompanyOptions));
+
     loadEmployeeAssignmentOptions()
       .then(setAssignmentOptions)
       .catch(() => setAssignmentOptions([]));

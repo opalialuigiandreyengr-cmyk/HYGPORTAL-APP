@@ -6,7 +6,7 @@ export const colors = {
   border: '#dbe4ef',
   primary: '#2563eb',
   brand: {
-    ink: '#070b14',
+    ink: '#071426',
     panel: '#0f172a',
     panelSoft: '#111827',
     line: '#1e3a5f',
