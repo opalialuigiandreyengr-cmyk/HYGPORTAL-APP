@@ -65,10 +65,12 @@ export function ApplyEsarfScreen({
   initials,
   onBack,
   onSubmitted,
+  onToast,
 }: {
   initials?: string;
   onBack: () => void;
-  onSubmitted?: () => void;
+  onSubmitted?: () => void | Promise<void>;
+  onToast?: (toast: { tone: 'success' | 'error' | 'warning'; title: string; message: string }) => void;
 }) {
   const [schedule, setSchedule] = useState('Select schedule');
   const [dayOff, setDayOff] = useState('Select day');
@@ -89,6 +91,8 @@ export function ApplyEsarfScreen({
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
   const scrollRef = useRef<ScrollView | null>(null);
+  const reasonComposerInputRef = useRef<TextInput | null>(null);
+  const reasonFocusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sectionY = useRef<Record<SectionKey, number>>({ request: 0, transactions: 0, datetime: 0 });
 
   useEffect(() => {
@@ -104,6 +108,27 @@ export function ApplyEsarfScreen({
       hideSubscription.remove();
     };
   }, []);
+
+  useEffect(() => {
+    if (!showReasonComposer) {
+      if (reasonFocusTimer.current) {
+        clearTimeout(reasonFocusTimer.current);
+        reasonFocusTimer.current = null;
+      }
+      return;
+    }
+
+    reasonFocusTimer.current = setTimeout(() => {
+      reasonComposerInputRef.current?.focus();
+    }, 80);
+
+    return () => {
+      if (reasonFocusTimer.current) {
+        clearTimeout(reasonFocusTimer.current);
+        reasonFocusTimer.current = null;
+      }
+    };
+  }, [showReasonComposer]);
 
   function toggleTransaction(key: string) {
     setValidationErrors((current) => ({ ...current, transactions: undefined }));
@@ -133,6 +158,10 @@ export function ApplyEsarfScreen({
   function openPicker(kind: 'date_from' | 'date_to' | 'time_from' | 'time_to') {
     setTempPickerDate(valueForPicker(kind));
     setActivePicker(kind);
+  }
+
+  function openReasonComposer() {
+    setShowReasonComposer(true);
   }
 
   function applyPickerValue(kind: 'date_from' | 'date_to' | 'time_from' | 'time_to', selectedDate: Date) {
@@ -271,11 +300,22 @@ export function ApplyEsarfScreen({
         }
       }
 
-      setSubmitStatus(`Submitted ${requestIds.length} request(s).`);
-      onSubmitted?.();
+      const count = requestIds.length;
+      setSubmitStatus(`Submitted ${count} request(s).`);
+      onToast?.({
+        tone: 'success',
+        title: 'ESARF submitted',
+        message: `${count} request${count === 1 ? '' : 's'} sent for approval.`,
+      });
+      await onSubmitted?.();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to submit ESARF.';
       setSubmitStatus(`Failed: ${message}`);
+      onToast?.({
+        tone: 'error',
+        title: 'ESARF failed',
+        message,
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -433,7 +473,7 @@ export function ApplyEsarfScreen({
           <FieldLabel label="Reason" />
           <Pressable
             style={[styles.reasonInput, validationErrors.reason ? styles.inputError : null]}
-            onPress={() => setShowReasonComposer(true)}
+            onPress={openReasonComposer}
           >
             <Text style={reason ? styles.reasonPreviewText : styles.reasonPlaceholderText}>
               {reason || 'Enter reason'}
@@ -561,11 +601,13 @@ export function ApplyEsarfScreen({
           animationType="fade"
           visible={showReasonComposer}
           onRequestClose={() => setShowReasonComposer(false)}
+          onShow={() => reasonComposerInputRef.current?.focus()}
         >
           <View style={styles.composerBackdrop}>
             <Pressable style={styles.composerDismissArea} onPress={() => setShowReasonComposer(false)} />
-            <View style={[styles.reasonComposer, { marginBottom: keyboardHeight }]}>
+            <View style={[styles.reasonComposer, { marginBottom: Platform.OS === 'ios' ? keyboardHeight : 0 }]}>
               <TextInput
+                ref={reasonComposerInputRef}
                 autoFocus
                 value={reason}
                 onChangeText={(value) => {
@@ -1302,7 +1344,7 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
     paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
-    paddingBottom: 0,
+    paddingBottom: spacing.md,
   },
   reasonComposerInput: {
     flex: 1,

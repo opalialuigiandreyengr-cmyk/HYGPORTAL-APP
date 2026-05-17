@@ -267,8 +267,10 @@ export default function App() {
             ? profileResult.profile.fullName.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()
             : (signedInUser.email ?? 'U').slice(0, 2).toUpperCase()}
           onBack={() => setActiveQuickRequestScreen(null)}
+          onToast={setAppToast}
           onSubmitted={async () => {
             setActiveQuickRequestScreen(null);
+            setActiveTab('requests');
             await refreshDashboard();
           }}
         />,

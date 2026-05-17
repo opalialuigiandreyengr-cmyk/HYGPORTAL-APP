@@ -295,12 +295,14 @@ export async function loadEmployeeProfile(authUserId: string): Promise<ProfileLo
   }
 
   const employee = employeeResponse.data;
+  const today = new Date().toISOString().slice(0, 10);
   const assignmentResponse = await supabase
     .from('employee_assignments')
     .select('company_id, area_id, cluster_id, store_id, department_id, position_id, function_id, effective_from')
     .eq('employee_id', employee.id)
     .eq('is_primary', true)
-    .is('effective_to', null)
+    .lte('effective_from', today)
+    .or(`effective_to.is.null,effective_to.gte.${today}`)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle<AssignmentRow>();
@@ -432,6 +434,7 @@ export type UpdateEmployeeProfileInput = {
   cellphone: string;
   email: string;
   username: string;
+  company: string;
   employeeType: string;
   tin: string;
   sss: string;
@@ -504,6 +507,7 @@ export async function updateEmployeeProfile(input: UpdateEmployeeProfileInput) {
     cellphone: input.cellphone.trim(),
     email: input.email.trim(),
     username: input.username.trim(),
+    company: input.company.trim(),
     employeeType: input.employeeType.trim(),
     tin: input.tin.trim(),
     sss: input.sss.trim(),

@@ -31,6 +31,7 @@ import { TopBar } from '../components/TopBar';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 import { supabase } from '../lib/supabase';
 import { updateEmployeeProfile, uploadEmployeeProfilePhoto, type UpdateEmployeeProfileInput } from '../services/profile';
+import { loadEmployeeCompanyOptions } from '../services/createProfile';
 import { normalizeUsername } from '../services/registerAccount';
 
 type Props = {
@@ -78,6 +79,16 @@ type ProfileRow = {
 
 const CIVIL_STATUS_OPTIONS = ['Single', 'Married', 'Widowed', 'Separated', 'Divorced'];
 const GENDER_OPTIONS = ['Male', 'Female'];
+const FALLBACK_COMPANY_OPTIONS = [
+  'Cakes Haven Incorporation',
+  'Cakes and Occasions Corporation',
+  'Chatime',
+  'Chawnah Foods INC.',
+  'DU99 7-Eleven',
+  'Fresh Berry Foods Corporation',
+  'Icebergs',
+  'Taters',
+];
 
 type InlineSelectConfig = {
   title: string;
@@ -122,11 +133,12 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
   const [tempDate, setTempDate] = useState(() => new Date());
   const [activeSelect, setActiveSelect] = useState<InlineSelectConfig | null>(null);
   const [tempSelectValue, setTempSelectValue] = useState('');
+  const [companyOptions, setCompanyOptions] = useState<string[]>(FALLBACK_COMPANY_OPTIONS);
   const scrollRef = useRef<ScrollView>(null);
   const sectionPanelY = useRef(0);
   const detailGridY = useRef(0);
   const detailRowY = useRef<Record<string, number>>({});
-  const profileSections = getProfileSections(profile, username, form);
+  const profileSections = getProfileSections(profile, username, form, companyOptions);
   const activeSection = profileSections.find((section) => section.key === activeProfileSection) ?? profileSections[0];
   const activeTab = PROFILE_SECTION_TABS.find((tab) => tab.key === activeProfileSection) ?? PROFILE_SECTION_TABS[0];
   const ActiveSectionIcon = activeTab.icon;
@@ -141,6 +153,36 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
       setForm(profileToForm(profile, username));
     }
   }, [profile, showModal, username]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    loadEmployeeCompanyOptions()
+      .then((options) => {
+        if (!isMounted) {
+          return;
+        }
+
+        const optionNames = options.map((option) => option.company_name).filter(Boolean);
+        setCompanyOptions(uniqueOptions([profile?.companyName ?? '', ...optionNames, ...FALLBACK_COMPANY_OPTIONS]));
+      })
+      .catch((error) => {
+        if (!isMounted) {
+          return;
+        }
+
+        setCompanyOptions(uniqueOptions([profile?.companyName ?? '', ...FALLBACK_COMPANY_OPTIONS]));
+        onToast?.({
+          tone: 'warning',
+          title: 'Companies unavailable',
+          message: error instanceof Error ? error.message : 'Unable to load company options.',
+        });
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [profile?.companyName, onToast]);
 
   function updateField(field: keyof UpdateEmployeeProfileInput, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -721,6 +763,10 @@ function formatProfileDate(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+function uniqueOptions(options: string[]) {
+  return Array.from(new Set(options.map((option) => option.trim()).filter(Boolean)));
+}
+
 function DatePickerModal({
   visible,
   value,
@@ -876,6 +922,7 @@ function getProfileSections(
   profile: EmployeeProfileSummary | null,
   username: string,
   form: UpdateEmployeeProfileInput,
+  companyOptions: string[],
 ): ProfileSection[] {
   return [
     {
@@ -915,7 +962,7 @@ function getProfileSections(
       label: 'Employment Details',
       description: 'Assignment, department, role, and approval level.',
       rows: [
-        { label: 'Company', value: profile?.companyName, fullWidth: true },
+        { label: 'Company', value: form.company, field: 'company', editor: 'select', options: companyOptions, fullWidth: true },
         { label: 'Employee Type', value: form.employeeType, field: 'employeeType' },
         { label: 'Username', value: form.username, field: 'username' },
         { label: 'Hired Date', value: profile?.dateHired },
@@ -1023,6 +1070,7 @@ function profileToForm(profile: EmployeeProfileSummary | null, username: string)
     cellphone: profile?.cellphone ?? '',
     email: profile?.email ?? '',
     username: profile?.username ?? username,
+    company: profile?.companyName ?? '',
     employeeType: profile?.employeeType ?? '',
     tin: profile?.tin ?? '',
     sss: profile?.sss ?? '',
@@ -1095,6 +1143,7 @@ function formToProfile(
     civilStatus: form.civilStatus || null,
     cellphone: form.cellphone,
     email: form.email || null,
+    companyName: form.company || null,
     employeeType: form.employeeType || null,
     tin: form.tin || null,
     sss: form.sss || null,
