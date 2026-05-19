@@ -54,6 +54,7 @@ import { RequestsTabScreen } from './src/screens/RequestsTabScreen';
 import { BottomTabBar } from './src/components/BottomTabBar';
 import { hygPortalLogo, preloadHygPortalLogo } from './src/assets/portalLogo';
 import { colors, spacing } from './src/theme';
+import RequestLeave from "./src/screens/RequestLeave.tsx"
 import type { ProfileLoadResult, RequestTypeCode } from './src/types/domain';
 import {
   calculateLeaveDays,
@@ -73,7 +74,7 @@ import {
 type PortalTab = 'home' | 'requests' | 'approvals' | 'profile';
 type PublicScreen = 'login' | 'create_profile' | 'register_account';
 type AdminScreen = 'home' | 'authority' | 'departments' | 'routes' | 'approvers';
-type QuickRequestScreen = 'apply_esarf';
+type QuickRequestScreen = 'apply_esarf' | 'request_leave';
 const SUPER_ADMIN_EMAIL = 'hygportal@gmail.com';
 const hygLogo = hygPortalLogo;
 const authorityLevelColors = [
@@ -281,6 +282,20 @@ export default function App() {
       );
     }
 
+    if (activeQuickRequestScreen === 'request_leave') {
+      return withToast(
+        <RequestLeave
+          onBack={() => setActiveQuickRequestScreen(null)}
+          onToast={setAppToast}
+          onSubmitted={async () => {
+            setActiveQuickRequestScreen(null);
+            setActiveTab('requests');
+            await refreshDashboard();
+          }}
+        />,
+      );
+    }
+
     const signOut = async () => {
       await supabase.auth.signOut();
       setSignedInUser(null);
@@ -327,6 +342,7 @@ export default function App() {
           activeTab={activeTab}
           onChange={setActiveTab}
           onApplyEsarf={() => setActiveQuickRequestScreen('apply_esarf')}
+          onRequestLeave={() => setActiveQuickRequestScreen('request_leave')}
         />
       </View>,
     );
