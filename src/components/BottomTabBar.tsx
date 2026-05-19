@@ -36,10 +36,12 @@ export function BottomTabBar({
   activeTab,
   onChange,
   onApplyEsarf,
+  onRequestLeave,
 }: {
   activeTab: TabKey;
   onChange: (tab: TabKey) => void;
   onApplyEsarf?: () => void;
+  onRequestLeave?: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const transitionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -94,6 +96,8 @@ export function BottomTabBar({
     setIsActionMenuOpen(false);
     if (key === 'apply_esarf') {
       onApplyEsarf?.();
+    } else if (key === 'request_leave') {
+      onRequestLeave?.();
     }
   }
 
