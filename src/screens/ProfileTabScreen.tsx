@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Image, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
@@ -27,6 +27,7 @@ import {
 } from 'lucide-react-native';
 
 import { colors, fontWeights, spacing } from '../theme';
+import { Avatar } from '../components/Avatar';
 import { TopBar } from '../components/TopBar';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 import { supabase } from '../lib/supabase';
@@ -117,9 +118,6 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
   const [localProfile, setLocalProfile] = useState<EmployeeProfileSummary | null>(resultProfile);
   const profile = localProfile;
   const displayName = profile?.fullName || username || 'Employee';
-  const initials = profile
-    ? profile.fullName.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
-    : displayName.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase() || '?';
 
   const [showModal, setShowModal] = useState(false);
   const [inlineEditSection, setInlineEditSection] = useState<ProfileSectionKey | null>(null);
@@ -377,7 +375,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
     return (
       <View style={styles.root}>
         <StatusBar style="dark" />
-        <TopBar initials={initials} />
+        <TopBar name={displayName} photoUrl={profile?.photoUrl} />
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#eab308" />
           <Text style={styles.loadingText}>Loading profile...</Text>
@@ -393,7 +391,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
       style={styles.root}
     >
       <StatusBar style="dark" />
-      <TopBar initials={initials} />
+      <TopBar name={displayName} photoUrl={profile?.photoUrl} />
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}
@@ -409,11 +407,14 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
                 onPress={pickProfilePhoto}
                 style={({ pressed }) => [styles.avatar, pressed && styles.avatarPressed]}
               >
-                {profile?.photoUrl ? (
-                  <Image source={{ uri: profile.photoUrl }} style={styles.avatarImage} />
-                ) : (
-                  <Text style={styles.avatarText}>{initials}</Text>
-                )}
+                <Avatar
+                  name={displayName}
+                  photoUrl={profile?.photoUrl}
+                  size={78}
+                  textSize={27}
+                  borderRadius={6}
+                  textColor={colors.brand.gold}
+                />
                 <View style={styles.cameraBtn}>
                   {isUploadingPhoto ? (
                     <ActivityIndicator size="small" color="#fff" />
@@ -603,7 +604,14 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
               {/* Profile Photo */}
               <View style={styles.modalPhotoRow}>
                 <View style={styles.modalAvatar}>
-                  <Text style={styles.modalAvatarText}>{initials}</Text>
+                  <Avatar
+                    name={displayName}
+                    photoUrl={profile?.photoUrl}
+                    size={56}
+                    textSize={20}
+                    borderRadius={10}
+                    textColor={colors.brand.gold}
+                  />
                 </View>
                 <View>
                   <Text style={styles.modalPhotoLabel}>Profile Photo</Text>
@@ -1236,25 +1244,16 @@ const styles = StyleSheet.create({
     width: 78,
     height: 78,
     borderRadius: 6,
-    backgroundColor: '#334155',
+    backgroundColor: colors.brand.panel,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
-    borderColor: '#ffffff',
+    borderColor: colors.surface,
     overflow: 'hidden',
-  },
-  avatarImage: {
-    width: '100%',
-    height: '100%',
   },
   avatarPressed: {
     opacity: 0.84,
     transform: [{ scale: 0.97 }],
-  },
-  avatarText: {
-    fontSize: 27,
-    fontWeight: fontWeights.heavy,
-    color: '#facc15',
   },
   cameraBtn: {
     position: 'absolute',
@@ -1599,16 +1598,12 @@ const styles = StyleSheet.create({
     width: 56,
     height: 56,
     borderRadius: 10,
-    backgroundColor: '#334155',
+    backgroundColor: colors.brand.panel,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
-    borderColor: '#e2e8f0',
-  },
-  modalAvatarText: {
-    fontSize: 20,
-    fontWeight: fontWeights.heavy,
-    color: '#facc15',
+    borderColor: colors.border,
+    overflow: 'hidden',
   },
   modalPhotoLabel: {
     fontSize: 16,

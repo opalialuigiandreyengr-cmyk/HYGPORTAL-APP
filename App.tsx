@@ -52,6 +52,7 @@ import { ProfileTabScreen } from './src/screens/ProfileTabScreen';
 import { RegisterAccountScreen } from './src/screens/RegisterAccountScreen';
 import { RequestsTabScreen } from './src/screens/RequestsTabScreen';
 import { BottomTabBar } from './src/components/BottomTabBar';
+import { hygPortalLogo, preloadHygPortalLogo } from './src/assets/portalLogo';
 import { colors, spacing } from './src/theme';
 import type { ProfileLoadResult, RequestTypeCode } from './src/types/domain';
 import {
@@ -74,7 +75,7 @@ type PublicScreen = 'login' | 'create_profile' | 'register_account';
 type AdminScreen = 'home' | 'authority' | 'departments' | 'routes' | 'approvers';
 type QuickRequestScreen = 'apply_esarf';
 const SUPER_ADMIN_EMAIL = 'hygportal@gmail.com';
-const hygLogo = require('./assets/HYG LOGO.png');
+const hygLogo = hygPortalLogo;
 const authorityLevelColors = [
   { background: '#dbeafe', text: '#1d4ed8' },
   { background: '#dcfce7', text: '#15803d' },
@@ -107,6 +108,10 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<PortalTab>('home');
   const [publicScreen, setPublicScreen] = useState<PublicScreen>('login');
   const [adminScreen, setAdminScreen] = useState<AdminScreen>('home');
+
+  useEffect(() => {
+    preloadHygPortalLogo();
+  }, []);
 
   const dismissAppToast = useCallback(() => {
     setAppToast(null);
@@ -263,9 +268,8 @@ export default function App() {
     if (activeQuickRequestScreen === 'apply_esarf') {
       return withToast(
         <ApplyEsarfScreen
-          initials={profileResult?.status === 'linked'
-            ? profileResult.profile.fullName.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()
-            : (signedInUser.email ?? 'U').slice(0, 2).toUpperCase()}
+          name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
+          photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
           onBack={() => setActiveQuickRequestScreen(null)}
           onToast={setAppToast}
           onSubmitted={async () => {
@@ -288,9 +292,9 @@ export default function App() {
 
     let tabContent: ReactNode = null;
     if (activeTab === 'requests') {
-      tabContent = <RequestsTabScreen />;
+      tabContent = <RequestsTabScreen profileResult={profileResult} />;
     } else if (activeTab === 'approvals') {
-      tabContent = <NotificationsScreen />;
+      tabContent = <NotificationsScreen profileResult={profileResult} />;
     } else if (activeTab === 'profile') {
       tabContent = (
         <ProfileTabScreen

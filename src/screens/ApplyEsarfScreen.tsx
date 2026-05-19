@@ -62,12 +62,14 @@ const exclusiveTransactionGroups = [
 ];
 
 export function ApplyEsarfScreen({
-  initials,
+  name,
+  photoUrl,
   onBack,
   onSubmitted,
   onToast,
 }: {
-  initials?: string;
+  name?: string | null;
+  photoUrl?: string | null;
   onBack: () => void;
   onSubmitted?: () => void | Promise<void>;
   onToast?: (toast: { tone: 'success' | 'error' | 'warning'; title: string; message: string }) => void;
@@ -324,7 +326,7 @@ export function ApplyEsarfScreen({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar initials={initials} />
+      <TopBar name={name} photoUrl={photoUrl} />
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}

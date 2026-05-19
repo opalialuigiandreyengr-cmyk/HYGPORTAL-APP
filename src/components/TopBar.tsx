@@ -1,27 +1,31 @@
+import { memo } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Bell, MessageSquare } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { fontWeights } from '../theme';
-
-const hygLogo = require('../../assets/HYG LOGO.png');
+import { colors, fontWeights } from '../theme';
+import { hygPortalLogo } from '../assets/portalLogo';
+import { Avatar } from './Avatar';
 
 type Props = {
   initials?: string;
+  name?: string | null;
+  photoUrl?: string | null;
   onNotifications?: () => void;
   onMessages?: () => void;
   onAvatar?: () => void;
 };
 
-export function TopBar({ initials = '?', onNotifications, onMessages, onAvatar }: Props) {
+export function TopBar({ initials, name, photoUrl, onNotifications, onMessages, onAvatar }: Props) {
   const insets = useSafeAreaInsets();
+  const avatarName = name || initials || '?';
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
       {/* Left: Logo + Title */}
       <View style={styles.left}>
         <View style={styles.logoFrame}>
-          <Image source={hygLogo} style={styles.logo} resizeMode="contain" />
+          <TopBarLogo />
         </View>
         <View>
           <Text style={styles.title}>HYG Portal System</Text>
@@ -34,18 +38,22 @@ export function TopBar({ initials = '?', onNotifications, onMessages, onAvatar }
       {/* Right: Actions */}
       <View style={styles.right}>
         <Pressable style={styles.iconBtn} onPress={onMessages}>
-          <MessageSquare size={20} color="#334155" strokeWidth={2} />
+          <MessageSquare size={20} color={colors.text} strokeWidth={2} />
         </Pressable>
         <Pressable style={styles.iconBtn} onPress={onNotifications}>
-          <Bell size={20} color="#334155" strokeWidth={2} />
+          <Bell size={20} color={colors.text} strokeWidth={2} />
         </Pressable>
         <Pressable style={styles.avatarBtn} onPress={onAvatar}>
-          <Text style={styles.avatarText}>{initials}</Text>
+          <Avatar name={avatarName} photoUrl={photoUrl} size={34} textSize={13} />
         </Pressable>
       </View>
     </View>
   );
 }
+
+const TopBarLogo = memo(function TopBarLogo() {
+  return <Image source={hygPortalLogo} style={styles.logo} resizeMode="contain" fadeDuration={0} />;
+});
 
 const styles = StyleSheet.create({
   container: {
@@ -54,9 +62,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingBottom: 10,
-    backgroundColor: '#ffffff',
+    backgroundColor: colors.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
+    borderBottomColor: colors.border,
   },
   left: {
     flexDirection: 'row',
@@ -67,7 +75,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 8,
-    backgroundColor: '#facc15',
+    backgroundColor: colors.brand.gold,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -78,11 +86,11 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 17,
     fontWeight: fontWeights.bold,
-    color: '#0f172a',
+    color: colors.brand.panel,
   },
   betaBadge: {
     alignSelf: 'flex-start',
-    backgroundColor: '#fef9c3',
+    backgroundColor: colors.background,
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 10,
@@ -91,7 +99,7 @@ const styles = StyleSheet.create({
   betaText: {
     fontSize: 10,
     fontWeight: fontWeights.heavy,
-    color: '#a16207',
+    color: colors.brand.goldStrong,
     letterSpacing: 0.5,
   },
   right: {
@@ -103,7 +111,7 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: '#f1f5f9',
+    backgroundColor: colors.background,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -111,13 +119,8 @@ const styles = StyleSheet.create({
     width: 34,
     height: 34,
     borderRadius: 17,
-    backgroundColor: '#1e293b',
+    backgroundColor: colors.brand.panel,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  avatarText: {
-    fontSize: 13,
-    fontWeight: fontWeights.bold,
-    color: '#ffffff',
   },
 });

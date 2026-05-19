@@ -7,11 +7,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, fontWeights, spacing, radius } from '../theme';
 import { TopBar } from '../components/TopBar';
 import { decideApprovalStep, loadPendingApprovals, type PendingApproval } from '../services/approvals';
+import type { ProfileLoadResult } from '../types/domain';
 
-export function NotificationsScreen() {
+export function NotificationsScreen({ profileResult }: { profileResult?: ProfileLoadResult | null }) {
   const [items, setItems] = useState<PendingApproval[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
+  const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
 
   async function refresh() {
     setIsLoading(true);
@@ -48,7 +50,7 @@ export function NotificationsScreen() {
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar />
+      <TopBar name={profile?.fullName} photoUrl={profile?.photoUrl} />
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Text style={styles.title}>Approvals</Text>
         <Text style={styles.subtitle}>Approve or reject requests assigned to you.</Text>

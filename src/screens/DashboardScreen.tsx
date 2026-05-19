@@ -36,13 +36,12 @@ export function DashboardScreen({
     profileResult?.status === 'linked'
       ? profileResult.profile.fullName
       : userEmail;
-
-  const initials = employeeName.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
+  const photoUrl = profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null;
 
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar initials={initials} />
+      <TopBar name={employeeName} photoUrl={photoUrl} />
       <ScrollView
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
