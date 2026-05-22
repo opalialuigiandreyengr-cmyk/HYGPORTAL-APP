@@ -43,6 +43,7 @@ import { loadEmployeeProfile } from './src/services/profile';
 import { resolveLoginEmail } from './src/services/registerAccount';
 import { loadMyRequests, type MyRequest } from './src/services/requests';
 import { AppToast, type AppToastMessage } from './src/components/AppToast';
+import { ApplyDiscountScreen } from './src/screens/ApplyDiscountScreen';
 import { ApplyEsarfScreen } from './src/screens/ApplyEsarfScreen';
 import { CreateEmployeeProfileScreen } from './src/screens/CreateEmployeeProfileScreen';
 import { DashboardScreen } from './src/screens/DashboardScreen';
@@ -54,7 +55,7 @@ import { RequestsTabScreen } from './src/screens/RequestsTabScreen';
 import { BottomTabBar } from './src/components/BottomTabBar';
 import { hygPortalLogo, preloadHygPortalLogo } from './src/assets/portalLogo';
 import { colors, spacing } from './src/theme';
-import RequestLeave from "./src/screens/RequestLeave.tsx"
+import RequestLeave from './src/screens/RequestLeave';
 import type { ProfileLoadResult, RequestTypeCode } from './src/types/domain';
 import {
   calculateLeaveDays,
@@ -71,10 +72,10 @@ import {
   getLeaveBreakdown,
 } from './src/utils/requestCalculations';
 
-type PortalTab = 'home' | 'requests' | 'approvals' | 'profile';
+type PortalTab = 'home' | 'requests' | 'approvals' | 'perks' | 'profile';
 type PublicScreen = 'login' | 'create_profile' | 'register_account';
 type AdminScreen = 'home' | 'authority' | 'departments' | 'routes' | 'approvers';
-type QuickRequestScreen = 'apply_esarf' | 'request_leave';
+type QuickRequestScreen = 'apply_esarf' | 'request_leave' | 'apply_discount';
 const SUPER_ADMIN_EMAIL = 'hygportal@gmail.com';
 const hygLogo = hygPortalLogo;
 const authorityLevelColors = [
@@ -87,6 +88,10 @@ const authorityLevelColors = [
   { background: '#e2e8f0', text: '#334155' },
   { background: '#fee2e2', text: '#b91c1c' },
 ];
+
+function isApprovalBadgeItem(item: PendingApproval) {
+  return item.request_type_code !== 'employee_perk';
+}
 
 export default function App() {
   const [email, setEmail] = useState('');
@@ -103,16 +108,33 @@ export default function App() {
     offset_balance: 0,
     leave_credit_remaining: 7,
   });
+  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
   const [dashboardStatus, setDashboardStatus] = useState('');
   const [activeRequestType, setActiveRequestType] = useState<RequestTypeCode | null>(null);
   const [activeQuickRequestScreen, setActiveQuickRequestScreen] = useState<QuickRequestScreen | null>(null);
   const [activeTab, setActiveTab] = useState<PortalTab>('home');
   const [publicScreen, setPublicScreen] = useState<PublicScreen>('login');
   const [adminScreen, setAdminScreen] = useState<AdminScreen>('home');
+  const canUseApprovals =
+    profileResult?.status === 'linked' && Number(profileResult.profile.authorityLevel ?? 1) > 1;
 
   useEffect(() => {
     preloadHygPortalLogo();
   }, []);
+
+  useEffect(() => {
+    if (!signedInUser || (signedInUser.email ?? '').toLowerCase() === SUPER_ADMIN_EMAIL) {
+      return;
+    }
+
+    refreshPendingApprovalCount();
+  }, [activeTab, signedInUser]);
+
+  useEffect(() => {
+    if (activeTab === 'approvals' && !canUseApprovals) {
+      setActiveTab('perks');
+    }
+  }, [activeTab, canUseApprovals]);
 
   const dismissAppToast = useCallback(() => {
     setAppToast(null);
@@ -144,6 +166,15 @@ export default function App() {
       setDashboardStatus('');
     } catch (error) {
       setDashboardStatus(error instanceof Error ? error.message : 'Unable to refresh dashboard.');
+    }
+  }
+
+  async function refreshPendingApprovalCount() {
+    try {
+      const approvals = await loadPendingApprovals();
+      setPendingApprovalCount(approvals.filter(isApprovalBadgeItem).length);
+    } catch {
+      setPendingApprovalCount(0);
     }
   }
 
@@ -212,6 +243,7 @@ export default function App() {
       if ((data.user.email ?? '').toLowerCase() !== SUPER_ADMIN_EMAIL) {
         await loadProfileForUser(data.user);
         await refreshDashboard();
+        await refreshPendingApprovalCount();
       }
     }
   }
@@ -285,6 +317,25 @@ export default function App() {
     if (activeQuickRequestScreen === 'request_leave') {
       return withToast(
         <RequestLeave
+          name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
+          photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
+          leaveCreditRemaining={dashboardSummary.leave_credit_remaining}
+          onBack={() => setActiveQuickRequestScreen(null)}
+          onToast={setAppToast}
+          onSubmitted={async () => {
+            setActiveQuickRequestScreen(null);
+            setActiveTab('requests');
+            await refreshDashboard();
+          }}
+        />,
+      );
+    }
+
+    if (activeQuickRequestScreen === 'apply_discount') {
+      return withToast(
+        <ApplyDiscountScreen
+          name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
+          photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
           onBack={() => setActiveQuickRequestScreen(null)}
           onToast={setAppToast}
           onSubmitted={async () => {
@@ -303,13 +354,27 @@ export default function App() {
       setActiveTab('home');
       setActiveQuickRequestScreen(null);
       setDashboardSummary({ pending_requests: 0, pending_approvals: 0, offset_balance: 0, leave_credit_remaining: 7 });
+      setPendingApprovalCount(0);
     };
 
     let tabContent: ReactNode = null;
     if (activeTab === 'requests') {
       tabContent = <RequestsTabScreen profileResult={profileResult} />;
-    } else if (activeTab === 'approvals') {
-      tabContent = <NotificationsScreen profileResult={profileResult} />;
+    } else if (activeTab === 'approvals' && canUseApprovals) {
+      tabContent = <NotificationsScreen profileResult={profileResult} onCountChange={setPendingApprovalCount} />;
+    } else if (activeTab === 'perks') {
+      tabContent = (
+        <ApplyDiscountScreen
+          name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
+          photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
+          onBack={() => setActiveTab('home')}
+          onToast={setAppToast}
+          onSubmitted={async () => {
+            setActiveTab('requests');
+            await refreshDashboard();
+          }}
+        />
+      );
     } else if (activeTab === 'profile') {
       tabContent = (
         <ProfileTabScreen
@@ -327,10 +392,9 @@ export default function App() {
           userEmail={signedInUser.email ?? 'Employee'}
           summary={dashboardSummary}
           profileResult={profileResult}
-          isLoadingProfile={isLoadingProfile}
           onRefreshDashboard={refreshDashboard}
           onRefreshProfile={() => loadProfileForUser(signedInUser)}
-          onRequestType={setActiveRequestType}
+          onOpenProfile={() => setActiveTab('profile')}
         />
       );
     }
@@ -341,8 +405,12 @@ export default function App() {
         <BottomTabBar
           activeTab={activeTab}
           onChange={setActiveTab}
+          approvalCount={pendingApprovalCount}
+          showApprovals={canUseApprovals}
+          showApplyDiscount={canUseApprovals}
           onApplyEsarf={() => setActiveQuickRequestScreen('apply_esarf')}
           onRequestLeave={() => setActiveQuickRequestScreen('request_leave')}
+          onApplyDiscount={() => setActiveQuickRequestScreen('apply_discount')}
         />
       </View>,
     );
@@ -1013,7 +1081,9 @@ function AdminApproversScreen({ onBack }: { onBack: () => void }) {
                   <View key={key} style={styles.approverRow}>
                     <View style={styles.departmentPositionText}>
                       <Text style={styles.departmentPositionName} numberOfLines={1}>{item.full_name}</Text>
-                      <Text style={styles.departmentPositionMeta}>{item.position_name} | L{item.position_level || '-'}</Text>
+                      <Text style={styles.departmentPositionMeta}>
+                        {item.company_name} | {item.position_name} | L{item.position_level || '-'}
+                      </Text>
                       <Text style={styles.departmentPositionMeta}>
                         {item.current_authority_level ? `Approver L${item.current_authority_level}` : 'Not assigned'}
                       </Text>

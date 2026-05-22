@@ -15,12 +15,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, fontWeights, spacing } from '../theme';
 
-export type TabKey = 'home' | 'requests' | 'approvals' | 'profile';
+export type TabKey = 'home' | 'requests' | 'approvals' | 'perks' | 'profile';
 
 const tabs: { key: TabKey; label: string; icon: typeof Home }[] = [
   { key: 'home', label: 'Home', icon: Home },
   { key: 'requests', label: 'Requests', icon: ClipboardList },
   { key: 'approvals', label: 'Approvals', icon: Bell },
+  { key: 'perks', label: 'Perks', icon: Tag },
   { key: 'profile', label: 'Profile', icon: User },
 ];
 
@@ -37,11 +38,19 @@ export function BottomTabBar({
   onChange,
   onApplyEsarf,
   onRequestLeave,
+  onApplyDiscount,
+  approvalCount = 0,
+  showApprovals = true,
+  showApplyDiscount = true,
 }: {
   activeTab: TabKey;
   onChange: (tab: TabKey) => void;
   onApplyEsarf?: () => void;
   onRequestLeave?: () => void;
+  onApplyDiscount?: () => void;
+  approvalCount?: number;
+  showApprovals?: boolean;
+  showApplyDiscount?: boolean;
 }) {
   const insets = useSafeAreaInsets();
   const transitionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -98,6 +107,8 @@ export function BottomTabBar({
       onApplyEsarf?.();
     } else if (key === 'request_leave') {
       onRequestLeave?.();
+    } else if (key === 'apply_discount') {
+      onApplyDiscount?.();
     }
   }
 
@@ -105,6 +116,14 @@ export function BottomTabBar({
     inputRange: [0, 1],
     outputRange: [14, 0],
   });
+  const leftTabs = tabs.slice(0, 2);
+  const rightTabs = [
+    showApprovals ? tabs.find((tab) => tab.key === 'approvals')! : tabs.find((tab) => tab.key === 'perks')!,
+    tabs.find((tab) => tab.key === 'profile')!,
+  ];
+  const visibleQuickActions = showApplyDiscount
+    ? quickActions
+    : quickActions.filter((action) => action.key !== 'apply_discount');
 
   return (
     <View style={styles.wrap} pointerEvents="box-none">
@@ -130,7 +149,7 @@ export function BottomTabBar({
           ]}
           pointerEvents={isActionMenuOpen ? 'auto' : 'none'}
         >
-          {quickActions.map(({ key, label, icon: Icon }) => (
+          {visibleQuickActions.map(({ key, label, icon: Icon }) => (
             <Pressable
               key={label}
               style={({ pressed }) => [styles.actionItem, pressed ? styles.actionItemPressed : null]}
@@ -146,8 +165,9 @@ export function BottomTabBar({
       ) : null}
 
       <View style={[styles.container, { paddingBottom: Math.max(insets.bottom, 8) }]}>
-        {tabs.slice(0, 2).map(({ key, label, icon: Icon }) => {
+        {leftTabs.map(({ key, label, icon: Icon }) => {
           const active = activeTab === key;
+          const count = key === 'approvals' ? approvalCount : 0;
           return (
             <Pressable
               key={key}
@@ -158,11 +178,14 @@ export function BottomTabBar({
               ]}
               onPress={() => changeTab(key)}
             >
-              <Icon
-                size={22}
-                color={active ? colors.brand.gold : '#cbd5e1'}
-                strokeWidth={active ? 2.8 : 2.3}
-              />
+              <View style={styles.iconSlot}>
+                <Icon
+                  size={22}
+                  color={active ? colors.brand.gold : '#cbd5e1'}
+                  strokeWidth={active ? 2.8 : 2.3}
+                />
+                {count > 0 ? <TabBadge count={count} /> : null}
+              </View>
               <Text style={[styles.label, active && styles.labelActive]}>{label}</Text>
             </Pressable>
           );
@@ -186,8 +209,9 @@ export function BottomTabBar({
           <Text style={styles.plusLabel}>New</Text>
         </View>
 
-        {tabs.slice(2).map(({ key, label, icon: Icon }) => {
+        {rightTabs.map(({ key, label, icon: Icon }) => {
           const active = activeTab === key;
+          const count = key === 'approvals' ? approvalCount : 0;
           return (
             <Pressable
               key={key}
@@ -198,16 +222,27 @@ export function BottomTabBar({
               ]}
               onPress={() => changeTab(key)}
             >
-              <Icon
-                size={22}
-                color={active ? colors.brand.gold : '#cbd5e1'}
-                strokeWidth={active ? 2.8 : 2.3}
-              />
+              <View style={styles.iconSlot}>
+                <Icon
+                  size={22}
+                  color={active ? colors.brand.gold : '#cbd5e1'}
+                  strokeWidth={active ? 2.8 : 2.3}
+                />
+                {count > 0 ? <TabBadge count={count} /> : null}
+              </View>
               <Text style={[styles.label, active && styles.labelActive]}>{label}</Text>
             </Pressable>
           );
         })}
       </View>
+    </View>
+  );
+}
+
+function TabBadge({ count }: { count: number }) {
+  return (
+    <View style={styles.badge}>
+      <Text style={styles.badgeText}>{count > 99 ? '99+' : count}</Text>
     </View>
   );
 }
@@ -303,6 +338,32 @@ const styles = StyleSheet.create({
   tabPressed: {
     opacity: 0.78,
     transform: [{ scale: 0.96 }],
+  },
+  iconSlot: {
+    width: 28,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badge: {
+    position: 'absolute',
+    top: -5,
+    right: -7,
+    minWidth: 17,
+    height: 17,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#ef4444',
+    borderWidth: 1,
+    borderColor: '#071426',
+  },
+  badgeText: {
+    color: colors.surface,
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: fontWeights.heavy,
   },
   plusSlot: {
     width: 68,

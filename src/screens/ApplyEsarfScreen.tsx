@@ -853,7 +853,7 @@ const styles = StyleSheet.create({
   },
   scroll: {
     padding: spacing.md,
-    paddingBottom: 110,
+    paddingBottom: spacing.xl,
   },
   header: {
     flexDirection: 'row',

@@ -4,7 +4,7 @@ import { Bell, MessageSquare } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, fontWeights } from '../theme';
-import { hygPortalLogo } from '../assets/portalLogo';
+import { hygPortalLogoMobile } from '../assets/portalLogo';
 import { Avatar } from './Avatar';
 
 type Props = {
@@ -52,7 +52,11 @@ export function TopBar({ initials, name, photoUrl, onNotifications, onMessages, 
 }
 
 const TopBarLogo = memo(function TopBarLogo() {
-  return <Image source={hygPortalLogo} style={styles.logo} resizeMode="contain" fadeDuration={0} />;
+  return (
+    <View style={styles.logoFallback}>
+      <Image source={hygPortalLogoMobile} style={styles.logo} resizeMode="contain" fadeDuration={0} />
+    </View>
+  );
 });
 
 const styles = StyleSheet.create({
@@ -80,8 +84,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   logo: {
+    position: 'absolute',
     width: 24,
     height: 24,
+  },
+  logoFallback: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    backgroundColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
   },
   title: {
     fontSize: 17,
