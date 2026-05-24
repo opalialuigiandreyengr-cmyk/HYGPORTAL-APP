@@ -3,12 +3,15 @@ import { createClient } from '@supabase/supabase-js';
 
 import { env } from './env';
 
-export const supabase = createClient(env.supabaseUrl, env.supabaseAnonKey, {
+export const isSupabaseConfigured = Boolean(env.supabaseUrl && env.supabaseAnonKey);
+
+const fallbackSupabaseUrl = 'https://placeholder.supabase.co';
+const fallbackSupabaseAnonKey = 'placeholder-anon-key';
+
+export const supabase = createClient(env.supabaseUrl || fallbackSupabaseUrl, env.supabaseAnonKey || fallbackSupabaseAnonKey, {
   auth: {
     autoRefreshToken: true,
     persistSession: false,
     detectSessionInUrl: false,
   },
 });
-
-export const isSupabaseConfigured = Boolean(env.supabaseUrl && env.supabaseAnonKey);

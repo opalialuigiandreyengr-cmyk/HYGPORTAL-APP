@@ -42,6 +42,7 @@ type Props = {
   result: ProfileLoadResult | null;
   onToast?: (toast: ProfileToast) => void;
   onSignOut: () => void;
+  onAssistant?: () => void;
 };
 
 type ProfileToast = {
@@ -113,7 +114,7 @@ const PROFILE_SECTION_TABS: {
   { key: 'children', label: 'Children', icon: Baby, color: '#f97316' },
 ];
 
-export function ProfileTabScreen({ email, username, isLoading, result, onToast, onSignOut }: Props) {
+export function ProfileTabScreen({ email, username, isLoading, result, onToast, onSignOut, onAssistant }: Props) {
   const resultProfile = result?.status === 'linked' ? result.profile : null;
   const [localProfile, setLocalProfile] = useState<EmployeeProfileSummary | null>(resultProfile);
   const profile = localProfile;
@@ -375,7 +376,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
     return (
       <View style={styles.root}>
         <StatusBar style="dark" />
-        <TopBar name={displayName} photoUrl={profile?.photoUrl} />
+        <TopBar name={displayName} photoUrl={profile?.photoUrl} onMessages={onAssistant} />
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#eab308" />
           <Text style={styles.loadingText}>Loading profile...</Text>
@@ -391,7 +392,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
       style={styles.root}
     >
       <StatusBar style="dark" />
-      <TopBar name={displayName} photoUrl={profile?.photoUrl} />
+      <TopBar name={displayName} photoUrl={profile?.photoUrl} onMessages={onAssistant} />
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}

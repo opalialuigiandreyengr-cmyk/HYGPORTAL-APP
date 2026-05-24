@@ -43,6 +43,8 @@ import { loadEmployeeProfile } from './src/services/profile';
 import { resolveLoginEmail } from './src/services/registerAccount';
 import { loadMyRequests, type MyRequest } from './src/services/requests';
 import { AppToast, type AppToastMessage } from './src/components/AppToast';
+import { StartupSplash } from './src/components/StartupSplash';
+import { AssistantScreen } from './src/screens/AssistantScreen';
 import { ApplyDiscountScreen } from './src/screens/ApplyDiscountScreen';
 import { ApplyEsarfScreen } from './src/screens/ApplyEsarfScreen';
 import { CreateEmployeeProfileScreen } from './src/screens/CreateEmployeeProfileScreen';
@@ -54,6 +56,7 @@ import { RegisterAccountScreen } from './src/screens/RegisterAccountScreen';
 import { RequestsTabScreen } from './src/screens/RequestsTabScreen';
 import { BottomTabBar } from './src/components/BottomTabBar';
 import { hygPortalLogo, preloadHygPortalLogo } from './src/assets/portalLogo';
+import type { AssistantDraft } from './src/services/assistant';
 import { colors, spacing } from './src/theme';
 import RequestLeave from './src/screens/RequestLeave';
 import type { ProfileLoadResult, RequestTypeCode } from './src/types/domain';
@@ -75,7 +78,7 @@ import {
 type PortalTab = 'home' | 'requests' | 'approvals' | 'perks' | 'profile';
 type PublicScreen = 'login' | 'create_profile' | 'register_account';
 type AdminScreen = 'home' | 'authority' | 'departments' | 'routes' | 'approvers';
-type QuickRequestScreen = 'apply_esarf' | 'request_leave' | 'apply_discount';
+type QuickRequestScreen = 'assistant' | 'apply_esarf' | 'request_leave' | 'apply_discount';
 const SUPER_ADMIN_EMAIL = 'hygportal@gmail.com';
 const hygLogo = hygPortalLogo;
 const authorityLevelColors = [
@@ -112,6 +115,8 @@ export default function App() {
   const [dashboardStatus, setDashboardStatus] = useState('');
   const [activeRequestType, setActiveRequestType] = useState<RequestTypeCode | null>(null);
   const [activeQuickRequestScreen, setActiveQuickRequestScreen] = useState<QuickRequestScreen | null>(null);
+  const [assistantDraft, setAssistantDraft] = useState<AssistantDraft | null>(null);
+  const [showStartupSplash, setShowStartupSplash] = useState(true);
   const [activeTab, setActiveTab] = useState<PortalTab>('home');
   const [publicScreen, setPublicScreen] = useState<PublicScreen>('login');
   const [adminScreen, setAdminScreen] = useState<AdminScreen>('home');
@@ -120,6 +125,13 @@ export default function App() {
 
   useEffect(() => {
     preloadHygPortalLogo();
+    const splashTimer = setTimeout(() => {
+      setShowStartupSplash(false);
+    }, 1600);
+
+    return () => {
+      clearTimeout(splashTimer);
+    };
   }, []);
 
   useEffect(() => {
@@ -139,6 +151,10 @@ export default function App() {
   const dismissAppToast = useCallback(() => {
     setAppToast(null);
   }, []);
+
+  if (showStartupSplash) {
+    return <StartupSplash />;
+  }
 
   function withToast(screen: ReactNode) {
     return (
@@ -176,6 +192,27 @@ export default function App() {
     } catch {
       setPendingApprovalCount(0);
     }
+  }
+
+  function openAssistantDraft(draft: AssistantDraft) {
+    setAssistantDraft(draft);
+    if (draft.intent === 'draft_leave_request') {
+      setActiveQuickRequestScreen('request_leave');
+    } else if (draft.intent === 'draft_esarf_request') {
+      setActiveQuickRequestScreen('apply_esarf');
+    } else {
+      setActiveQuickRequestScreen('apply_discount');
+    }
+  }
+
+  function closeQuickRequest() {
+    setActiveQuickRequestScreen(null);
+    setAssistantDraft(null);
+  }
+
+  function openQuickRequest(screen: QuickRequestScreen) {
+    setAssistantDraft(null);
+    setActiveQuickRequestScreen(screen);
   }
 
   async function signIn() {
@@ -278,6 +315,7 @@ export default function App() {
             setProfileResult(null);
             setActiveTab('home');
             setActiveQuickRequestScreen(null);
+            setAssistantDraft(null);
             setAdminScreen('home');
           }}
         />,
@@ -298,15 +336,31 @@ export default function App() {
       );
     }
 
+    if (activeQuickRequestScreen === 'assistant') {
+      return withToast(
+        <AssistantScreen
+          name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
+          photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
+          leaveCreditRemaining={dashboardSummary.leave_credit_remaining}
+          offsetBalance={dashboardSummary.offset_balance}
+          onBack={closeQuickRequest}
+          onOpenDraft={openAssistantDraft}
+        />,
+      );
+    }
+
     if (activeQuickRequestScreen === 'apply_esarf') {
       return withToast(
         <ApplyEsarfScreen
           name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
           photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
-          onBack={() => setActiveQuickRequestScreen(null)}
+          offsetBalance={dashboardSummary.offset_balance}
+          initialDraft={assistantDraft?.intent === 'draft_esarf_request' ? assistantDraft : null}
+          onAssistant={() => openQuickRequest('assistant')}
+          onBack={closeQuickRequest}
           onToast={setAppToast}
           onSubmitted={async () => {
-            setActiveQuickRequestScreen(null);
+            closeQuickRequest();
             setActiveTab('requests');
             await refreshDashboard();
           }}
@@ -320,10 +374,12 @@ export default function App() {
           name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
           photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
           leaveCreditRemaining={dashboardSummary.leave_credit_remaining}
-          onBack={() => setActiveQuickRequestScreen(null)}
+          initialDraft={assistantDraft?.intent === 'draft_leave_request' ? assistantDraft : null}
+          onAssistant={() => openQuickRequest('assistant')}
+          onBack={closeQuickRequest}
           onToast={setAppToast}
           onSubmitted={async () => {
-            setActiveQuickRequestScreen(null);
+            closeQuickRequest();
             setActiveTab('requests');
             await refreshDashboard();
           }}
@@ -336,10 +392,12 @@ export default function App() {
         <ApplyDiscountScreen
           name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
           photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
-          onBack={() => setActiveQuickRequestScreen(null)}
+          initialDraft={assistantDraft?.intent === 'draft_perk_request' ? assistantDraft : null}
+          onAssistant={() => openQuickRequest('assistant')}
+          onBack={closeQuickRequest}
           onToast={setAppToast}
           onSubmitted={async () => {
-            setActiveQuickRequestScreen(null);
+            closeQuickRequest();
             setActiveTab('requests');
             await refreshDashboard();
           }}
@@ -353,20 +411,28 @@ export default function App() {
       setProfileResult(null);
       setActiveTab('home');
       setActiveQuickRequestScreen(null);
+      setAssistantDraft(null);
       setDashboardSummary({ pending_requests: 0, pending_approvals: 0, offset_balance: 0, leave_credit_remaining: 7 });
       setPendingApprovalCount(0);
     };
 
     let tabContent: ReactNode = null;
     if (activeTab === 'requests') {
-      tabContent = <RequestsTabScreen profileResult={profileResult} />;
+      tabContent = <RequestsTabScreen profileResult={profileResult} onAssistant={() => openQuickRequest('assistant')} />;
     } else if (activeTab === 'approvals' && canUseApprovals) {
-      tabContent = <NotificationsScreen profileResult={profileResult} onCountChange={setPendingApprovalCount} />;
+      tabContent = (
+        <NotificationsScreen
+          profileResult={profileResult}
+          onCountChange={setPendingApprovalCount}
+          onAssistant={() => openQuickRequest('assistant')}
+        />
+      );
     } else if (activeTab === 'perks') {
       tabContent = (
         <ApplyDiscountScreen
           name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
           photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
+          onAssistant={() => openQuickRequest('assistant')}
           onBack={() => setActiveTab('home')}
           onToast={setAppToast}
           onSubmitted={async () => {
@@ -384,6 +450,7 @@ export default function App() {
           result={profileResult}
           onToast={setAppToast}
           onSignOut={signOut}
+          onAssistant={() => openQuickRequest('assistant')}
         />
       );
     } else {
@@ -395,6 +462,7 @@ export default function App() {
           onRefreshDashboard={refreshDashboard}
           onRefreshProfile={() => loadProfileForUser(signedInUser)}
           onOpenProfile={() => setActiveTab('profile')}
+          onAssistant={() => openQuickRequest('assistant')}
         />
       );
     }
@@ -408,9 +476,9 @@ export default function App() {
           approvalCount={pendingApprovalCount}
           showApprovals={canUseApprovals}
           showApplyDiscount={canUseApprovals}
-          onApplyEsarf={() => setActiveQuickRequestScreen('apply_esarf')}
-          onRequestLeave={() => setActiveQuickRequestScreen('request_leave')}
-          onApplyDiscount={() => setActiveQuickRequestScreen('apply_discount')}
+          onApplyEsarf={() => openQuickRequest('apply_esarf')}
+          onRequestLeave={() => openQuickRequest('request_leave')}
+          onApplyDiscount={() => openQuickRequest('apply_discount')}
         />
       </View>,
     );

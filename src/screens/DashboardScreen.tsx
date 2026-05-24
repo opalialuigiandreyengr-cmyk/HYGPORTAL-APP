@@ -27,6 +27,7 @@ type Props = {
   onRefreshDashboard: () => void;
   onRefreshProfile: () => void;
   onOpenProfile: () => void;
+  onAssistant?: () => void;
 };
 
 export function DashboardScreen({
@@ -36,6 +37,7 @@ export function DashboardScreen({
   onRefreshDashboard,
   onRefreshProfile,
   onOpenProfile,
+  onAssistant,
 }: Props) {
   const [perkUsage, setPerkUsage] = useState<PerkUsage | null>(null);
   const [recentRequests, setRecentRequests] = useState<MyRequest[]>([]);
@@ -78,7 +80,7 @@ export function DashboardScreen({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={employeeName} photoUrl={photoUrl} />
+      <TopBar name={employeeName} photoUrl={photoUrl} onMessages={onAssistant} />
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <View style={styles.heroPanel}>
           <View style={styles.heroTopRow}>

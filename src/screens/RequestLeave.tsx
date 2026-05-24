@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   Keyboard,
   Modal,
   Platform,
@@ -26,6 +27,7 @@ import { TopBar } from '../components/TopBar';
 import type { AppToastMessage } from '../components/AppToast';
 import { leaveCategoryOptions, leaveTypeOptions } from '../constants/requestOptions';
 import { supabase } from '../lib/supabase';
+import type { AssistantDraft } from '../services/assistant';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { calculateLeaveDays, dateStringToDate, formatDateInput } from '../utils/dateTime';
 import { getDisabledLeaveTypes, getLeaveBreakdown } from '../utils/requestCalculations';
@@ -37,6 +39,8 @@ type RequestLeaveProps = {
   name?: string | null;
   photoUrl?: string | null;
   leaveCreditRemaining?: number;
+  initialDraft?: Extract<AssistantDraft, { intent: 'draft_leave_request' }> | null;
+  onAssistant?: () => void;
   onBack?: () => void;
   onToast?: (toast: AppToastMessage) => void;
   onSubmitted?: () => void | Promise<void>;
@@ -48,17 +52,19 @@ const RequestLeave = ({
   name,
   photoUrl,
   leaveCreditRemaining = 7,
+  initialDraft,
+  onAssistant,
   onBack,
   onToast,
   onSubmitted,
 }: RequestLeaveProps) => {
-  const [dateFrom, setDateFrom] = useState(today);
-  const [dateTo, setDateTo] = useState(today);
-  const [leaveType, setLeaveType] = useState('With Pay');
-  const [leaveCategory, setLeaveCategory] = useState('Vacation Leave');
+  const [dateFrom, setDateFrom] = useState(initialDraft?.fields.startDate ?? today);
+  const [dateTo, setDateTo] = useState(initialDraft?.fields.endDate ?? initialDraft?.fields.startDate ?? today);
+  const [leaveType, setLeaveType] = useState(initialDraft?.fields.leaveType ?? 'With Pay');
+  const [leaveCategory, setLeaveCategory] = useState(initialDraft?.fields.leaveCategory ?? 'Vacation Leave');
   const [paidLeaveDays, setPaidLeaveDays] = useState('1');
   const [unpaidLeaveDays, setUnpaidLeaveDays] = useState('0');
-  const [reason, setReason] = useState('');
+  const [reason, setReason] = useState(initialDraft?.fields.reason ?? '');
   const [activePicker, setActivePicker] = useState<'date_from' | 'date_to' | null>(null);
   const [activeSelect, setActiveSelect] = useState<'leave_type' | 'leave_category' | null>(null);
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
@@ -79,6 +85,29 @@ const RequestLeave = ({
     leaveCreditRemaining > 0
       ? Math.min(100, Math.round((leaveBreakdown.paidDays / leaveCreditRemaining) * 100))
       : 0;
+  const hasUnsavedChanges =
+    dateFrom !== (initialDraft?.fields.startDate ?? today) ||
+    dateTo !== (initialDraft?.fields.endDate ?? initialDraft?.fields.startDate ?? today) ||
+    leaveType !== (initialDraft?.fields.leaveType ?? 'With Pay') ||
+    leaveCategory !== (initialDraft?.fields.leaveCategory ?? 'Vacation Leave') ||
+    paidLeaveDays !== '1' ||
+    unpaidLeaveDays !== '0' ||
+    reason !== (initialDraft?.fields.reason ?? '');
+
+  function confirmDiscard(action?: () => void) {
+    if (!action) {
+      return;
+    }
+    if (!hasUnsavedChanges || isSubmitting) {
+      action();
+      return;
+    }
+
+    Alert.alert('Discard leave request?', 'Your leave draft has unsaved changes.', [
+      { text: 'Keep editing', style: 'cancel' },
+      { text: 'Discard', style: 'destructive', onPress: action },
+    ]);
+  }
 
   useEffect(() => {
     const showSubscription = Keyboard.addListener('keyboardDidShow', (event) => {
@@ -264,7 +293,7 @@ const RequestLeave = ({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={name} photoUrl={photoUrl} />
+      <TopBar name={name} photoUrl={photoUrl} onMessages={onAssistant ? () => confirmDiscard(onAssistant) : undefined} />
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}
@@ -272,7 +301,7 @@ const RequestLeave = ({
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.header}>
-          <Pressable style={styles.backButton} onPress={onBack}>
+          <Pressable style={styles.backButton} onPress={() => confirmDiscard(onBack)}>
             <ArrowLeft size={20} color={colors.text} strokeWidth={2.5} />
           </Pressable>
           <View style={styles.headerText}>
@@ -412,7 +441,7 @@ const RequestLeave = ({
         </Section>
 
         <View style={styles.actions}>
-          <Pressable disabled={isSubmitting} style={styles.cancelButton} onPress={onBack}>
+          <Pressable disabled={isSubmitting} style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
             <Text style={styles.cancelText}>Cancel</Text>
           </Pressable>
           <Pressable

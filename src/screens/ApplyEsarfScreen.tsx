@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   Keyboard,
   Modal,
   Platform,
@@ -26,6 +27,7 @@ import {
 import { TopBar } from '../components/TopBar';
 import { dayOffOptions, payrollClassOptions, scheduleOptions } from '../constants/requestOptions';
 import { supabase } from '../lib/supabase';
+import type { AssistantDraft } from '../services/assistant';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import type { RequestTypeCode } from '../types/domain';
 import { calculateRequestHours } from '../utils/requestCalculations';
@@ -64,25 +66,31 @@ const exclusiveTransactionGroups = [
 export function ApplyEsarfScreen({
   name,
   photoUrl,
+  offsetBalance = 0,
+  initialDraft,
+  onAssistant,
   onBack,
   onSubmitted,
   onToast,
 }: {
   name?: string | null;
   photoUrl?: string | null;
+  offsetBalance?: number;
+  initialDraft?: Extract<AssistantDraft, { intent: 'draft_esarf_request' }> | null;
+  onAssistant?: () => void;
   onBack: () => void;
   onSubmitted?: () => void | Promise<void>;
   onToast?: (toast: { tone: 'success' | 'error' | 'warning'; title: string; message: string }) => void;
 }) {
-  const [schedule, setSchedule] = useState('Select schedule');
-  const [dayOff, setDayOff] = useState('Select day');
-  const [payrollClass, setPayrollClass] = useState('Select payroll class');
-  const [transactions, setTransactions] = useState<string[]>([]);
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
-  const [timeFrom, setTimeFrom] = useState('');
-  const [timeTo, setTimeTo] = useState('');
-  const [reason, setReason] = useState('');
+  const [schedule, setSchedule] = useState(initialDraft?.fields.schedule ?? 'Select schedule');
+  const [dayOff, setDayOff] = useState(initialDraft?.fields.dayOff ?? 'Select day');
+  const [payrollClass, setPayrollClass] = useState(initialDraft?.fields.payrollClass ?? 'Select payroll class');
+  const [transactions, setTransactions] = useState<string[]>(initialDraft?.fields.transactions ?? []);
+  const [dateFrom, setDateFrom] = useState(initialDraft?.fields.dateFrom ?? '');
+  const [dateTo, setDateTo] = useState(initialDraft?.fields.dateTo ?? initialDraft?.fields.dateFrom ?? '');
+  const [timeFrom, setTimeFrom] = useState(initialDraft?.fields.timeFrom ?? '');
+  const [timeTo, setTimeTo] = useState(initialDraft?.fields.timeTo ?? '');
+  const [reason, setReason] = useState(initialDraft?.fields.reason ?? '');
   const [activePicker, setActivePicker] = useState<'date_from' | 'date_to' | 'time_from' | 'time_to' | null>(null);
   const [activeSelect, setActiveSelect] = useState<'schedule' | 'day_off' | 'payroll_class' | null>(null);
   const [showSubmissionNotes, setShowSubmissionNotes] = useState(false);
@@ -233,14 +241,37 @@ export function ApplyEsarfScreen({
   }
 
   const selectSheet = getSelectSheet(activeSelect, schedule, dayOff, payrollClass);
+  const isUseOffsetSelected = transactions.includes('use_offset');
   const totalHours = calculateRequestHours({
-    requestType: 'overtime',
+    requestType: isUseOffsetSelected ? 'use_offset' : 'overtime',
     dateFrom,
     timeFrom,
     timeTo,
     timeSchedule: scheduleOptions.includes(schedule) ? schedule : '',
     dayOff: dayOffOptions.includes(dayOff) ? dayOff : '',
   });
+  const hasUnsavedChanges =
+    schedule !== (initialDraft?.fields.schedule ?? 'Select schedule') ||
+    dayOff !== (initialDraft?.fields.dayOff ?? 'Select day') ||
+    payrollClass !== (initialDraft?.fields.payrollClass ?? 'Select payroll class') ||
+    transactions.join('|') !== (initialDraft?.fields.transactions ?? []).join('|') ||
+    dateFrom !== (initialDraft?.fields.dateFrom ?? '') ||
+    dateTo !== (initialDraft?.fields.dateTo ?? initialDraft?.fields.dateFrom ?? '') ||
+    timeFrom !== (initialDraft?.fields.timeFrom ?? '') ||
+    timeTo !== (initialDraft?.fields.timeTo ?? '') ||
+    reason !== (initialDraft?.fields.reason ?? '');
+
+  function confirmDiscard(action: () => void) {
+    if (!hasUnsavedChanges || isSubmitting) {
+      action();
+      return;
+    }
+
+    Alert.alert('Discard request?', 'Your ESARF draft has unsaved changes.', [
+      { text: 'Keep editing', style: 'cancel' },
+      { text: 'Discard', style: 'destructive', onPress: action },
+    ]);
+  }
 
   async function submit() {
     if (isSubmitting) {
@@ -257,6 +288,7 @@ export function ApplyEsarfScreen({
       timeFrom,
       timeTo,
       totalHours,
+      offsetBalance,
       reason,
     });
     setValidationErrors(nextErrors);
@@ -326,7 +358,7 @@ export function ApplyEsarfScreen({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={name} photoUrl={photoUrl} />
+      <TopBar name={name} photoUrl={photoUrl} onMessages={onAssistant ? () => confirmDiscard(onAssistant) : undefined} />
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}
@@ -334,7 +366,7 @@ export function ApplyEsarfScreen({
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.header}>
-          <Pressable style={styles.backButton} onPress={onBack}>
+          <Pressable style={styles.backButton} onPress={() => confirmDiscard(onBack)}>
             <ArrowLeft size={20} color={colors.text} strokeWidth={2.5} />
           </Pressable>
           <View style={styles.headerText}>
@@ -472,6 +504,16 @@ export function ApplyEsarfScreen({
           </View>
           {validationErrors.totalHours ? <Text style={styles.fieldError}>{validationErrors.totalHours}</Text> : null}
 
+          {isUseOffsetSelected ? (
+            <View style={[styles.offsetBalancePanel, totalHours > offsetBalance ? styles.offsetBalancePanelInvalid : null]}>
+              <Text style={styles.offsetBalanceLabel}>Offset balance available</Text>
+              <Text style={styles.offsetBalanceValue}>{offsetBalance.toFixed(2)} hour(s)</Text>
+              <Text style={styles.offsetBalanceHint}>
+                Use Offset requests cannot exceed your available offset balance.
+              </Text>
+            </View>
+          ) : null}
+
           <FieldLabel label="Reason" />
           <Pressable
             style={[styles.reasonInput, validationErrors.reason ? styles.inputError : null]}
@@ -485,7 +527,7 @@ export function ApplyEsarfScreen({
         </Section>
 
         <View style={styles.actions}>
-          <Pressable disabled={isSubmitting} style={styles.cancelButton} onPress={onBack}>
+          <Pressable disabled={isSubmitting} style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
             <Text style={styles.cancelText}>Cancel</Text>
           </Pressable>
           <Pressable
@@ -680,6 +722,7 @@ function validateForm({
   timeFrom,
   timeTo,
   totalHours,
+  offsetBalance,
   reason,
 }: {
   schedule: string;
@@ -691,6 +734,7 @@ function validateForm({
   timeFrom: string;
   timeTo: string;
   totalHours: number;
+  offsetBalance: number;
   reason: string;
 }) {
   const errors: Partial<Record<ValidationKey, string>> = {};
@@ -707,6 +751,9 @@ function validateForm({
   if (!timeFrom) errors.timeFrom = 'Required';
   if (!timeTo) errors.timeTo = 'Required';
   if (dateFrom && timeFrom && timeTo && totalHours <= 0) errors.totalHours = 'Required';
+  if (transactions.includes('use_offset') && totalHours > offsetBalance) {
+    errors.totalHours = `Use Offset cannot exceed your ${offsetBalance.toFixed(2)} hour offset balance.`;
+  }
   if (!reason.trim()) errors.reason = 'Required';
 
   return errors;
@@ -1091,6 +1138,39 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 15,
     fontWeight: fontWeights.bold,
+  },
+  offsetBalancePanel: {
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    backgroundColor: '#eff6ff',
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  offsetBalancePanelInvalid: {
+    borderColor: 'rgba(220, 38, 38, 0.42)',
+    backgroundColor: '#fff7f7',
+  },
+  offsetBalanceLabel: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: fontWeights.bold,
+    textTransform: 'uppercase',
+  },
+  offsetBalanceValue: {
+    color: colors.text,
+    fontSize: 20,
+    lineHeight: 25,
+    fontWeight: fontWeights.heavy,
+    marginTop: 2,
+  },
+  offsetBalanceHint: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: fontWeights.medium,
+    marginTop: 3,
   },
   actions: {
     flexDirection: 'row',

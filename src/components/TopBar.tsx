@@ -1,6 +1,6 @@
 import { memo } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Bell, MessageSquare } from 'lucide-react-native';
+import { Bell, Bot } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, fontWeights } from '../theme';
@@ -37,8 +37,15 @@ export function TopBar({ initials, name, photoUrl, onNotifications, onMessages, 
 
       {/* Right: Actions */}
       <View style={styles.right}>
-        <Pressable style={styles.iconBtn} onPress={onMessages}>
-          <MessageSquare size={20} color={colors.text} strokeWidth={2} />
+        <Pressable
+          disabled={!onMessages}
+          style={[styles.iconBtn, styles.assistBtn, !onMessages ? styles.iconBtnDisabled : null]}
+          onPress={onMessages}
+        >
+          <Bot size={21} color={colors.brand.ink} strokeWidth={2.7} />
+          <View style={styles.aiBadge}>
+            <Text style={styles.aiBadgeText}>AI</Text>
+          </View>
         </Pressable>
         <Pressable style={styles.iconBtn} onPress={onNotifications}>
           <Bell size={20} color={colors.text} strokeWidth={2} />
@@ -128,6 +135,39 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  assistBtn: {
+    backgroundColor: colors.brand.gold,
+    borderWidth: 2,
+    borderColor: '#fef3c7',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.16,
+    shadowRadius: 5,
+  },
+  iconBtnDisabled: {
+    opacity: 0.45,
+  },
+  aiBadge: {
+    position: 'absolute',
+    top: -5,
+    right: -6,
+    minWidth: 18,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: colors.primary,
+    borderWidth: 1,
+    borderColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  aiBadgeText: {
+    color: colors.surface,
+    fontSize: 8,
+    lineHeight: 10,
+    fontWeight: fontWeights.heavy,
   },
   avatarBtn: {
     width: 34,

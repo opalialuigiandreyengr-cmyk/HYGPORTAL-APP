@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { ArrowLeft, BadgePercent, CalendarDays, Check, ChevronDown, Plus, ShoppingCart, X } from 'lucide-react-native';
@@ -7,6 +7,7 @@ import { ArrowLeft, BadgePercent, CalendarDays, Check, ChevronDown, Plus, Shoppi
 import { TopBar } from '../components/TopBar';
 import type { AppToastMessage } from '../components/AppToast';
 import { colors, fontWeights, radius, spacing } from '../theme';
+import type { AssistantDraft } from '../services/assistant';
 import { loadPerkUsage, startPerkRequest, verifyPerkRequest, type PerkProductInput, type PerkUsage } from '../services/perks';
 import { formatDateInput, dateStringToDate } from '../utils/dateTime';
 
@@ -30,24 +31,33 @@ const today = formatDateInput(new Date());
 export function ApplyDiscountScreen({
   name,
   photoUrl,
+  initialDraft,
+  onAssistant,
   onBack,
   onToast,
   onSubmitted,
 }: {
   name?: string | null;
   photoUrl?: string | null;
+  initialDraft?: Extract<AssistantDraft, { intent: 'draft_perk_request' }> | null;
+  onAssistant?: () => void;
   onBack: () => void;
   onToast?: (toast: AppToastMessage) => void;
   onSubmitted?: () => void | Promise<void>;
 }) {
-  const [mode, setMode] = useState<DiscountMode>('cash');
-  const [transactionDate, setTransactionDate] = useState(today);
+  const [mode, setMode] = useState<DiscountMode>(initialDraft?.fields.mode ?? 'cash');
+  const [transactionDate, setTransactionDate] = useState(initialDraft?.fields.transactionDate ?? today);
   const [activePicker, setActivePicker] = useState(false);
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
   const [activeProductId, setActiveProductId] = useState<string | null>(null);
   const [productQuery, setProductQuery] = useState('');
   const [productLines, setProductLines] = useState<ProductLine[]>([
-    { id: '1', productName: 'Select product', quantity: '0', unitPrice: '0.00' },
+    {
+      id: '1',
+      productName: initialDraft?.fields.productName ?? 'Select product',
+      quantity: initialDraft?.fields.quantity ?? '0',
+      unitPrice: initialDraft?.fields.unitPrice ?? '0.00',
+    },
   ]);
   const [products, setProducts] = useState<ProductOption[]>([]);
   const [isLoadingProducts, setIsLoadingProducts] = useState(false);
@@ -77,6 +87,28 @@ export function ApplyDiscountScreen({
   }, [mode, productLines, usage?.creditFirstDiscountUsed]);
 
   const activeProduct = productLines.find((line) => line.id === activeProductId) ?? null;
+  const initialProductLine = {
+    productName: initialDraft?.fields.productName ?? 'Select product',
+    quantity: initialDraft?.fields.quantity ?? '0',
+    unitPrice: initialDraft?.fields.unitPrice ?? '0.00',
+  };
+  const hasUnsavedChanges =
+    mode !== (initialDraft?.fields.mode ?? 'cash') ||
+    transactionDate !== (initialDraft?.fields.transactionDate ?? today) ||
+    productLines.length !== 1 ||
+    productLines.some((line, index) => {
+      if (index > 0) {
+        return true;
+      }
+      return (
+        line.productName !== initialProductLine.productName ||
+        line.quantity !== initialProductLine.quantity ||
+        line.unitPrice !== initialProductLine.unitPrice
+      );
+    }) ||
+    Boolean(emailInput.trim()) ||
+    Boolean(approvalCode.trim()) ||
+    Boolean(pendingVerification);
   const filteredProducts = useMemo(() => {
     const normalizedQuery = productQuery.trim().toLowerCase();
     if (!normalizedQuery) return products;
@@ -87,6 +119,18 @@ export function ApplyDiscountScreen({
     loadInventoryProducts();
     refreshUsage();
   }, []);
+
+  function confirmDiscard(action: () => void) {
+    if (!hasUnsavedChanges || isSubmitting || isVerifying) {
+      action();
+      return;
+    }
+
+    Alert.alert('Discard perk request?', 'Your perk request has unsaved changes.', [
+      { text: 'Keep editing', style: 'cancel' },
+      { text: 'Discard', style: 'destructive', onPress: action },
+    ]);
+  }
 
   async function refreshUsage() {
     try {
@@ -276,7 +320,7 @@ export function ApplyDiscountScreen({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={name} photoUrl={photoUrl} />
+      <TopBar name={name} photoUrl={photoUrl} onMessages={onAssistant ? () => confirmDiscard(onAssistant) : undefined} />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
@@ -294,7 +338,7 @@ export function ApplyDiscountScreen({
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.header}>
-          <Pressable style={styles.backButton} onPress={onBack}>
+          <Pressable style={styles.backButton} onPress={() => confirmDiscard(onBack)}>
             <ArrowLeft size={20} color={colors.text} strokeWidth={2.5} />
           </Pressable>
           <View style={styles.headerText}>

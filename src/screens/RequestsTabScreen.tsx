@@ -30,9 +30,10 @@ const pageSize = 10;
 
 type Props = {
   profileResult?: ProfileLoadResult | null;
+  onAssistant?: () => void;
 };
 
-export function RequestsTabScreen({ profileResult }: Props) {
+export function RequestsTabScreen({ profileResult, onAssistant }: Props) {
   const [items, setItems] = useState<MyRequest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
@@ -178,7 +179,7 @@ export function RequestsTabScreen({ profileResult }: Props) {
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={profile?.fullName} photoUrl={profile?.photoUrl} />
+      <TopBar name={profile?.fullName} photoUrl={profile?.photoUrl} onMessages={onAssistant} />
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <View style={styles.filterPanel}>
           <View style={styles.searchRow}>

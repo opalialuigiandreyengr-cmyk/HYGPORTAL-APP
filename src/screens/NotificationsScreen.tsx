@@ -21,9 +21,11 @@ const categoryTabs: { key: CategoryFilter; label: string }[] = [
 export function NotificationsScreen({
   profileResult,
   onCountChange,
+  onAssistant,
 }: {
   profileResult?: ProfileLoadResult | null;
   onCountChange?: (count: number) => void;
+  onAssistant?: () => void;
 }) {
   const [items, setItems] = useState<PendingApproval[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -115,7 +117,7 @@ export function NotificationsScreen({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={profile?.fullName} photoUrl={profile?.photoUrl} />
+      <TopBar name={profile?.fullName} photoUrl={profile?.photoUrl} onMessages={onAssistant} />
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <View style={styles.filterPanel}>
           <View style={styles.searchRow}>
