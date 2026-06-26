@@ -60,7 +60,8 @@ export function ProfilePanel({
       </Text>
       <View style={styles.profileRows}>
         <ProfileRow label="Company" value={profile.companyName} />
-        <ProfileRow label="Store / Department" value={profile.storeName || profile.departmentName} />
+        <ProfileRow label="Department" value={profile.departmentName} />
+        <ProfileRow label="Store" value={profile.storeName} />
         <ProfileRow label="Position" value={profile.positionName} />
         <ProfileRow label="Level" value={profile.authorityLevel ? `Level ${profile.authorityLevel}` : null} />
         <ProfileRow label="Function" value={profile.functionName} />

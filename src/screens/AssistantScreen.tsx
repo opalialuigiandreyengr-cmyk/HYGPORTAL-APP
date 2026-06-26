@@ -14,7 +14,6 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import {
-  ArrowLeft,
   Bot,
   CalendarDays,
   ChevronLeft,
@@ -23,7 +22,6 @@ import {
   HelpCircle,
   ListChecks,
   Send,
-  Sparkles,
   Tag,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -45,6 +43,7 @@ const faqPageSize = 4;
 
 export function AssistantScreen({
   name,
+  username,
   photoUrl,
   leaveCreditRemaining,
   offsetBalance,
@@ -52,6 +51,7 @@ export function AssistantScreen({
   onOpenDraft,
 }: {
   name?: string | null;
+  username?: string | null;
   photoUrl?: string | null;
   leaveCreditRemaining: number;
   offsetBalance: number;
@@ -123,7 +123,15 @@ export function AssistantScreen({
   return (
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <StatusBar style="dark" />
-      <TopBar name={name} photoUrl={photoUrl} />
+      <TopBar
+        name={name}
+        username={username}
+        photoUrl={photoUrl}
+        onBackHome={onBack}
+        backSubtitle="Local AI plan"
+        backTitle="HYG Assist"
+        backAccessory="sparkles"
+      />
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}
@@ -131,19 +139,6 @@ export function AssistantScreen({
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.header}>
-          <Pressable style={styles.backButton} onPress={onBack}>
-            <ArrowLeft size={20} color={colors.text} strokeWidth={2.5} />
-          </Pressable>
-          <View style={styles.headerText}>
-            <Text style={styles.kicker}>Local AI plan</Text>
-            <Text style={styles.title}>HYG Assist</Text>
-          </View>
-          <View style={styles.headerIcon}>
-            <Sparkles size={20} color={colors.brand.ink} strokeWidth={2.7} />
-          </View>
-        </View>
-
         <View style={styles.templatePanel}>
           <Text style={styles.panelTitle}>Request templates</Text>
           <View style={styles.chips}>
@@ -430,45 +425,11 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     paddingBottom: spacing.lg,
   },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: spacing.md,
-  },
-  backButton: {
-    width: 38,
-    height: 38,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerText: {
-    flex: 1,
-  },
-  kicker: {
-    color: colors.primary,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: fontWeights.bold,
-    textTransform: 'uppercase',
-  },
   title: {
     color: colors.text,
     fontSize: 24,
     lineHeight: 30,
     fontWeight: fontWeights.heavy,
-  },
-  headerIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: radius.md,
-    backgroundColor: colors.brand.gold,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   templatePanel: {
     borderRadius: radius.md,

@@ -2,33 +2,53 @@
   "expo": {
     "name": "HYG Portal",
     "slug": "hyg-portal",
-    "version": "1.0.0",
+    "version": "1.5.1",
     "orientation": "portrait",
-    "icon": "./assets/hyg_icon.png",
+    "icon": "./assets/hygapplogo.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/hyg_icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#071426"
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/b0a75d0f-14f4-432f-a404-9b2a62805c4d"
     },
     "ios": {
+      "buildNumber": "16",
       "supportsTablet": true
     },
     "android": {
       "package": "com.hyg.portal",
+      "versionCode": 16,
+      "googleServicesFile": "./google-services.json",
+      "softwareKeyboardLayoutMode": "resize",
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS"
+      ],
       "adaptiveIcon": {
-        "foregroundImage": "./assets/hyg_icon.png",
-        "backgroundColor": "#ffffff"
+        "foregroundImage": "./assets/hygapplogo-adaptive.png",
+        "backgroundColor": "#071426"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "dangerous": {
+        "production": {
+          "serviceWorker": {
+            "register": true
+          }
+        }
+      }
     },
     "plugins": [
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      "expo-mlkit-ocr",
+      "expo-sqlite",
+      "expo-secure-store",
+      "expo-local-authentication",
+      "expo-notifications"
     ],
     "extra": {
       "eas": {

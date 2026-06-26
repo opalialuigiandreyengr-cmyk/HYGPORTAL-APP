@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import {
   ArrowRight,
   BadgePercent,
-  Bell,
   CalendarDays,
   CheckCircle2,
   Clock3,
+  FileText,
   ListChecks,
   RefreshCw,
+  Tag,
   UserCheck,
 } from 'lucide-react-native';
 
@@ -27,7 +28,15 @@ type Props = {
   onRefreshDashboard: () => void;
   onRefreshProfile: () => void;
   onOpenProfile: () => void;
+  onOpenSettings: () => void;
+  onOpenMyTeam?: () => void;
+  onSignOut?: () => void | Promise<void>;
+  notificationCount?: number;
   onAssistant?: () => void;
+  onNotifications?: () => void;
+  onApplyEsarf?: () => void;
+  onRequestLeave?: () => void;
+  onApplyPerks?: () => void;
 };
 
 export function DashboardScreen({
@@ -37,10 +46,20 @@ export function DashboardScreen({
   onRefreshDashboard,
   onRefreshProfile,
   onOpenProfile,
+  onOpenSettings,
+  onOpenMyTeam,
+  onSignOut,
+  notificationCount = 0,
   onAssistant,
+  onNotifications,
+  onApplyEsarf,
+  onRequestLeave,
+  onApplyPerks,
 }: Props) {
   const [perkUsage, setPerkUsage] = useState<PerkUsage | null>(null);
   const [recentRequests, setRecentRequests] = useState<MyRequest[]>([]);
+  const { width } = useWindowDimensions();
+  const isCompactDashboard = width < 390;
 
   const refreshSupplemental = async () => {
     try {
@@ -69,7 +88,6 @@ export function DashboardScreen({
   const orgUnit = profile?.departmentName || profile?.storeName || 'Work unit pending';
   const position = profile?.positionName || 'Position pending';
   const roleLine = `${position} | ${orgUnit}`;
-  const pendingWork = summary.pending_requests + summary.pending_approvals;
   const completion = getProfileCompletion(profile);
   const recentActivity = useMemo(() => {
     return [...recentRequests]
@@ -80,7 +98,19 @@ export function DashboardScreen({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={employeeName} photoUrl={photoUrl} onMessages={onAssistant} />
+      <TopBar
+        name={employeeName}
+        username={profile?.username ?? userEmail}
+        photoUrl={photoUrl}
+        pointsBalance={summary.hyg_points_balance}
+        notificationCount={notificationCount}
+        onMessages={onAssistant}
+        onNotifications={onNotifications}
+        onOpenProfile={onOpenProfile}
+        onOpenSettings={onOpenSettings}
+        onOpenMyTeam={onOpenMyTeam}
+        onSignOut={onSignOut}
+      />
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <View style={styles.heroPanel}>
           <View style={styles.heroTopRow}>
@@ -95,15 +125,25 @@ export function DashboardScreen({
           </View>
         </View>
 
-        <PriorityCard
-          icon={<Bell size={18} color="#b45309" strokeWidth={2.5} />}
-          label="Pending"
-          value={String(pendingWork)}
-          detail={`${summary.pending_requests} requests | ${summary.pending_approvals} approvals`}
-          tone="amber"
-        />
+        <View style={styles.quickActionRow}>
+          <DashboardQuickAction
+            icon={<FileText size={18} color={colors.brand.ink} strokeWidth={2.7} />}
+            label="Apply ESARF"
+            onPress={onApplyEsarf}
+          />
+          <DashboardQuickAction
+            icon={<CalendarDays size={18} color={colors.brand.ink} strokeWidth={2.7} />}
+            label="Request Leave"
+            onPress={onRequestLeave}
+          />
+          <DashboardQuickAction
+            icon={<Tag size={18} color={colors.brand.ink} strokeWidth={2.7} />}
+            label="Apply Perks"
+            onPress={onApplyPerks}
+          />
+        </View>
 
-        <ProfileCompletionCard completion={completion} onPress={onOpenProfile} />
+        {completion.percent < 100 ? <ProfileCompletionCard completion={completion} onPress={onOpenProfile} /> : null}
 
         <View style={styles.metricGrid}>
           <BalanceCard
@@ -114,6 +154,7 @@ export function DashboardScreen({
             trackColor="#bbf7d0"
             fillColor="#16a34a"
             ratio={Math.min(summary.offset_balance / 16, 1)}
+            compact={isCompactDashboard}
           />
           <BalanceCard
             icon={<CalendarDays size={19} color="#6d28d9" strokeWidth={2.5} />}
@@ -123,6 +164,7 @@ export function DashboardScreen({
             trackColor="#ddd6fe"
             fillColor="#7c3aed"
             ratio={Math.min(summary.leave_credit_remaining / 7, 1)}
+            compact={isCompactDashboard}
           />
         </View>
 
@@ -153,32 +195,30 @@ export function DashboardScreen({
   );
 }
 
-function PriorityCard({
+function DashboardQuickAction({
   icon,
   label,
-  value,
-  detail,
-  tone,
+  onPress,
 }: {
   icon: ReactNode;
   label: string;
-  value: string;
-  detail: string;
-  tone: 'amber' | 'blue';
+  onPress?: () => void;
 }) {
   return (
-    <View style={styles.priorityCard}>
-      <View style={[styles.priorityIcon, tone === 'amber' ? styles.priorityIconAmber : styles.priorityIconBlue]}>
-        {icon}
-      </View>
-      <View style={styles.priorityText}>
-        <View style={styles.priorityTopLine}>
-          <Text style={styles.priorityLabel}>{label}</Text>
-          <Text style={styles.priorityValue}>{value}</Text>
-        </View>
-        <Text style={styles.priorityDetail} numberOfLines={1}>{detail}</Text>
-      </View>
-    </View>
+    <Pressable
+      style={({ pressed }) => [
+        styles.quickActionButton,
+        !onPress ? styles.quickActionDisabled : null,
+        pressed ? styles.quickActionPressed : null,
+      ]}
+      onPress={onPress}
+      disabled={!onPress}
+    >
+      <View style={styles.quickActionIcon}>{icon}</View>
+      <Text style={styles.quickActionLabel} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.72}>
+        {label}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -208,19 +248,19 @@ function ProfileCompletionCard({ completion, onPress }: { completion: ProfileCom
 }
 
 function PerksUsageCard({ usage }: { usage: PerkUsage | null }) {
-  const cashLimit = usage?.cashAmountLimit ?? 3000;
-  const cashUsed = usage?.cashAmountUsed ?? 0;
-  const creditLimit = usage?.creditAmountLimit ?? 3000;
+  const sharedLimit = usage?.sharedDiscountAmountLimit ?? 3000;
+  const sharedUsed = usage?.sharedDiscountAmountUsed ?? 0;
+  const creditLimit = usage?.creditAmountLimit ?? usage?.creditTransactionLimit ?? 3000;
   const creditUsed = usage?.creditAmountUsed ?? 0;
-  const cashRatio = cashLimit > 0 ? Math.min(cashUsed / cashLimit, 1) : 0;
-  const creditRatio = creditLimit > 0 ? Math.min(creditUsed / creditLimit, 1) : 0;
+  const sharedRatio = getRemainingRatio(sharedLimit, sharedUsed);
+  const creditRatio = getRemainingRatio(creditLimit, creditUsed);
 
   return (
     <View style={styles.perksPanel}>
       <View style={styles.sectionHeadingRow}>
         <View>
           <Text style={styles.sectionTitle}>Perks Usage</Text>
-          <Text style={styles.sectionSub}>Cash and credit benefit balance</Text>
+          <Text style={styles.sectionSub}>Shared cash and credit discount balance</Text>
         </View>
         <View style={[styles.metricIcon, styles.metricIconAmber]}>
           <BadgePercent size={19} color="#b45309" strokeWidth={2.5} />
@@ -228,19 +268,19 @@ function PerksUsageCard({ usage }: { usage: PerkUsage | null }) {
       </View>
 
       <PerkUsageRow
-        label="Cash"
-        used={cashUsed}
-        limit={cashLimit}
-        detail={`${usage?.cashTransactionsUsed ?? 0}/${usage?.cashTransactionsLimit ?? 6} transactions used`}
-        ratio={cashRatio}
+        label="Shared Discount"
+        used={sharedUsed}
+        limit={sharedLimit}
+        detail={`${usage?.sharedDiscountTransactionsUsed ?? 0}/${usage?.sharedDiscountTransactionsLimit ?? 6} cash or credit transactions used`}
+        ratio={sharedRatio}
         trackColor="#fde68a"
         fillColor="#d97706"
       />
       <PerkUsageRow
-        label="Credit"
+        label="Credit Charge"
         used={creditUsed}
         limit={creditLimit}
-        detail={`${usage?.creditTransactionsUsed ?? 0} credit transactions | First discount ${usage?.creditFirstDiscountUsed ? 'used' : 'available'}`}
+        detail={`${usage?.creditTransactionsUsed ?? 0} credit transaction(s) | Per request threshold`}
         ratio={creditRatio}
         trackColor="#bfdbfe"
         fillColor="#2563eb"
@@ -269,11 +309,13 @@ function PerkUsageRow({
   return (
     <View style={styles.perkUsageRow}>
       <View style={styles.perkUsageTop}>
-        <View>
+        <View style={styles.perkUsageText}>
           <Text style={styles.perkUsageLabel}>{label}</Text>
           <Text style={styles.perkUsageDetail}>{detail}</Text>
         </View>
-        <Text style={styles.perkUsageAmount}>{formatPeso(Math.max(limit - used, 0))}</Text>
+        <Text style={styles.perkUsageAmount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72}>
+          {formatPeso(Math.max(limit - used, 0))}
+        </Text>
       </View>
       <View style={styles.perkUsageMetaRow}>
         <Text style={styles.perkUsageMeta}>Used {formatPeso(used)}</Text>
@@ -284,6 +326,14 @@ function PerkUsageRow({
   );
 }
 
+function getRemainingRatio(limit: number, used: number) {
+  if (limit <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min((limit - used) / limit, 1));
+}
+
 function BalanceCard({
   icon,
   label,
@@ -292,6 +342,7 @@ function BalanceCard({
   trackColor,
   fillColor,
   ratio,
+  compact,
 }: {
   icon: ReactNode;
   label: string;
@@ -300,15 +351,16 @@ function BalanceCard({
   trackColor: string;
   fillColor: string;
   ratio: number;
+  compact?: boolean;
 }) {
   return (
-    <View style={styles.metricCard}>
+    <View style={[styles.metricCard, compact ? styles.metricCardCompact : null]}>
       <View style={styles.metricHeader}>
         <View style={styles.metricIcon}>{icon}</View>
-        <Text style={styles.metricLabel}>{label}</Text>
+        <Text style={styles.metricLabel} numberOfLines={2}>{label}</Text>
       </View>
-      <Text style={styles.metricValue}>{value}</Text>
-      <Text style={styles.metricDetail}>{detail}</Text>
+      <Text style={styles.metricValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72}>{value}</Text>
+      <Text style={styles.metricDetail} numberOfLines={2}>{detail}</Text>
       <ProgressBar ratio={ratio} trackColor={trackColor} fillColor={fillColor} />
     </View>
   );
@@ -358,80 +410,96 @@ type ProfileCompletion = {
   missing: number;
 };
 
+type ProfileCompletionCheck = {
+  value: (profile: EmployeeProfileSummary) => unknown;
+  applies?: (profile: EmployeeProfileSummary) => boolean;
+};
+
 function getProfileCompletion(profile: EmployeeProfileSummary | null): ProfileCompletion {
+  const fallbackTotal = PROFILE_COMPLETION_CHECKS.filter((check) => !check.applies).length;
+
   if (!profile) {
-    return { percent: 0, complete: 0, total: PROFILE_COMPLETION_CHECKS.length, missing: PROFILE_COMPLETION_CHECKS.length };
+    return { percent: 0, complete: 0, total: fallbackTotal, missing: fallbackTotal };
   }
 
-  const complete = PROFILE_COMPLETION_CHECKS.filter((check) => hasProfileValue(check(profile))).length;
-  const percent = Math.round((complete / PROFILE_COMPLETION_CHECKS.length) * 100);
+  const checks = PROFILE_COMPLETION_CHECKS.filter((check) => !check.applies || check.applies(profile));
+  const complete = checks.filter((check) => hasProfileValue(check.value(profile))).length;
+  const total = checks.length;
+  const percent = total > 0 ? Math.round((complete / total) * 100) : 100;
 
   return {
     percent,
     complete,
-    total: PROFILE_COMPLETION_CHECKS.length,
-    missing: PROFILE_COMPLETION_CHECKS.length - complete,
+    total,
+    missing: total - complete,
   };
 }
 
-const PROFILE_COMPLETION_CHECKS: Array<(profile: EmployeeProfileSummary) => unknown> = [
-  (profile) => profile.firstName,
-  (profile) => profile.lastName,
-  (profile) => profile.employeeNo,
-  (profile) => profile.birthDate,
-  (profile) => profile.gender,
-  (profile) => profile.religion,
-  (profile) => profile.birthPlace,
-  (profile) => profile.nationality,
-  (profile) => profile.civilStatus,
-  (profile) => profile.height,
-  (profile) => profile.weight,
-  (profile) => profile.education,
-  (profile) => profile.email,
-  (profile) => profile.cellphone,
-  (profile) => profile.otherPhone,
-  (profile) => profile.socialMediaType,
-  (profile) => profile.socialMediaDetail,
-  (profile) => profile.presentAddress,
-  (profile) => profile.zipCode,
-  (profile) => profile.permanentAddress,
-  (profile) => profile.companyName,
-  (profile) => profile.employeeType,
-  (profile) => profile.username,
-  (profile) => profile.dateHired,
-  (profile) => profile.storeName || profile.clusterName || profile.areaName,
-  (profile) => profile.departmentName,
-  (profile) => profile.positionName,
-  (profile) => profile.tin,
-  (profile) => profile.sss,
-  (profile) => profile.pagibig,
-  (profile) => profile.philhealth,
-  (profile) => profile.bankType,
-  (profile) => profile.accountNo,
-  (profile) => profile.elementarySchool,
-  (profile) => profile.elementaryYear,
-  (profile) => profile.secondarySchool,
-  (profile) => profile.secondaryYear,
-  (profile) => profile.collegeSchool,
-  (profile) => profile.collegeYear,
-  (profile) => profile.collegeCourse,
-  (profile) => profile.yearGraduated,
-  (profile) => profile.fatherName,
-  (profile) => profile.fatherOccupation,
-  (profile) => profile.motherMaidenName,
-  (profile) => profile.motherOccupation,
-  (profile) => profile.numberOfSiblings,
-  (profile) => profile.birthOrder,
-  (profile) => profile.emergencyContact,
-  (profile) => profile.spouseName,
-  (profile) => profile.spouseOccupation,
-  (profile) => profile.spouseContact,
-  (profile) => profile.childrenCount,
-  (profile) => profile.childrenNames,
+const PROFILE_COMPLETION_CHECKS: ProfileCompletionCheck[] = [
+  { value: (profile) => profile.firstName },
+  { value: (profile) => profile.lastName },
+  { value: (profile) => profile.birthDate },
+  { value: (profile) => profile.gender },
+  { value: (profile) => profile.religion },
+  { value: (profile) => profile.birthPlace },
+  { value: (profile) => profile.nationality },
+  { value: (profile) => profile.civilStatus },
+  { value: (profile) => profile.height },
+  { value: (profile) => profile.weight },
+  { value: (profile) => profile.email },
+  { value: (profile) => profile.cellphone },
+  { value: (profile) => profile.otherPhone },
+  { value: (profile) => profile.socialMediaType },
+  { value: (profile) => profile.socialMediaDetail },
+  { value: (profile) => profile.presentAddress },
+  { value: (profile) => profile.zipCode },
+  { value: (profile) => profile.permanentAddress },
+  { value: (profile) => profile.employeeType },
+  { value: (profile) => profile.username },
+  { value: (profile) => profile.tin },
+  { value: (profile) => profile.sss },
+  { value: (profile) => profile.pagibig },
+  { value: (profile) => profile.philhealth },
+  { value: (profile) => profile.bankType },
+  { value: (profile) => profile.accountNo },
+  { value: (profile) => profile.elementarySchool },
+  { value: (profile) => profile.elementaryYear },
+  { value: (profile) => profile.secondarySchool },
+  { value: (profile) => profile.secondaryYear },
+  { value: (profile) => profile.collegeSchool },
+  { value: (profile) => profile.collegeYear },
+  { value: (profile) => profile.collegeCourse },
+  { value: (profile) => profile.yearGraduated },
+  { value: (profile) => profile.fatherName },
+  { value: (profile) => profile.fatherOccupation },
+  { value: (profile) => profile.motherMaidenName },
+  { value: (profile) => profile.motherOccupation },
+  { value: (profile) => profile.numberOfSiblings },
+  { value: (profile) => profile.birthOrder },
+  { value: (profile) => profile.emergencyContact },
+  { value: (profile) => profile.emergencyContactNo },
+  { value: (profile) => profile.spouseName, applies: hasSpouseFields },
+  { value: (profile) => profile.spouseOccupation, applies: hasSpouseFields },
+  { value: (profile) => profile.spouseContact, applies: hasSpouseFields },
+  { value: (profile) => profile.childrenCount, applies: hasChildrenFields },
+  { value: (profile) => profile.childrenNames, applies: hasChildrenFields },
 ];
 
 function hasProfileValue(value: unknown) {
   return typeof value === 'string' ? value.trim().length > 0 : value !== null && value !== undefined;
+}
+
+function hasSpouseFields(profile: EmployeeProfileSummary) {
+  return normalizeCompletionText(profile.civilStatus) === 'married';
+}
+
+function hasChildrenFields(profile: EmployeeProfileSummary) {
+  const count = Number.parseInt(String(profile.childrenCount ?? '').trim(), 10);
+  return (Number.isFinite(count) && count > 0) || hasProfileValue(profile.childrenNames);
+}
+
+function normalizeCompletionText(value?: string | null) {
+  return String(value ?? '').trim().toLowerCase();
 }
 
 function formatPeso(value: number) {
@@ -531,60 +599,47 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  priorityCard: {
-    minHeight: 66,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+  quickActionRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
+    flexWrap: 'nowrap',
+    gap: spacing.xs,
     marginBottom: spacing.sm,
   },
-  priorityIcon: {
+  quickActionButton: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 72,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#facc15',
+    backgroundColor: '#fffbeb',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: spacing.sm,
+    gap: 6,
+  },
+  quickActionPressed: {
+    opacity: 0.82,
+    transform: [{ scale: 0.98 }],
+  },
+  quickActionDisabled: {
+    opacity: 0.52,
+  },
+  quickActionIcon: {
     width: 34,
     height: 34,
     borderRadius: 8,
+    backgroundColor: colors.brand.gold,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  priorityIconAmber: {
-    backgroundColor: '#fef3c7',
-  },
-  priorityIconBlue: {
-    backgroundColor: '#dbeafe',
-  },
-  priorityLabel: {
-    color: colors.muted,
+  quickActionLabel: {
+    color: colors.brand.ink,
     fontSize: 12,
     lineHeight: 15,
-    fontWeight: fontWeights.bold,
-    textTransform: 'uppercase',
-  },
-  priorityText: {
-    flex: 1,
-    minWidth: 0,
-  },
-  priorityTopLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.sm,
-  },
-  priorityValue: {
-    color: colors.text,
-    fontSize: 20,
-    lineHeight: 24,
     fontWeight: fontWeights.heavy,
-  },
-  priorityDetail: {
-    color: colors.muted,
-    fontSize: 12,
-    lineHeight: 15,
-    fontWeight: fontWeights.medium,
+    textAlign: 'center',
   },
   profileCompletionCard: {
     borderRadius: radius.md,
@@ -641,18 +696,22 @@ const styles = StyleSheet.create({
   },
   metricGrid: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexWrap: 'nowrap',
     gap: spacing.sm,
     marginBottom: spacing.sm,
   },
   metricCard: {
-    width: '48.5%',
+    flex: 1,
     minHeight: 142,
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
     padding: spacing.md,
+  },
+  metricCardCompact: {
+    minHeight: 126,
+    padding: spacing.sm,
   },
   metricHeader: {
     flexDirection: 'row',
@@ -685,8 +744,8 @@ const styles = StyleSheet.create({
   },
   metricValue: {
     color: colors.text,
-    fontSize: 23,
-    lineHeight: 28,
+    fontSize: 22,
+    lineHeight: 27,
     fontWeight: fontWeights.heavy,
   },
   metricDetail: {
@@ -729,6 +788,10 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     gap: spacing.sm,
   },
+  perkUsageText: {
+    flex: 1,
+    minWidth: 0,
+  },
   perkUsageLabel: {
     color: colors.text,
     fontSize: 14,
@@ -747,6 +810,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 20,
     fontWeight: fontWeights.heavy,
+    flexShrink: 1,
+    maxWidth: '48%',
+    textAlign: 'right',
   },
   perkUsageMetaRow: {
     flexDirection: 'row',

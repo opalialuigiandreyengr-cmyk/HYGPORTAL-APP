@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { ArrowLeft, BadgePercent, CalendarDays, Check, ChevronDown, Plus, ShoppingCart, X } from 'lucide-react-native';
+import { BadgePercent, CalendarDays, Check, ChevronDown, Plus, ShoppingCart, X } from 'lucide-react-native';
 
 import { TopBar } from '../components/TopBar';
 import type { AppToastMessage } from '../components/AppToast';
@@ -10,6 +10,7 @@ import { colors, fontWeights, radius, spacing } from '../theme';
 import type { AssistantDraft } from '../services/assistant';
 import { loadPerkUsage, startPerkRequest, verifyPerkRequest, type PerkProductInput, type PerkUsage } from '../services/perks';
 import { formatDateInput, dateStringToDate } from '../utils/dateTime';
+import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 
 type DiscountMode = 'cash' | 'charge';
 
@@ -30,17 +31,23 @@ const today = formatDateInput(new Date());
 
 export function ApplyDiscountScreen({
   name,
+  username,
   photoUrl,
   initialDraft,
+  notificationCount = 0,
   onAssistant,
+  onNotifications,
   onBack,
   onToast,
   onSubmitted,
 }: {
   name?: string | null;
+  username?: string | null;
   photoUrl?: string | null;
   initialDraft?: Extract<AssistantDraft, { intent: 'draft_perk_request' }> | null;
+  notificationCount?: number;
   onAssistant?: () => void;
+  onNotifications?: () => void;
   onBack: () => void;
   onToast?: (toast: AppToastMessage) => void;
   onSubmitted?: () => void | Promise<void>;
@@ -144,6 +151,14 @@ export function ApplyDiscountScreen({
     setIsLoadingProducts(true);
     setProductStatus('Loading products...');
     try {
+      const cached = await getCacheJSON<ProductOption[]>('inventory_products_v1');
+      if (cached && cached.length > 0) {
+        setProducts(cached);
+        setProductStatus('');
+      }
+    } catch (_) {}
+
+    try {
       const response = await fetch(inventoryUrl, {
         headers: { Accept: 'application/json' },
       });
@@ -157,11 +172,18 @@ export function ApplyDiscountScreen({
         })
         .filter((item: ProductOption | null): item is ProductOption => Boolean(item));
 
-      setProducts(nextProducts);
-      setProductStatus(nextProducts.length ? '' : 'No products loaded. Enter product details manually.');
+      if (nextProducts.length > 0) {
+        setProducts(nextProducts);
+        setProductStatus('');
+        await setCacheJSON('inventory_products_v1', nextProducts);
+      } else if (products.length === 0) {
+        setProductStatus('No products loaded.');
+      }
     } catch {
-      setProducts([]);
-      setProductStatus('Products unavailable. Enter product details manually.');
+      if (products.length === 0) {
+        setProducts([]);
+        setProductStatus('Products unavailable. Please check your internet connection.');
+      }
     } finally {
       setIsLoadingProducts(false);
     }
@@ -320,7 +342,16 @@ export function ApplyDiscountScreen({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={name} photoUrl={photoUrl} onMessages={onAssistant ? () => confirmDiscard(onAssistant) : undefined} />
+      <TopBar
+        name={name}
+        username={username}
+        photoUrl={photoUrl}
+        notificationCount={notificationCount}
+        onBackHome={() => confirmDiscard(onBack)}
+        backTitle="Apply Perks"
+        onMessages={onAssistant ? () => confirmDiscard(onAssistant) : undefined}
+        onNotifications={onNotifications ? () => confirmDiscard(onNotifications) : undefined}
+      />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
@@ -337,15 +368,6 @@ export function ApplyDiscountScreen({
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.header}>
-          <Pressable style={styles.backButton} onPress={() => confirmDiscard(onBack)}>
-            <ArrowLeft size={20} color={colors.text} strokeWidth={2.5} />
-          </Pressable>
-          <View style={styles.headerText}>
-            <Text style={styles.title}>Apply Discount</Text>
-          </View>
-        </View>
-
         <View style={styles.modeGrid}>
           <ModeCard
             active={mode === 'cash'}
@@ -414,45 +436,30 @@ export function ApplyDiscountScreen({
 
           {productLines.map((line) => (
             <View key={line.id} style={styles.productRow}>
-              {products.length ? (
-                <Pressable
-                  disabled={isLoadingProducts}
+              <Pressable
+                disabled={isLoadingProducts}
+                style={[
+                  styles.productInput,
+                  styles.productNameColumn,
+                  isLoadingProducts ? styles.productInputDisabled : null,
+                ]}
+                onPress={() => {
+                  setProductQuery('');
+                  setActiveProductId(line.id);
+                }}
+              >
+                <Text
                   style={[
-                    styles.productInput,
-                    styles.productNameColumn,
-                    isLoadingProducts ? styles.productInputDisabled : null,
+                    styles.productInputText,
+                    line.productName === 'Select product' ? styles.placeholderText : null,
+                    isLoadingProducts ? styles.productInputTextDisabled : null,
                   ]}
-                  onPress={() => {
-                    setProductQuery('');
-                    setActiveProductId(line.id);
-                  }}
+                  numberOfLines={1}
                 >
-                  <Text
-                    style={[
-                      styles.productInputText,
-                      line.productName === 'Select product' ? styles.placeholderText : null,
-                      isLoadingProducts ? styles.productInputTextDisabled : null,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {isLoadingProducts ? 'Loading products...' : line.productName}
-                  </Text>
-                  <ChevronDown size={14} color={colors.muted} strokeWidth={2.5} />
-                </Pressable>
-              ) : (
-                <TextInput
-                  value={line.productName === 'Select product' ? '' : line.productName}
-                  onChangeText={(value) => updateLine(line.id, { productName: value })}
-                  placeholder={isLoadingProducts ? 'Loading products...' : 'Enter product'}
-                  placeholderTextColor={colors.muted}
-                  editable={!isLoadingProducts}
-                  style={[
-                    styles.productTextInput,
-                    styles.productNameColumn,
-                    isLoadingProducts ? styles.productInputDisabled : null,
-                  ]}
-                />
-              )}
+                  {isLoadingProducts ? 'Loading products...' : line.productName}
+                </Text>
+                <ChevronDown size={14} color={colors.muted} strokeWidth={2.5} />
+              </Pressable>
               <TextInput
                 value={line.quantity}
                 onChangeText={(value) => updateLine(line.id, { quantity: value })}
@@ -463,11 +470,15 @@ export function ApplyDiscountScreen({
               />
               <TextInput
                 value={line.unitPrice}
-                onChangeText={(value) => updateLine(line.id, { unitPrice: value })}
-                keyboardType="decimal-pad"
+                editable={false}
                 placeholder="0.00"
                 placeholderTextColor={colors.muted}
-                style={[styles.productTextInput, styles.priceColumn]}
+                style={[
+                  styles.productTextInput,
+                  styles.priceColumn,
+                  styles.productInputDisabled,
+                  { backgroundColor: colors.surface },
+                ]}
               />
             </View>
           ))}

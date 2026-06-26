@@ -1,6 +1,28 @@
 {
   "buildCommand": "npm run build:web",
   "outputDirectory": "dist",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Cross-Origin-Embedder-Policy",
+          "value": "credentialless"
+        },
+        {
+          "key": "Cross-Origin-Opener-Policy",
+          "value": "same-origin"
+        }
+      ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/hygportal.apk",
+      "destination": "https://expo.dev/artifacts/eas/GNhZ8MxdfAsbNsa96wd1GA5gRjJgSA1PcaSzC46X_f8.apk",
+      "permanent": false
+    }
+  ],
   "rewrites": [
     {
       "source": "/(.*)",

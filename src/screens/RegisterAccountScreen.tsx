@@ -78,7 +78,7 @@ export function RegisterAccountScreen({ onBack }: RegisterAccountScreenProps) {
     !accountForm.termsAccepted;
 
   function updateVerifyField(field: keyof VerifyForm, value: string) {
-    setVerifyForm((current) => ({ ...current, [field]: value.toUpperCase() }));
+    setVerifyForm((current) => ({ ...current, [field]: value }));
   }
 
   function updateAccountField(field: keyof AccountForm, value: string | boolean) {
@@ -130,7 +130,7 @@ export function RegisterAccountScreen({ onBack }: RegisterAccountScreenProps) {
     setVerifyStatus('');
 
     try {
-      const result = await verifyEmployeeForRegistration(verifyForm);
+      const result = await verifyEmployeeForRegistration(normalizeVerifyFormForSubmit(verifyForm));
       if (!result.verified || !result.employee_id) {
         setVerifyStatus(result.message || 'No employee profile matched the details entered.');
         return;
@@ -208,18 +208,24 @@ export function RegisterAccountScreen({ onBack }: RegisterAccountScreenProps) {
                 label="First Name *"
                 value={verifyForm.firstName}
                 onChangeText={(value) => updateVerifyField('firstName', value)}
+                autoCapitalize="words"
+                autoCorrect={false}
                 error={showVerifyErrors && !verifyForm.firstName.trim() ? 'Required' : ''}
               />
               <FormTextField
                 label="Last Name *"
                 value={verifyForm.lastName}
                 onChangeText={(value) => updateVerifyField('lastName', value)}
+                autoCapitalize="words"
+                autoCorrect={false}
                 error={showVerifyErrors && !verifyForm.lastName.trim() ? 'Required' : ''}
               />
               <FormTextField
                 label="Middle Name"
                 value={verifyForm.middleName}
                 onChangeText={(value) => updateVerifyField('middleName', value)}
+                autoCapitalize="words"
+                autoCorrect={false}
               />
               <Text style={styles.inputLabel}>Birthday *</Text>
               {Platform.OS === 'web' ? (
@@ -383,6 +389,20 @@ function passwordMatchMessage(accountForm: AccountForm) {
   }
 
   return accountForm.password === accountForm.confirmPassword ? '' : 'Passwords do not match';
+}
+
+function normalizeVerifyFormForSubmit(form: VerifyForm): VerifyForm {
+  return {
+    ...form,
+    firstName: normalizeRegistrationNamePart(form.firstName),
+    lastName: normalizeRegistrationNamePart(form.lastName),
+    middleName: normalizeRegistrationNamePart(form.middleName),
+    email: form.email.trim().toLowerCase(),
+  };
+}
+
+function normalizeRegistrationNamePart(value: string) {
+  return value.replace(/\s+/g, ' ').trim().toUpperCase();
 }
 
 function DatePickerModal({

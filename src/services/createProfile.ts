@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 
 export type CreateEmployeeProfileInput = {
   lastName: string;
@@ -12,9 +13,7 @@ export type CreateEmployeeProfileInput = {
   email: string;
   company: string;
   workUnit: string;
-  position: string;
-  dateHired: string;
-  employeeType: string;
+  store: string;
   tin: string;
   sss: string;
   pagibig: string;
@@ -24,6 +23,8 @@ export type CreateEmployeeProfileInput = {
   education: string;
   presentAddress: string;
   emergencyContact: string;
+  emergencyContactNo: string;
+  documentRefs?: Record<string, unknown> | null;
 };
 
 export type DuplicateEmployeeProfileResult = {
@@ -40,12 +41,18 @@ export type EmployeeCompanyOption = {
   company_name: string;
 };
 
+export type EmployeeStoreOption = {
+  store_name: string;
+  company_name: string;
+};
+
 function optionalDate(value: string) {
   return value.trim() || null;
 }
 
 export async function createEmployeeProfile(input: CreateEmployeeProfileInput) {
-  const { data, error } = await supabase.rpc('create_employee_profile', {
+  const today = new Date().toISOString().slice(0, 10);
+  const { data, error } = await supabase.rpc('create_employee_profile_with_store', {
     p_last_name: input.lastName.trim(),
     p_first_name: input.firstName.trim(),
     p_middle_name: input.middleName.trim(),
@@ -57,9 +64,10 @@ export async function createEmployeeProfile(input: CreateEmployeeProfileInput) {
     p_email: input.email.trim(),
     p_company: input.company.trim(),
     p_work_unit: input.workUnit.trim(),
-    p_position: input.position.trim(),
-    p_date_hired: optionalDate(input.dateHired),
-    p_employee_type: input.employeeType.trim(),
+    p_store: input.store.trim(),
+    p_position: 'UNASSIGNED',
+    p_date_hired: today,
+    p_employee_type: null,
     p_tin: input.tin.trim(),
     p_sss: input.sss.trim(),
     p_pagibig: input.pagibig.trim(),
@@ -69,6 +77,8 @@ export async function createEmployeeProfile(input: CreateEmployeeProfileInput) {
     p_education: input.education.trim(),
     p_present_address: input.presentAddress.trim(),
     p_emergency_contact: input.emergencyContact.trim(),
+    p_emergency_contact_no: input.emergencyContactNo.trim(),
+    p_document_refs: input.documentRefs ?? null,
   });
 
   if (error) {
@@ -98,20 +108,30 @@ export async function checkEmployeeProfileDuplicate(input: Pick<
 }
 
 export async function loadEmployeeAssignmentOptions() {
+  const cacheKey = 'employee_assignment_options_v1';
   const { data, error } = await supabase.rpc('employee_assignment_options');
 
   if (error) {
+    const cached = await getCacheJSON<EmployeeAssignmentOption[]>(cacheKey);
+    if (cached) {
+      return cached;
+    }
     throw new Error([error.message, error.details, error.hint].filter(Boolean).join(' '));
   }
 
-  return (data ?? []) as EmployeeAssignmentOption[];
+  const items = (data ?? []) as EmployeeAssignmentOption[];
+  await setCacheJSON(cacheKey, items);
+  return items;
 }
 
 export async function loadEmployeeCompanyOptions() {
+  const cacheKey = 'employee_company_options_v1';
   const { data, error } = await supabase.rpc('employee_company_options');
 
   if (!error) {
-    return (data ?? []) as EmployeeCompanyOption[];
+    const items = (data ?? []) as EmployeeCompanyOption[];
+    await setCacheJSON(cacheKey, items);
+    return items;
   }
 
   const fallback = await supabase
@@ -121,6 +141,10 @@ export async function loadEmployeeCompanyOptions() {
     .order('name', { ascending: true });
 
   if (fallback.error) {
+    const cached = await getCacheJSON<EmployeeCompanyOption[]>(cacheKey);
+    if (cached) {
+      return cached;
+    }
     throw new Error([
       error.message,
       error.details,
@@ -131,5 +155,24 @@ export async function loadEmployeeCompanyOptions() {
     ].filter(Boolean).join(' '));
   }
 
-  return (fallback.data ?? []).map((company) => ({ company_name: company.name })) as EmployeeCompanyOption[];
+  const items = (fallback.data ?? []).map((company) => ({ company_name: company.name })) as EmployeeCompanyOption[];
+  await setCacheJSON(cacheKey, items);
+  return items;
+}
+
+export async function loadEmployeeStoreOptions() {
+  const cacheKey = 'employee_store_options_v1';
+  const { data, error } = await supabase.rpc('employee_store_options');
+
+  if (error) {
+    const cached = await getCacheJSON<EmployeeStoreOption[]>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    throw new Error([error.message, error.details, error.hint].filter(Boolean).join(' '));
+  }
+
+  const items = (data ?? []) as EmployeeStoreOption[];
+  await setCacheJSON(cacheKey, items);
+  return items;
 }

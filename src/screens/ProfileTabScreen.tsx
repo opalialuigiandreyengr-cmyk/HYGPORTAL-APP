@@ -29,11 +29,13 @@ import {
 import { colors, fontWeights, spacing } from '../theme';
 import { Avatar } from '../components/Avatar';
 import { TopBar } from '../components/TopBar';
+import { WebNativeDateInput } from '../components/WebNativeDateInput';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 import { supabase } from '../lib/supabase';
 import { updateEmployeeProfile, uploadEmployeeProfilePhoto, type UpdateEmployeeProfileInput } from '../services/profile';
 import { loadEmployeeCompanyOptions } from '../services/createProfile';
 import { normalizeUsername } from '../services/registerAccount';
+import { ensureMyHygPointGifts } from '../services/notificationCenter';
 
 type Props = {
   email: string;
@@ -42,7 +44,12 @@ type Props = {
   result: ProfileLoadResult | null;
   onToast?: (toast: ProfileToast) => void;
   onSignOut: () => void;
+  onProfileUpdated?: () => Promise<void> | void;
+  notificationCount?: number;
   onAssistant?: () => void;
+  onNotifications?: () => void;
+  onOpenSettings?: () => void;
+  onOpenMyTeam?: () => void;
 };
 
 type ProfileToast = {
@@ -70,6 +77,7 @@ type ProfileSection = {
 };
 
 type ProfileRow = {
+  kind?: 'field' | 'heightMetric' | 'bmiMetric' | 'child';
   label: string;
   value?: string | null;
   fullWidth?: boolean;
@@ -77,6 +85,13 @@ type ProfileRow = {
   multiline?: boolean;
   editor?: 'text' | 'date' | 'select';
   options?: string[];
+  childIndex?: number;
+  child?: ChildProfileRow;
+};
+
+type ChildProfileRow = {
+  name: string;
+  birthday: string;
 };
 
 const CIVIL_STATUS_OPTIONS = ['Single', 'Married', 'Widowed', 'Separated', 'Divorced'];
@@ -114,7 +129,7 @@ const PROFILE_SECTION_TABS: {
   { key: 'children', label: 'Children', icon: Baby, color: '#f97316' },
 ];
 
-export function ProfileTabScreen({ email, username, isLoading, result, onToast, onSignOut, onAssistant }: Props) {
+export function ProfileTabScreen({ email, username, isLoading, result, onToast, onSignOut, onProfileUpdated, notificationCount = 0, onAssistant, onNotifications, onOpenSettings, onOpenMyTeam }: Props) {
   const resultProfile = result?.status === 'linked' ? result.profile : null;
   const [localProfile, setLocalProfile] = useState<EmployeeProfileSummary | null>(resultProfile);
   const profile = localProfile;
@@ -129,6 +144,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [activeDateField, setActiveDateField] = useState<keyof UpdateEmployeeProfileInput | null>(null);
+  const [activeChildDateIndex, setActiveChildDateIndex] = useState<number | null>(null);
   const [tempDate, setTempDate] = useState(() => new Date());
   const [activeSelect, setActiveSelect] = useState<InlineSelectConfig | null>(null);
   const [tempSelectValue, setTempSelectValue] = useState('');
@@ -142,6 +158,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
   const activeTab = PROFILE_SECTION_TABS.find((tab) => tab.key === activeProfileSection) ?? PROFILE_SECTION_TABS[0];
   const ActiveSectionIcon = activeTab.icon;
   const isInlineEditing = inlineEditSection === activeProfileSection;
+  const canEditActiveSection = activeProfileSection !== 'employment';
 
   useEffect(() => {
     setLocalProfile(resultProfile);
@@ -185,6 +202,46 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
 
   function updateField(field: keyof UpdateEmployeeProfileInput, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateHeightCm(value: string) {
+    setForm((current) => {
+      return {
+        ...current,
+        height: formatHeightCm(sanitizeDecimalNumber(value)),
+      };
+    });
+  }
+
+  function updateWeightKg(value: string) {
+    setForm((current) => ({
+      ...current,
+      weight: formatWeightKg(sanitizeDecimalNumber(value)),
+    }));
+  }
+
+  function updateChildProfile(index: number, field: keyof ChildProfileRow, value: string) {
+    setForm((current) => {
+      const children = parseChildProfiles(current.childrenNames, current.childrenCount);
+      while (children.length <= index) {
+        children.push({ name: '', birthday: '' });
+      }
+
+      children[index] = {
+        ...children[index],
+        [field]: field === 'birthday' ? value.trim() : value,
+      };
+
+      const nonEmptyCount = children.filter((child) => child.name.trim() || child.birthday.trim()).length;
+      const requestedCount = parseInteger(current.childrenCount);
+      const nextCount = Math.max(nonEmptyCount, requestedCount, index + 1);
+
+      return {
+        ...current,
+        childrenCount: nextCount ? String(nextCount) : '',
+        childrenNames: formatChildProfiles(children),
+      };
+    });
   }
 
   function focusDetailRow(rowKey: string) {
@@ -265,6 +322,8 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
   }
 
   function startInlineEdit() {
+    if (!canEditActiveSection) return;
+
     setForm(profileToForm(profile, username));
     setInlineEditSection(activeProfileSection);
   }
@@ -273,21 +332,30 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
     setForm(profileToForm(profile, username));
     setInlineEditSection(null);
     setActiveDateField(null);
+    setActiveChildDateIndex(null);
     setActiveSelect(null);
   }
 
   function openInlineDate(field: keyof UpdateEmployeeProfileInput, value?: string | null) {
+    setActiveChildDateIndex(null);
     setTempDate(parseProfileDate(value));
     setActiveDateField(field);
+  }
+
+  function openChildBirthday(index: number, value?: string | null) {
+    setActiveDateField(null);
+    setTempDate(parseProfileDate(value));
+    setActiveChildDateIndex(index);
   }
 
   function handleInlineDateChange(event: DateTimePickerEvent, selectedDate?: Date) {
     if (event.type === 'dismissed') {
       setActiveDateField(null);
+      setActiveChildDateIndex(null);
       return;
     }
 
-    if (!selectedDate || !activeDateField) {
+    if (!selectedDate) {
       return;
     }
 
@@ -296,15 +364,24 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
       return;
     }
 
-    updateField(activeDateField, formatProfileDate(selectedDate));
+    if (activeChildDateIndex !== null) {
+      updateChildProfile(activeChildDateIndex, 'birthday', formatProfileDate(selectedDate));
+    } else if (activeDateField) {
+      updateField(activeDateField, formatProfileDate(selectedDate));
+    }
+
     setActiveDateField(null);
+    setActiveChildDateIndex(null);
   }
 
   function confirmInlineDate() {
-    if (activeDateField) {
+    if (activeChildDateIndex !== null) {
+      updateChildProfile(activeChildDateIndex, 'birthday', formatProfileDate(tempDate));
+    } else if (activeDateField) {
       updateField(activeDateField, formatProfileDate(tempDate));
     }
     setActiveDateField(null);
+    setActiveChildDateIndex(null);
   }
 
   function openInlineSelect(title: string, field: keyof UpdateEmployeeProfileInput, options: string[], value?: string | null) {
@@ -356,6 +433,8 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
       setInlineEditSection(null);
       setLocalProfile((current) => formToProfile(current, savedForm));
       setForm(savedForm);
+      await ensureMyHygPointGifts();
+      await onProfileUpdated?.();
       onToast?.({
         tone: 'success',
         title: 'Updated',
@@ -376,7 +455,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
     return (
       <View style={styles.root}>
         <StatusBar style="dark" />
-        <TopBar name={displayName} photoUrl={profile?.photoUrl} onMessages={onAssistant} />
+        <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onSignOut={onSignOut} />
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#eab308" />
           <Text style={styles.loadingText}>Loading profile...</Text>
@@ -392,7 +471,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
       style={styles.root}
     >
       <StatusBar style="dark" />
-      <TopBar name={displayName} photoUrl={profile?.photoUrl} onMessages={onAssistant} />
+      <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onSignOut={onSignOut} />
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}
@@ -530,14 +609,14 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
                   <Save size={16} color="#16a34a" strokeWidth={2.4} />
                 </Pressable>
               </View>
-            ) : (
+            ) : canEditActiveSection ? (
               <Pressable
                 style={({ pressed }) => [styles.sectionEditBtn, pressed ? styles.iconButtonPressed : null]}
                 onPress={startInlineEdit}
               >
                 <Pencil size={16} color="#334155" strokeWidth={2.4} />
               </Pressable>
-            )}
+            ) : null}
           </View>
           {activeSection.rows.length > 0 ? (
             <View
@@ -557,9 +636,16 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
                   multiline={row.multiline}
                   editor={row.editor}
                   options={row.options}
+                  kind={row.kind}
+                  childIndex={row.childIndex}
+                  child={row.child}
                   isEditing={isInlineEditing}
                   onChange={updateField}
+                  onHeightChange={updateHeightCm}
+                  onWeightKgChange={updateWeightKg}
+                  onChildChange={updateChildProfile}
                   onOpenDate={openInlineDate}
+                  onOpenChildDate={openChildBirthday}
                   onOpenSelect={openInlineSelect}
                   onFocusRow={focusDetailRow}
                   onLayoutRow={(rowKey, y) => {
@@ -667,10 +753,13 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
         </View>
       </Modal>
       <DatePickerModal
-        visible={Boolean(activeDateField)}
+        visible={Boolean(activeDateField) || activeChildDateIndex !== null}
         value={tempDate}
         onChange={handleInlineDateChange}
-        onCancel={() => setActiveDateField(null)}
+        onCancel={() => {
+          setActiveDateField(null);
+          setActiveChildDateIndex(null);
+        }}
         onDone={confirmInlineDate}
       />
       <SelectModal
@@ -686,6 +775,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
 
 function DetailRow({
   rowKey,
+  kind = 'field',
   label,
   value,
   fullWidth,
@@ -693,9 +783,15 @@ function DetailRow({
   multiline,
   editor = 'text',
   options = [],
+  childIndex,
+  child,
   isEditing,
   onChange,
+  onHeightChange,
+  onWeightKgChange,
+  onChildChange,
   onOpenDate,
+  onOpenChildDate,
   onOpenSelect,
   onFocusRow,
   onLayoutRow,
@@ -703,13 +799,146 @@ function DetailRow({
   rowKey: string;
   isEditing?: boolean;
   onChange?: (field: keyof UpdateEmployeeProfileInput, value: string) => void;
+  onHeightChange?: (value: string) => void;
+  onWeightKgChange?: (value: string) => void;
+  onChildChange?: (index: number, field: keyof ChildProfileRow, value: string) => void;
   onOpenDate?: (field: keyof UpdateEmployeeProfileInput, value?: string | null) => void;
+  onOpenChildDate?: (index: number, value?: string | null) => void;
   onOpenSelect?: (title: string, field: keyof UpdateEmployeeProfileInput, options: string[], value?: string | null) => void;
   onFocusRow?: (rowKey: string) => void;
   onLayoutRow?: (rowKey: string, y: number) => void;
 }) {
   const hasValue = Boolean(value);
   const canEdit = Boolean(isEditing && field && onChange);
+
+  if (kind === 'heightMetric') {
+    const heightCm = parseHeightCm(value);
+    const hasHeight = Boolean(heightCm);
+
+    return (
+      <View
+        style={[styles.detailTile, styles.detailTileFull]}
+        onLayout={(event) => onLayoutRow?.(rowKey, event.nativeEvent.layout.y)}
+      >
+        <Text style={styles.detailLabel}>{label}</Text>
+        <View style={styles.compoundFieldRow}>
+          <MetricCell
+            label="Height CM"
+            value={heightCm}
+            placeholder="0"
+            editable={Boolean(isEditing)}
+            keyboardType="decimal-pad"
+            onFocus={() => onFocusRow?.(rowKey)}
+            onChangeText={(nextValue) => onHeightChange?.(nextValue)}
+            wide
+          />
+          {!hasHeight && !isEditing ? (
+            <View style={[styles.metricCell, styles.detailTileEmpty]}>
+              <Text style={[styles.metricValue, styles.detailValueEmpty]}>N/A</Text>
+            </View>
+          ) : null}
+        </View>
+      </View>
+    );
+  }
+
+  if (kind === 'bmiMetric') {
+    const bodyMetric = parseBodyMetricValue(value);
+    const heightCm = parseHeightCm(bodyMetric.height);
+    const weightKg = parseWeightKg(bodyMetric.weight);
+    const bmi = calculateBmi(heightCm, weightKg);
+    const classification = bmi ? classifyBmi(bmi) : '';
+
+    return (
+      <View
+        style={[styles.detailTile, styles.detailTileFull]}
+        onLayout={(event) => onLayoutRow?.(rowKey, event.nativeEvent.layout.y)}
+      >
+        <Text style={styles.detailLabel}>{label}</Text>
+        <View style={styles.compoundFieldRow}>
+          <MetricCell
+            label="Height CM"
+            value={heightCm}
+            placeholder="0"
+            editable={Boolean(isEditing)}
+            keyboardType="decimal-pad"
+            onFocus={() => onFocusRow?.(rowKey)}
+            onChangeText={(nextValue) => onHeightChange?.(nextValue)}
+          />
+          <MetricCell
+            label="Weight KG"
+            value={weightKg}
+            placeholder="0"
+            editable={Boolean(isEditing)}
+            keyboardType="decimal-pad"
+            onFocus={() => onFocusRow?.(rowKey)}
+            onChangeText={(nextValue) => onWeightKgChange?.(nextValue)}
+          />
+          <MetricCell label="BMI" value={bmi ? bmi.toFixed(1) : ''} placeholder="Auto" editable={false} />
+          <MetricCell label="Classification" value={classification} placeholder="Auto" editable={false} wide />
+        </View>
+      </View>
+    );
+  }
+
+  if (kind === 'child') {
+    const childAge = formatAge(child?.birthday);
+
+    return (
+      <View
+        style={[styles.detailTile, styles.detailTileFull]}
+        onLayout={(event) => onLayoutRow?.(rowKey, event.nativeEvent.layout.y)}
+      >
+        <Text style={styles.detailLabel}>{label}</Text>
+        <View style={styles.compoundFieldRow}>
+          <MetricCell
+            label="Name"
+            value={child?.name ?? ''}
+            placeholder="Child name"
+            editable={Boolean(isEditing)}
+            autoCapitalize="words"
+            autoCorrect={false}
+            onFocus={() => onFocusRow?.(rowKey)}
+            onChangeText={(nextValue) => childIndex !== undefined && onChildChange?.(childIndex, 'name', nextValue)}
+            wide
+          />
+          <View style={[styles.metricCell, !child?.birthday ? styles.detailTileEmpty : null]}>
+            <Text style={styles.metricLabel}>Birthday</Text>
+            {isEditing ? (
+              <Pressable
+                style={styles.metricDateButton}
+                onPress={
+                  Platform.OS === 'web'
+                    ? undefined
+                    : () => {
+                        onFocusRow?.(rowKey);
+                        if (childIndex !== undefined) {
+                          onOpenChildDate?.(childIndex, child?.birthday);
+                        }
+                      }
+                }
+              >
+                <Calendar size={15} color="#475569" strokeWidth={2.4} />
+                <Text style={[styles.metricDateText, !child?.birthday ? styles.detailValueEmpty : null]}>
+                  {child?.birthday || 'Select date'}
+                </Text>
+                {childIndex !== undefined ? (
+                  <WebNativeDateInput
+                    value={child?.birthday ?? ''}
+                    label={`${label} birthday`}
+                    onChange={(nextValue) => onChildChange?.(childIndex, 'birthday', nextValue)}
+                  />
+                ) : null}
+              </Pressable>
+            ) : (
+              <Text style={[styles.metricValue, !child?.birthday ? styles.detailValueEmpty : null]}>{child?.birthday || 'YYYY-MM-DD'}</Text>
+            )}
+          </View>
+          <MetricCell label="Age" value={childAge ?? ''} placeholder="Auto" editable={false} />
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View
@@ -720,10 +949,13 @@ function DetailRow({
       {canEdit && editor === 'date' ? (
         <Pressable
           style={[styles.detailValueBox, styles.detailPickerInput, !hasValue ? styles.detailTileEmpty : null]}
-          onPress={() => field && onOpenDate?.(field, value)}
+          onPress={Platform.OS === 'web' ? undefined : () => field && onOpenDate?.(field, value)}
         >
           <Calendar size={16} color="#475569" strokeWidth={2.4} />
           <Text style={[styles.detailPickerText, !value ? styles.detailValueEmpty : null]}>{value || 'Select date'}</Text>
+          {field ? (
+            <WebNativeDateInput value={value ?? ''} label={label} onChange={(nextValue) => onChange?.(field, nextValue)} />
+          ) : null}
         </Pressable>
       ) : canEdit && editor === 'select' ? (
         <Pressable
@@ -751,6 +983,51 @@ function DetailRow({
         <View style={[styles.detailValueBox, !hasValue ? styles.detailTileEmpty : null]}>
           <Text style={[styles.detailValue, !hasValue ? styles.detailValueEmpty : null]}>{value || 'N/A'}</Text>
         </View>
+      )}
+    </View>
+  );
+}
+
+function MetricCell({
+  label,
+  value,
+  placeholder,
+  editable,
+  keyboardType,
+  wide,
+  autoCapitalize,
+  autoCorrect,
+  onFocus,
+  onChangeText,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  editable: boolean;
+  keyboardType?: 'default' | 'number-pad' | 'decimal-pad';
+  wide?: boolean;
+  autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+  autoCorrect?: boolean;
+  onFocus?: () => void;
+  onChangeText?: (value: string) => void;
+}) {
+  return (
+    <View style={[styles.metricCell, wide ? styles.metricCellWide : null, !value ? styles.detailTileEmpty : null]}>
+      <Text style={styles.metricLabel}>{label}</Text>
+      {editable ? (
+        <TextInput
+          style={styles.metricInput}
+          value={value}
+          onFocus={onFocus}
+          onChangeText={onChangeText}
+          placeholder={placeholder}
+          placeholderTextColor="#94a3b8"
+          keyboardType={keyboardType ?? 'default'}
+          autoCapitalize={autoCapitalize}
+          autoCorrect={autoCorrect}
+        />
+      ) : (
+        <Text style={[styles.metricValue, !value ? styles.detailValueEmpty : null]}>{value || placeholder}</Text>
       )}
     </View>
   );
@@ -933,6 +1210,8 @@ function getProfileSections(
   form: UpdateEmployeeProfileInput,
   companyOptions: string[],
 ): ProfileSection[] {
+  const childProfiles = parseChildProfiles(form.childrenNames, form.childrenCount);
+
   return [
     {
       key: 'personal',
@@ -946,9 +1225,7 @@ function getProfileSections(
         { label: 'Birthplace', value: form.birthPlace, field: 'birthPlace', fullWidth: true },
         { label: 'Nationality', value: form.nationality, field: 'nationality' },
         { label: 'Civil Status', value: form.civilStatus, field: 'civilStatus', editor: 'select', options: CIVIL_STATUS_OPTIONS },
-        { label: 'Height', value: form.height, field: 'height' },
-        { label: 'Weight', value: form.weight, field: 'weight' },
-        { label: 'Educational Attainment', value: form.education, field: 'education', fullWidth: true },
+        { kind: 'bmiMetric', label: 'Body Metrics', value: formatBodyMetricValue(form.height, form.weight), fullWidth: true },
       ],
     },
     {
@@ -975,7 +1252,6 @@ function getProfileSections(
         { label: 'Employee Type', value: form.employeeType, field: 'employeeType' },
         { label: 'Username', value: form.username, field: 'username' },
         { label: 'Hired Date', value: profile?.dateHired },
-        { label: 'Location', value: profile?.storeName ?? profile?.clusterName ?? profile?.areaName },
         { label: 'Department', value: profile?.departmentName },
         { label: 'Position', value: profile?.positionName },
       ],
@@ -1020,6 +1296,7 @@ function getProfileSections(
         { label: 'No. of Siblings', value: form.numberOfSiblings, field: 'numberOfSiblings' },
         { label: 'Birth Order', value: form.birthOrder, field: 'birthOrder' },
         { label: 'Emergency Contact', value: form.emergencyContact, field: 'emergencyContact', fullWidth: true },
+        { label: 'Emergency Contact No.', value: form.emergencyContactNo, field: 'emergencyContactNo', fullWidth: true },
       ],
     },
     {
@@ -1038,7 +1315,14 @@ function getProfileSections(
       description: 'Child dependent details for employee records.',
       rows: [
         { label: 'No. of Children', value: form.childrenCount, field: 'childrenCount' },
-        { label: 'Children Names', value: form.childrenNames, field: 'childrenNames', fullWidth: true, multiline: true },
+        ...childProfiles.map((child, index) => ({
+          kind: 'child' as const,
+          label: `Child ${index + 1}`,
+          value: child.name || child.birthday,
+          childIndex: index,
+          child,
+          fullWidth: true,
+        })),
       ],
     },
   ];
@@ -1067,6 +1351,150 @@ function formatAge(birthDate?: string | null) {
   return years >= 0 ? `${years} yrs` : null;
 }
 
+function parseInteger(value?: string | null) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function sanitizeDecimalNumber(value: string) {
+  const cleaned = value.replace(/[^\d.]/g, '');
+  const [whole, ...decimalParts] = cleaned.split('.');
+  const decimal = decimalParts.join('');
+  return decimalParts.length > 0 ? `${whole}.${decimal}` : whole;
+}
+
+function parseHeightCm(value?: string | null) {
+  const text = (value ?? '').trim().toLowerCase();
+  if (!text) {
+    return '';
+  }
+
+  const cmMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:cm|centimeter|centimeters)/);
+  if (cmMatch) {
+    return trimDecimal(Number(cmMatch[1]));
+  }
+
+  const feetMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:ft|feet|')/);
+  const inchesMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:in|inch|inches|")/);
+  if (feetMatch || inchesMatch) {
+    const feet = feetMatch ? Number(feetMatch[1]) : 0;
+    const inches = inchesMatch ? Number(inchesMatch[1]) : 0;
+    const totalInches = feet * 12 + inches;
+    return totalInches > 0 ? trimDecimal(totalInches * 2.54) : '';
+  }
+
+  const numbers = text.match(/\d+(?:\.\d+)?/g) ?? [];
+  if (numbers.length === 1) {
+    const numeric = Number(numbers[0]);
+    return trimDecimal(numeric);
+  }
+
+  if (numbers.length >= 2) {
+    const totalInches = Number(numbers[0]) * 12 + Number(numbers[1]);
+    return totalInches > 0 ? trimDecimal(totalInches * 2.54) : '';
+  }
+
+  return '';
+}
+
+function trimDecimal(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function formatHeightCm(cm: string) {
+  const normalized = sanitizeDecimalNumber(cm);
+  if (!normalized) {
+    return '';
+  }
+
+  return `${normalized} cm`;
+}
+
+function parseWeightKg(value?: string | null) {
+  const match = (value ?? '').match(/\d+(?:\.\d+)?/);
+  return match ? match[0] : '';
+}
+
+function formatWeightKg(value: string) {
+  const normalized = sanitizeDecimalNumber(value);
+  return normalized ? `${normalized} kg` : '';
+}
+
+function formatBodyMetricValue(height: string, weight: string) {
+  return `${height ?? ''}|||${weight ?? ''}`;
+}
+
+function parseBodyMetricValue(value?: string | null) {
+  const [height = '', weight = ''] = (value ?? '').split('|||');
+  return { height, weight };
+}
+
+function calculateBmi(heightCm: string, weightKg: string) {
+  const cm = Number(heightCm);
+  const kg = Number(weightKg);
+  if (!Number.isFinite(cm) || !Number.isFinite(kg) || cm <= 0 || kg <= 0) {
+    return null;
+  }
+
+  const meters = cm / 100;
+  return kg / (meters * meters);
+}
+
+function classifyBmi(bmi: number) {
+  if (bmi < 18.5) {
+    return 'Underweight';
+  }
+  if (bmi < 25) {
+    return 'Normal';
+  }
+  if (bmi < 30) {
+    return 'Overweight';
+  }
+  return 'Obese';
+}
+
+function parseChildProfiles(value?: string | null, countValue?: string | null): ChildProfileRow[] {
+  const lines = (value ?? '')
+    .split(/\r?\n|,/)
+    .filter((line) => line.trim().length > 0);
+  const children = lines.map((line) => {
+    const parts = line.split('|');
+    const birthday = parts.map((part) => part.trim()).find((part) => /^\d{4}-\d{2}-\d{2}$/.test(part)) ?? '';
+    const name = (parts[0] ?? '').replace(/\s*-\s*\d{4}-\d{2}-\d{2}.*/, '');
+    return { name, birthday };
+  });
+  const targetCount = Math.max(parseInteger(countValue), children.length);
+
+  while (children.length < targetCount) {
+    children.push({ name: '', birthday: '' });
+  }
+
+  return children;
+}
+
+function formatChildProfiles(children: ChildProfileRow[]) {
+  return children
+    .map((child) => {
+      const name = child.name.replace(/\r?\n|,/g, ' ');
+      const birthday = child.birthday.trim();
+      if (!name.trim() && !birthday) {
+        return '';
+      }
+      return birthday ? `${name} | ${birthday}` : name;
+    })
+    .filter((line) => line.trim().length > 0)
+    .join('\n');
+}
+
+function normalizeChildProfilesForSave(value?: string | null, countValue?: string | null) {
+  return formatChildProfiles(
+    parseChildProfiles(value, countValue).map((child) => ({
+      name: child.name.replace(/\s+/g, ' ').trim(),
+      birthday: child.birthday.trim(),
+    })),
+  );
+}
+
 function profileToForm(profile: EmployeeProfileSummary | null, username: string): UpdateEmployeeProfileInput {
   return {
     firstName: profile?.firstName ?? '',
@@ -1090,6 +1518,7 @@ function profileToForm(profile: EmployeeProfileSummary | null, username: string)
     education: profile?.education ?? '',
     presentAddress: profile?.presentAddress ?? '',
     emergencyContact: profile?.emergencyContact ?? '',
+    emergencyContactNo: profile?.emergencyContactNo ?? '',
     religion: profile?.religion ?? '',
     birthPlace: profile?.birthPlace ?? '',
     nationality: profile?.nationality ?? '',
@@ -1163,6 +1592,7 @@ function formToProfile(
     education: form.education || null,
     presentAddress: form.presentAddress || null,
     emergencyContact: form.emergencyContact || null,
+    emergencyContactNo: form.emergencyContactNo || null,
     religion: form.religion || null,
     birthPlace: form.birthPlace || null,
     nationality: form.nationality || null,
@@ -1190,7 +1620,7 @@ function formToProfile(
     spouseName: form.spouseName || null,
     spouseOccupation: form.spouseOccupation || null,
     spouseContact: form.spouseContact || null,
-    childrenNames: form.childrenNames || null,
+    childrenNames: normalizeChildProfilesForSave(form.childrenNames, form.childrenCount) || null,
     childrenCount: form.childrenCount || null,
   };
 }
@@ -1527,12 +1957,70 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
   },
   detailPickerInput: {
+    position: 'relative',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
   },
   detailPickerText: {
     flex: 1,
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+  },
+  compoundFieldRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  metricCell: {
+    flexGrow: 1,
+    flexBasis: '30%',
+    minWidth: 112,
+    minHeight: 58,
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
+  },
+  metricCellWide: {
+    flexBasis: '42%',
+    minWidth: 170,
+  },
+  metricLabel: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: fontWeights.heavy,
+    color: '#64748b',
+    marginBottom: 3,
+    textTransform: 'uppercase',
+  },
+  metricInput: {
+    padding: 0,
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+  },
+  metricDateButton: {
+    position: 'relative',
+    minHeight: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  metricDateText: {
+    flex: 1,
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+  },
+  metricValue: {
     fontSize: 16,
     lineHeight: 20,
     fontWeight: fontWeights.bold,

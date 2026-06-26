@@ -7,7 +7,7 @@ import { CalendarDays, Clock3, Eye, FileText, Funnel, RefreshCcw, Search, Users,
 import { colors, fontWeights, spacing, radius } from '../theme';
 import { Avatar } from '../components/Avatar';
 import { TopBar } from '../components/TopBar';
-import { loadMyRequests, type MyRequest } from '../services/requests';
+import { loadMyRequests, loadMyRequestsCached, type MyRequest } from '../services/requests';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
 type StatusFilter = 'all' | 'pending' | 'approved' | 'rejected';
@@ -30,10 +30,14 @@ const pageSize = 10;
 
 type Props = {
   profileResult?: ProfileLoadResult | null;
+  notificationCount?: number;
   onAssistant?: () => void;
+  onNotifications?: () => void;
+  onOpenSettings?: () => void;
+  onOpenMyTeam?: () => void;
 };
 
-export function RequestsTabScreen({ profileResult, onAssistant }: Props) {
+export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssistant, onNotifications, onOpenSettings, onOpenMyTeam }: Props) {
   const [items, setItems] = useState<MyRequest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
@@ -63,7 +67,18 @@ export function RequestsTabScreen({ profileResult, onAssistant }: Props) {
   }
 
   useEffect(() => {
-    refresh();
+    let active = true;
+    (async () => {
+      const cached = await loadMyRequestsCached();
+      if (active && cached.length) {
+        setItems(cached);
+        setStatus('');
+      }
+      await refresh();
+    })();
+    return () => {
+      active = false;
+    };
   }, []);
 
   const counts = useMemo(() => {
@@ -179,7 +194,7 @@ export function RequestsTabScreen({ profileResult, onAssistant }: Props) {
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={profile?.fullName} photoUrl={profile?.photoUrl} onMessages={onAssistant} />
+      <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} />
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <View style={styles.filterPanel}>
           <View style={styles.searchRow}>
@@ -356,7 +371,7 @@ function RequestCard({
   const statusKey = normalizeStatus(item.status);
   const requestDate = getRequestDate(item);
   const displayName = formatEmployeeDisplayName(profile);
-  const department = profile?.departmentName || profile?.storeName || 'Department';
+  const department = formatProfileWorkUnit(profile);
 
   return (
     <View style={styles.cardOuter}>
@@ -424,9 +439,10 @@ function RequestDetailsSheet({
 
   const { item, sequence } = request;
   const displayName = formatEmployeeDisplayName(profile);
-  const department = profile?.departmentName || profile?.storeName || 'Department';
+  const department = formatProfileWorkUnit(profile);
   const isLeave = item.request_type_code === 'leave';
   const isPerk = isPerkRequest(item);
+  const rejectedReason = getRejectedReason(item);
   const currentStatusDate = item.final_approved_at || item.rejected_at || item.submitted_at;
   const timelineRows = isPerk ? [
     {
@@ -567,6 +583,12 @@ function RequestDetailsSheet({
               <Text style={styles.panelTitle}>Reason / Details</Text>
             </View>
               <Text style={styles.reasonText}>{item.reason || 'No reason provided.'}</Text>
+              {rejectedReason ? (
+                <View style={styles.rejectedReasonBox}>
+                  <Text style={styles.rejectedReasonLabel}>Rejected reason</Text>
+                  <Text style={styles.rejectedReasonText}>{rejectedReason}</Text>
+                </View>
+              ) : null}
             </View>
           ) : null}
 
@@ -657,7 +679,7 @@ function TimelineItem({
   subtitle: string;
   date?: string;
   time?: string;
-  tone: 'warning' | 'success' | 'muted';
+  tone: 'warning' | 'success' | 'danger' | 'muted';
   isLast?: boolean;
 }) {
   return (
@@ -684,9 +706,10 @@ function TimelineItem({
   );
 }
 
-function timelineDotStyle(tone: 'warning' | 'success' | 'muted') {
+function timelineDotStyle(tone: 'warning' | 'success' | 'danger' | 'muted') {
   if (tone === 'warning') return { borderColor: colors.semantic.warning, backgroundColor: colors.surface };
   if (tone === 'success') return { borderColor: colors.semantic.success, backgroundColor: colors.semantic.success };
+  if (tone === 'danger') return { borderColor: colors.semantic.danger, backgroundColor: colors.semantic.danger };
   return { borderColor: colors.border, backgroundColor: colors.border };
 }
 
@@ -779,6 +802,20 @@ function formatEmployeeDisplayName(profile: EmployeeProfileSummary | null) {
   ].filter(Boolean);
 
   return parts.length ? parts.join(' ') : profile.fullName || 'Your Name';
+}
+
+function formatProfileWorkUnit(profile: EmployeeProfileSummary | null) {
+  if (normalizeDepartmentName(profile?.departmentName).includes('operation')) {
+    const department = profile?.departmentName?.trim().replace(/\s+/g, ' ') || 'Operations';
+    const store = profile?.storeName?.trim().replace(/\s+/g, ' ');
+    return [department, store].filter(Boolean).join(' | ').toUpperCase();
+  }
+
+  return profile?.departmentName || profile?.storeName || 'Department';
+}
+
+function normalizeDepartmentName(value?: string | null) {
+  return value?.trim().replace(/\s+/g, ' ').toLowerCase() ?? '';
 }
 
 function getRequestDate(item: MyRequest) {
@@ -930,8 +967,23 @@ function approvalStepStatus(status: string) {
   return 'Not yet processed';
 }
 
+function getRejectedReason(item: MyRequest) {
+  if (normalizeStatus(item.status) !== 'rejected') {
+    return null;
+  }
+
+  const reason = normalizeDisplayValue(item.rejected_reason);
+  if (reason) {
+    return reason;
+  }
+
+  const rejectedStep = (item.approval_summary ?? []).find((step) => normalizeStatus(step.status) === 'rejected');
+  return normalizeDisplayValue(rejectedStep?.remarks) ?? 'No rejection reason provided.';
+}
+
 function timelineTone(status: string) {
   if (status.includes('Approved')) return 'success' as const;
+  if (status.includes('Rejected')) return 'danger' as const;
   if (status.includes('Pending to approve')) return 'warning' as const;
   return 'muted' as const;
 }
@@ -1143,8 +1195,8 @@ const styles = StyleSheet.create({
   detailsSheet: {
     maxHeight: '88%',
     backgroundColor: colors.surface,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     borderWidth: 1,
     borderColor: colors.border,
     shadowColor: colors.brand.ink,
@@ -1154,7 +1206,7 @@ const styles = StyleSheet.create({
     elevation: 18,
   },
   sheetScroll: {
-    paddingBottom: spacing.xs,
+    paddingBottom: spacing.sm,
   },
   requestSummaryHeader: {
     flexDirection: 'row',
@@ -1201,11 +1253,14 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   sheetIconClose: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   esarfDivider: {
     borderTopWidth: 1,
@@ -1232,8 +1287,8 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 16,
-    backgroundColor: colors.surface,
+    borderRadius: 20,
+    backgroundColor: colors.background,
     borderBottomWidth: 1,
   },
   sheetProfileRow: {
@@ -1311,10 +1366,15 @@ const styles = StyleSheet.create({
   },
   detailsList: {
     marginHorizontal: spacing.lg,
-    gap: 0,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.background,
+    paddingHorizontal: spacing.sm,
+    overflow: 'hidden',
   },
   detailRow: {
-    minHeight: 40,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -1340,9 +1400,10 @@ const styles = StyleSheet.create({
   rangePanel: {
     marginHorizontal: spacing.lg,
     marginTop: spacing.sm,
-    borderRadius: radius.md,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: colors.border,
+    backgroundColor: colors.background,
     padding: spacing.sm,
     gap: spacing.sm,
   },
@@ -1353,8 +1414,9 @@ const styles = StyleSheet.create({
   },
   detailItem: {
     width: '50%',
-    minHeight: 36,
+    minHeight: 54,
     paddingRight: spacing.sm,
+    paddingVertical: spacing.xs,
   },
   detailLabel: {
     fontSize: 12,
@@ -1370,8 +1432,8 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   totalHoursBox: {
-    borderRadius: radius.md,
-    backgroundColor: colors.background,
+    borderRadius: 16,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
     paddingHorizontal: spacing.sm,
@@ -1385,8 +1447,8 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   slipItemsBox: {
-    borderRadius: radius.md,
-    backgroundColor: colors.background,
+    borderRadius: 16,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
     padding: spacing.sm,
@@ -1406,7 +1468,7 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   slipTotals: {
-    borderRadius: radius.md,
+    borderRadius: 16,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
@@ -1449,11 +1511,13 @@ const styles = StyleSheet.create({
     marginHorizontal: spacing.sm,
   },
   reasonBlock: {
+    marginHorizontal: spacing.lg,
     marginTop: spacing.sm,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.background,
+    padding: spacing.sm,
   },
   reasonText: {
     marginTop: spacing.xs,
@@ -1461,6 +1525,28 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontWeight: fontWeights.medium,
     color: colors.text,
+  },
+  rejectedReasonBox: {
+    marginTop: spacing.sm,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    backgroundColor: '#fef2f2',
+    padding: spacing.sm,
+  },
+  rejectedReasonLabel: {
+    fontSize: 12,
+    lineHeight: 15,
+    fontWeight: fontWeights.heavy,
+    color: colors.semantic.danger,
+    textTransform: 'uppercase',
+  },
+  rejectedReasonText: {
+    marginTop: 4,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: fontWeights.medium,
+    color: '#991b1b',
   },
   timelineHeader: {
     marginHorizontal: spacing.lg,
@@ -1471,7 +1557,13 @@ const styles = StyleSheet.create({
   },
   timelineBlock: {
     marginTop: spacing.sm,
-    paddingHorizontal: spacing.lg,
+    marginHorizontal: spacing.lg,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.background,
+    paddingHorizontal: spacing.sm,
+    paddingTop: spacing.sm,
     gap: spacing.xs,
   },
   timelineItem: {
@@ -1535,15 +1627,15 @@ const styles = StyleSheet.create({
   },
   sheetFooter: {
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.xs,
-    paddingBottom: spacing.sm,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.md,
     borderTopWidth: 1,
     borderTopColor: colors.border,
     backgroundColor: colors.surface,
   },
   sheetCloseButton: {
-    minHeight: 38,
-    borderRadius: radius.md,
+    minHeight: 42,
+    borderRadius: 21,
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',

@@ -14,20 +14,19 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import {
-  ArrowLeft,
   CalendarDays,
   Check,
   ChevronDown,
-  FileText,
-  Info,
   ListChecks,
   X,
 } from 'lucide-react-native';
 
 import { TopBar } from '../components/TopBar';
+import { WebNativeDateInput } from '../components/WebNativeDateInput';
 import { dayOffOptions, payrollClassOptions, scheduleOptions } from '../constants/requestOptions';
 import { supabase } from '../lib/supabase';
 import type { AssistantDraft } from '../services/assistant';
+import { loadMyFlexibleSchedule } from '../services/team';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import type { RequestTypeCode } from '../types/domain';
 import { calculateRequestHours } from '../utils/requestCalculations';
@@ -62,41 +61,75 @@ const exclusiveTransactionGroups = [
   ['ot', 'offset', 'use_offset'],
   ['ut', 'offset', 'use_offset'],
 ];
+const NO_SCHEDULE_LABEL = 'No schedule';
+const NO_DAY_OFF_LABEL = 'No day off';
 
 export function ApplyEsarfScreen({
   name,
+  username,
   photoUrl,
   offsetBalance = 0,
+  profilePayrollClass,
+  profileSchedule,
+  profileDayOff,
+  profileDepartmentName,
+  profileStoreName,
   initialDraft,
   onAssistant,
   onBack,
   onSubmitted,
   onToast,
+  notificationCount,
+  onNotifications,
 }: {
   name?: string | null;
+  username?: string | null;
   photoUrl?: string | null;
   offsetBalance?: number;
+  profilePayrollClass?: string | null;
+  profileSchedule?: string | null;
+  profileDayOff?: string | null;
+  profileDepartmentName?: string | null;
+  profileStoreName?: string | null;
   initialDraft?: Extract<AssistantDraft, { intent: 'draft_esarf_request' }> | null;
   onAssistant?: () => void;
   onBack: () => void;
   onSubmitted?: () => void | Promise<void>;
   onToast?: (toast: { tone: 'success' | 'error' | 'warning'; title: string; message: string }) => void;
+  notificationCount?: number;
+  onNotifications?: () => void;
 }) {
-  const [schedule, setSchedule] = useState(initialDraft?.fields.schedule ?? 'Select schedule');
-  const [dayOff, setDayOff] = useState(initialDraft?.fields.dayOff ?? 'Select day');
-  const [payrollClass, setPayrollClass] = useState(initialDraft?.fields.payrollClass ?? 'Select payroll class');
-  const [transactions, setTransactions] = useState<string[]>(initialDraft?.fields.transactions ?? []);
-  const [dateFrom, setDateFrom] = useState(initialDraft?.fields.dateFrom ?? '');
-  const [dateTo, setDateTo] = useState(initialDraft?.fields.dateTo ?? initialDraft?.fields.dateFrom ?? '');
-  const [timeFrom, setTimeFrom] = useState(initialDraft?.fields.timeFrom ?? '');
-  const [timeTo, setTimeTo] = useState(initialDraft?.fields.timeTo ?? '');
-  const [reason, setReason] = useState(initialDraft?.fields.reason ?? '');
+  const isOperationsDepartment = normalizeDepartmentName(profileDepartmentName).includes('operation');
+  const operationsScopeLabel = isOperationsDepartment
+    ? formatOperationsScopeLabel(profileDepartmentName, profileStoreName)
+    : '';
+  const fixedSchedule = profileSchedule?.trim() || NO_SCHEDULE_LABEL;
+  const fixedDayOff = profileDayOff?.trim() || NO_DAY_OFF_LABEL;
+  const initialSchedule = initialDraft?.fields.schedule ?? fixedSchedule;
+  const initialDayOff = initialDraft?.fields.dayOff ?? fixedDayOff;
+  const initialPayrollClass = initialDraft?.fields.payrollClass ?? profilePayrollClass ?? 'Select payroll class';
+  const initialTransactions = initialDraft?.fields.transactions ?? [];
+  const initialDateFrom = initialDraft?.fields.dateFrom ?? '';
+  const initialDateTo = initialDraft?.fields.dateTo ?? initialDateFrom;
+  const initialTimeFrom = initialDraft?.fields.timeFrom ?? '';
+  const initialTimeTo = initialDraft?.fields.timeTo ?? '';
+  const initialReason = initialDraft?.fields.reason ?? '';
+  const [schedule, setSchedule] = useState(initialSchedule);
+  const [dayOff, setDayOff] = useState(initialDayOff);
+  const [payrollClass, setPayrollClass] = useState(initialPayrollClass);
+  const [transactions, setTransactions] = useState<string[]>(initialTransactions);
+  const [dateFrom, setDateFrom] = useState(initialDateFrom);
+  const [dateTo, setDateTo] = useState(initialDateTo);
+  const [timeFrom, setTimeFrom] = useState(initialTimeFrom);
+  const [timeTo, setTimeTo] = useState(initialTimeTo);
+  const [reason, setReason] = useState(initialReason);
   const [activePicker, setActivePicker] = useState<'date_from' | 'date_to' | 'time_from' | 'time_to' | null>(null);
   const [activeSelect, setActiveSelect] = useState<'schedule' | 'day_off' | 'payroll_class' | null>(null);
   const [showSubmissionNotes, setShowSubmissionNotes] = useState(false);
   const [showReasonComposer, setShowReasonComposer] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatus, setSubmitStatus] = useState('');
+  const [scheduleStatus, setScheduleStatus] = useState('');
   const [validationErrors, setValidationErrors] = useState<Partial<Record<ValidationKey, string>>>({});
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
@@ -120,6 +153,55 @@ export function ApplyEsarfScreen({
   }, []);
 
   useEffect(() => {
+    let active = true;
+    async function refreshFlexibleSchedule() {
+      if (!dateFrom) {
+        setSchedule(isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule);
+        setDayOff(isOperationsDepartment ? NO_DAY_OFF_LABEL : fixedDayOff);
+        setScheduleStatus(isOperationsDepartment ? 'Select an ESARF date to load your My Team schedule.' : '');
+        setValidationErrors((current) => ({ ...current, schedule: undefined, dayOff: undefined, totalHours: undefined }));
+        return;
+      }
+
+      setScheduleStatus('Loading My Team schedule...');
+      try {
+        const row = await loadMyFlexibleSchedule(dateFrom);
+        if (!active) {
+          return;
+        }
+
+        if (!row) {
+          setSchedule(isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule);
+          setDayOff(isOperationsDepartment ? NO_DAY_OFF_LABEL : fixedDayOff);
+          setScheduleStatus(isOperationsDepartment ? 'No My Team schedule found for this ESARF date.' : '');
+        } else if (row.is_day_off) {
+          setSchedule(formatFlexibleScheduleLabel(row.previous_from_time, row.previous_to_time));
+          setDayOff(getWeekdayShortLabel(dateFrom));
+          setScheduleStatus('Using My Team day off for this ESARF date.');
+        } else {
+          setSchedule(formatFlexibleScheduleLabel(row.from_time, row.to_time));
+          setDayOff(getWeekdayShortLabel(dateFrom));
+          setScheduleStatus('Using My Team schedule for this ESARF date.');
+        }
+        setValidationErrors((current) => ({ ...current, schedule: undefined, dayOff: undefined, totalHours: undefined }));
+      } catch (error) {
+        if (!active) {
+          return;
+        }
+        setSchedule(isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule);
+        setDayOff(isOperationsDepartment ? NO_DAY_OFF_LABEL : fixedDayOff);
+        setScheduleStatus(error instanceof Error ? error.message : 'Unable to load My Team schedule.');
+      }
+    }
+
+    void refreshFlexibleSchedule();
+
+    return () => {
+      active = false;
+    };
+  }, [dateFrom, fixedDayOff, fixedSchedule, isOperationsDepartment]);
+
+  useEffect(() => {
     if (!showReasonComposer) {
       if (reasonFocusTimer.current) {
         clearTimeout(reasonFocusTimer.current);
@@ -139,6 +221,12 @@ export function ApplyEsarfScreen({
       }
     };
   }, [showReasonComposer]);
+
+  useEffect(() => {
+    if (!isOvertimeAllowedForPayroll(payrollClass)) {
+      setTransactions((current) => current.filter((item) => item !== 'ot'));
+    }
+  }, [payrollClass]);
 
   function toggleTransaction(key: string) {
     setValidationErrors((current) => ({ ...current, transactions: undefined }));
@@ -176,17 +264,25 @@ export function ApplyEsarfScreen({
 
   function applyPickerValue(kind: 'date_from' | 'date_to' | 'time_from' | 'time_to', selectedDate: Date) {
     if (kind === 'date_from') {
-      setDateFrom(formatDateInput(selectedDate));
-      setValidationErrors((current) => ({ ...current, dateFrom: undefined, totalHours: undefined }));
+      applyDateValue(kind, formatDateInput(selectedDate));
     } else if (kind === 'date_to') {
-      setDateTo(formatDateInput(selectedDate));
-      setValidationErrors((current) => ({ ...current, dateTo: undefined }));
+      applyDateValue(kind, formatDateInput(selectedDate));
     } else if (kind === 'time_from') {
       setTimeFrom(formatTimeInput(selectedDate));
       setValidationErrors((current) => ({ ...current, timeFrom: undefined, totalHours: undefined }));
     } else if (kind === 'time_to') {
       setTimeTo(formatTimeInput(selectedDate));
       setValidationErrors((current) => ({ ...current, timeTo: undefined, totalHours: undefined }));
+    }
+  }
+
+  function applyDateValue(kind: 'date_from' | 'date_to', value: string) {
+    if (kind === 'date_from') {
+      setDateFrom(value);
+      setValidationErrors((current) => ({ ...current, dateFrom: undefined, totalHours: undefined }));
+    } else {
+      setDateTo(value);
+      setValidationErrors((current) => ({ ...current, dateTo: undefined }));
     }
   }
 
@@ -241,29 +337,63 @@ export function ApplyEsarfScreen({
   }
 
   const selectSheet = getSelectSheet(activeSelect, schedule, dayOff, payrollClass);
+  const effectiveScheduleForHours = schedule === NO_SCHEDULE_LABEL ? '' : schedule;
+  const effectiveDayOffForHours = dayOff === NO_DAY_OFF_LABEL ? '' : dayOff;
   const isUseOffsetSelected = transactions.includes('use_offset');
   const totalHours = calculateRequestHours({
     requestType: isUseOffsetSelected ? 'use_offset' : 'overtime',
     dateFrom,
     timeFrom,
     timeTo,
-    timeSchedule: scheduleOptions.includes(schedule) ? schedule : '',
-    dayOff: dayOffOptions.includes(dayOff) ? dayOff : '',
+    timeSchedule: effectiveScheduleForHours,
+    dayOff: effectiveDayOffForHours,
   });
+  const scheduleContextError = getScheduleContextError({
+    dateFrom,
+    schedule,
+    dayOff,
+    isOperationsDepartment,
+  });
+  const payrollContextError = payrollClassOptions.includes(payrollClass)
+    ? ''
+    : 'Payroll class is missing from your employee profile. Contact HR before submitting ESARF.';
+  const requestInfoNotice = scheduleContextError || payrollContextError || scheduleStatus;
   const hasUnsavedChanges =
-    schedule !== (initialDraft?.fields.schedule ?? 'Select schedule') ||
-    dayOff !== (initialDraft?.fields.dayOff ?? 'Select day') ||
-    payrollClass !== (initialDraft?.fields.payrollClass ?? 'Select payroll class') ||
-    transactions.join('|') !== (initialDraft?.fields.transactions ?? []).join('|') ||
-    dateFrom !== (initialDraft?.fields.dateFrom ?? '') ||
-    dateTo !== (initialDraft?.fields.dateTo ?? initialDraft?.fields.dateFrom ?? '') ||
-    timeFrom !== (initialDraft?.fields.timeFrom ?? '') ||
-    timeTo !== (initialDraft?.fields.timeTo ?? '') ||
-    reason !== (initialDraft?.fields.reason ?? '');
+    schedule !== initialSchedule ||
+    dayOff !== initialDayOff ||
+    payrollClass !== initialPayrollClass ||
+    transactions.join('|') !== initialTransactions.join('|') ||
+    dateFrom !== initialDateFrom ||
+    dateTo !== initialDateTo ||
+    timeFrom !== initialTimeFrom ||
+    timeTo !== initialTimeTo ||
+    reason !== initialReason;
+
+  function closeTransientPanels() {
+    Keyboard.dismiss();
+    setActivePicker(null);
+    setActiveSelect(null);
+    setShowReasonComposer(false);
+    setShowSubmissionNotes(false);
+  }
 
   function confirmDiscard(action: () => void) {
-    if (!hasUnsavedChanges || isSubmitting) {
+    closeTransientPanels();
+
+    if (isSubmitting) {
+      return;
+    }
+
+    if (!hasUnsavedChanges) {
       action();
+      return;
+    }
+
+    if (Platform.OS === 'web') {
+      const confirm = (globalThis as unknown as { confirm?: (message: string) => boolean }).confirm;
+      if (confirm?.('Discard this ESARF draft? Your unsaved changes will be lost.')) {
+        action();
+      }
       return;
     }
 
@@ -290,16 +420,23 @@ export function ApplyEsarfScreen({
       totalHours,
       offsetBalance,
       reason,
+      scheduleContextError,
     });
     setValidationErrors(nextErrors);
 
     const firstSection = getFirstInvalidSection(nextErrors);
-      if (firstSection) {
+    if (firstSection) {
       scrollRef.current?.scrollTo({ y: Math.max(0, sectionY.current[firstSection] - 12), animated: true });
       if (firstSection === 'datetime' && nextErrors.reason) {
         setTimeout(() => setShowReasonComposer(true), 260);
       }
-      setSubmitStatus('Please complete all required fields.');
+      const message = getValidationErrorMessage(nextErrors);
+      setSubmitStatus(message);
+      onToast?.({
+        tone: 'error',
+        title: 'ESARF error',
+        message,
+      });
       return;
     }
 
@@ -344,7 +481,7 @@ export function ApplyEsarfScreen({
       await onSubmitted?.();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to submit ESARF.';
-      setSubmitStatus(`Failed: ${message}`);
+      setSubmitStatus(message);
       onToast?.({
         tone: 'error',
         title: 'ESARF failed',
@@ -358,55 +495,55 @@ export function ApplyEsarfScreen({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={name} photoUrl={photoUrl} onMessages={onAssistant ? () => confirmDiscard(onAssistant) : undefined} />
+      <TopBar
+        name={name}
+        username={username}
+        photoUrl={photoUrl}
+        notificationCount={notificationCount}
+        onBackHome={() => confirmDiscard(onBack)}
+        backTitle="Apply ESARF"
+        backAccessory="info"
+        onBackAccessory={() => setShowSubmissionNotes(true)}
+        onMessages={onAssistant ? () => confirmDiscard(onAssistant) : undefined}
+        onNotifications={onNotifications ? () => confirmDiscard(onNotifications) : undefined}
+      />
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.header}>
-          <Pressable style={styles.backButton} onPress={() => confirmDiscard(onBack)}>
-            <ArrowLeft size={20} color={colors.text} strokeWidth={2.5} />
-          </Pressable>
-          <View style={styles.headerText}>
-            <Text style={styles.title}>Apply ESARF</Text>
-          </View>
-          <Pressable style={styles.notesButton} onPress={() => setShowSubmissionNotes(true)}>
-            <Info size={18} color={colors.primary} strokeWidth={2.6} />
-          </Pressable>
-        </View>
-
         <Section
           number="1"
-          title="Request Information"
-          icon={<FileText size={18} color={colors.primary} />}
+          title="Schedule and payroll"
+          icon={<CalendarDays size={18} color={colors.primary} />}
           invalid={hasSectionError(validationErrors, 'request')}
           onLayoutY={(y) => {
             sectionY.current.request = y;
           }}
         >
           <PickerButton
-            label="Time schedule"
+            label="Schedule"
             value={schedule}
             placeholder="Select schedule"
-            onPress={() => setActiveSelect('schedule')}
+            onPress={() => {}}
+            disabled={true}
             error={validationErrors.schedule}
           />
-
           <PickerButton
             label="Day off"
             value={dayOff}
-            placeholder="Select day"
-            onPress={() => setActiveSelect('day_off')}
+            placeholder="Select day off"
+            onPress={() => {}}
+            disabled={true}
             error={validationErrors.dayOff}
           />
-
           <PickerButton
             label="Payroll class"
             value={payrollClass}
             placeholder="Select payroll class"
-            onPress={() => setActiveSelect('payroll_class')}
+            onPress={() => {}}
+            disabled={true}
             error={validationErrors.payrollClass}
           />
         </Section>
@@ -424,7 +561,9 @@ export function ApplyEsarfScreen({
           <View style={styles.transactionGrid}>
             {transactionOptions.map((option) => {
               const selected = transactions.includes(option.key);
-              const disabled = !selected && isTransactionDisabled(option.key, transactions);
+              const disabled =
+                (!selected && isTransactionDisabled(option.key, transactions)) ||
+                (option.key === 'ot' && !isOvertimeAllowedForPayroll(payrollClass));
               return (
                 <Pressable
                   key={option.key}
@@ -452,6 +591,7 @@ export function ApplyEsarfScreen({
               );
             })}
           </View>
+
           {validationErrors.transactions ? <Text style={styles.fieldError}>{validationErrors.transactions}</Text> : null}
         </Section>
 
@@ -464,12 +604,26 @@ export function ApplyEsarfScreen({
             sectionY.current.datetime = y;
           }}
         >
+          {operationsScopeLabel ? (
+            <View style={styles.operationsScope}>
+              <Text style={styles.operationsScopeText} numberOfLines={1}>{operationsScopeLabel}</Text>
+            </View>
+          ) : null}
+          {requestInfoNotice ? (
+            <View style={[styles.scheduleNotice, scheduleContextError || payrollContextError ? styles.scheduleNoticeError : null]}>
+              <Text style={[styles.scheduleNoticeText, scheduleContextError || payrollContextError ? styles.scheduleNoticeTextError : null]}>
+                {requestInfoNotice}
+              </Text>
+            </View>
+          ) : null}
           <View style={styles.twoColumn}>
             <PickerButton
               label="Date from"
               value={formatDateDisplay(dateFrom)}
               placeholder="mm/dd/yyyy"
               onPress={() => openPicker('date_from')}
+              webValue={dateFrom}
+              onWebChange={(value) => applyDateValue('date_from', value)}
               error={validationErrors.dateFrom}
             />
             <PickerButton
@@ -477,6 +631,8 @@ export function ApplyEsarfScreen({
               value={formatDateDisplay(dateTo)}
               placeholder="mm/dd/yyyy"
               onPress={() => openPicker('date_to')}
+              webValue={dateTo}
+              onWebChange={(value) => applyDateValue('date_to', value)}
               error={validationErrors.dateTo}
             />
           </View>
@@ -712,6 +868,11 @@ function isTransactionDisabled(key: string, selectedKeys: string[]) {
   return selectedKeys.some((selectedKey) => getConflictingTransactions(selectedKey).includes(key));
 }
 
+function isOvertimeAllowedForPayroll(payrollClass: string) {
+  const normalized = payrollClass.trim().toLowerCase();
+  return normalized !== 'admin' && normalized !== 'managerial';
+}
+
 function validateForm({
   schedule,
   dayOff,
@@ -724,6 +885,7 @@ function validateForm({
   totalHours,
   offsetBalance,
   reason,
+  scheduleContextError,
 }: {
   schedule: string;
   dayOff: string;
@@ -736,33 +898,128 @@ function validateForm({
   totalHours: number;
   offsetBalance: number;
   reason: string;
+  scheduleContextError: string;
 }) {
   const errors: Partial<Record<ValidationKey, string>> = {};
 
-  if (!scheduleOptions.includes(schedule)) errors.schedule = 'Required';
-  if (!dayOffOptions.includes(dayOff)) errors.dayOff = 'Required';
-  if (!payrollClassOptions.includes(payrollClass)) errors.payrollClass = 'Required';
-  if (!transactions.length) errors.transactions = 'Required';
-  if (!dateFrom) errors.dateFrom = 'Required';
-  if (!dateTo) errors.dateTo = 'Required';
+  if (scheduleContextError) {
+    errors.schedule = scheduleContextError;
+  }
+  if (!isValidScheduleValue(schedule)) errors.schedule = 'Schedule is required.';
+  if (!isValidDayOffValue(dayOff)) errors.dayOff = 'Day off is required.';
+  if (!payrollClassOptions.includes(payrollClass)) errors.payrollClass = 'Payroll class is required.';
+  if (!isOvertimeAllowedForPayroll(payrollClass) && transactions.includes('ot')) {
+    errors.transactions = 'Overtime is disabled for Admin and Managerial.';
+  }
+  if (!transactions.length) errors.transactions = 'Select at least one transaction.';
+  if (!dateFrom) errors.dateFrom = 'Date From is required.';
+  if (!dateTo) errors.dateTo = 'Date To is required.';
   if (dateFrom && dateTo && dateStringToDate(dateTo).getTime() < dateStringToDate(dateFrom).getTime()) {
     errors.dateTo = 'Date To cannot be earlier than Date From';
   }
-  if (!timeFrom) errors.timeFrom = 'Required';
-  if (!timeTo) errors.timeTo = 'Required';
-  if (dateFrom && timeFrom && timeTo && totalHours <= 0) errors.totalHours = 'Required';
+  if (!timeFrom) errors.timeFrom = 'Time From is required.';
+  if (!timeTo) errors.timeTo = 'Time To is required.';
+  if (dateFrom && timeFrom && timeTo && totalHours <= 0) errors.totalHours = 'Total hours must be greater than zero.';
   if (transactions.includes('use_offset') && totalHours > offsetBalance) {
     errors.totalHours = `Use Offset cannot exceed your ${offsetBalance.toFixed(2)} hour offset balance.`;
   }
-  if (!reason.trim()) errors.reason = 'Required';
+  if (!reason.trim()) errors.reason = 'Reason is required.';
 
   return errors;
 }
 
+function getValidationErrorMessage(errors: Partial<Record<ValidationKey, string>>) {
+  return (
+    errors.schedule ||
+    errors.dayOff ||
+    errors.payrollClass ||
+    errors.transactions ||
+    errors.dateFrom ||
+    errors.dateTo ||
+    errors.timeFrom ||
+    errors.timeTo ||
+    errors.totalHours ||
+    errors.reason ||
+    'Please complete all required fields.'
+  );
+}
+
+function isValidScheduleValue(value: string) {
+  return value === NO_SCHEDULE_LABEL || Boolean(parseScheduleLabel(value));
+}
+
+function isValidDayOffValue(value: string) {
+  return value === NO_DAY_OFF_LABEL || dayOffOptions.includes(value);
+}
+
+function normalizeDepartmentName(value?: string | null) {
+  return value?.trim().replace(/\s+/g, ' ').toLowerCase() ?? '';
+}
+
+function formatOperationsScopeLabel(departmentName?: string | null, storeName?: string | null) {
+  const department = departmentName?.trim().replace(/\s+/g, ' ') || 'Operations';
+  const store = storeName?.trim().replace(/\s+/g, ' ');
+  return [department, store].filter(Boolean).join(' | ').toUpperCase();
+}
+
+function getWeekdayShortLabel(dateValue: string) {
+  const [year, month, day] = dateValue.split('-').map(Number);
+  if (!year || !month || !day) {
+    return NO_DAY_OFF_LABEL;
+  }
+  return new Date(year, month - 1, day).toLocaleDateString('en-US', { weekday: 'short' });
+}
+
+function formatFlexibleScheduleLabel(fromTime?: string | null, toTime?: string | null) {
+  if (!fromTime || !toTime) {
+    return NO_SCHEDULE_LABEL;
+  }
+  return `${formatTimeDisplay(fromTime)} - ${formatTimeDisplay(toTime)}`;
+}
+
+function parseScheduleLabel(value: string) {
+  return value.trim().match(/^\d{1,2}:\d{2}\s?(AM|PM)\s-\s\d{1,2}:\d{2}\s?(AM|PM)$/i);
+}
+
+function getScheduleContextError({
+  dateFrom,
+  schedule,
+  dayOff,
+  isOperationsDepartment,
+}: {
+  dateFrom: string;
+  schedule: string;
+  dayOff: string;
+  isOperationsDepartment: boolean;
+}) {
+  if (!dateFrom) {
+    return '';
+  }
+
+  const hasSchedule = schedule !== NO_SCHEDULE_LABEL && isValidScheduleValue(schedule);
+  const hasDayOff = dayOff !== NO_DAY_OFF_LABEL && isValidDayOffValue(dayOff);
+  if (hasSchedule || hasDayOff) {
+    return '';
+  }
+
+  return isOperationsDepartment
+    ? 'No schedule found for this date.'
+    : 'No schedule found on your profile.';
+}
+
 function getFirstInvalidSection(errors: Partial<Record<ValidationKey, string>>): SectionKey | null {
-  if (errors.schedule || errors.dayOff || errors.payrollClass) return 'request';
   if (errors.transactions) return 'transactions';
-  if (errors.dateFrom || errors.dateTo || errors.timeFrom || errors.timeTo || errors.totalHours || errors.reason) {
+  if (errors.schedule || errors.dayOff || errors.payrollClass) {
+    return 'request';
+  }
+  if (
+    errors.dateFrom ||
+    errors.dateTo ||
+    errors.timeFrom ||
+    errors.timeTo ||
+    errors.totalHours ||
+    errors.reason
+  ) {
     return 'datetime';
   }
   return null;
@@ -823,6 +1080,7 @@ function FieldLabel({ label }: { label: string }) {
   return <Text style={styles.fieldLabel}>{label}</Text>;
 }
 
+
 function TextField({
   label,
   value,
@@ -862,20 +1120,29 @@ function PickerButton({
   value,
   placeholder,
   onPress,
+  disabled = false,
+  webValue,
+  onWebChange,
   error,
 }: {
   label: string;
   value: string;
   placeholder: string;
   onPress: () => void;
+  disabled?: boolean;
+  webValue?: string;
+  onWebChange?: (value: string) => void;
   error?: string;
 }) {
+  const useWebNativeDate = Platform.OS === 'web' && onWebChange && !disabled;
+
   return (
     <View style={styles.textFieldWrap}>
       <FieldLabel label={label} />
-      <Pressable style={[styles.selectButton, error ? styles.inputError : null]} onPress={onPress}>
-        <Text style={[styles.selectButtonText, !value ? styles.placeholderText : null]}>{value || placeholder}</Text>
-        <ChevronDown size={16} color={error ? colors.semantic.danger : '#94a3b8'} strokeWidth={2.4} />
+      <Pressable disabled={disabled} style={[styles.selectButton, disabled ? styles.selectButtonDisabled : null, error ? styles.inputError : null]} onPress={useWebNativeDate ? undefined : onPress}>
+        <Text style={[styles.selectButtonText, disabled ? styles.selectButtonTextDisabled : null, !value ? styles.placeholderText : null]}>{value || placeholder}</Text>
+        {disabled ? null : <ChevronDown size={16} color={error ? colors.semantic.danger : '#94a3b8'} strokeWidth={2.4} />}
+        {useWebNativeDate ? <WebNativeDateInput value={webValue ?? ''} label={label} onChange={onWebChange} /> : null}
       </Pressable>
       {error ? <Text style={styles.fieldError}>{error}</Text> : null}
     </View>
@@ -994,6 +1261,44 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginBottom: spacing.md,
   },
+  operationsScope: {
+    minHeight: 34,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    backgroundColor: '#fffbeb',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.md,
+  },
+  operationsScopeText: {
+    color: colors.brand.ink,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: fontWeights.heavy,
+  },
+  scheduleNotice: {
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    marginBottom: spacing.md,
+  },
+  scheduleNoticeError: {
+    borderColor: '#fecaca',
+    backgroundColor: '#fef2f2',
+  },
+  scheduleNoticeText: {
+    color: colors.primary,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: fontWeights.bold,
+  },
+  scheduleNoticeTextError: {
+    color: colors.semantic.danger,
+  },
   transactionGrid: {
     gap: 10,
   },
@@ -1053,6 +1358,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   selectButton: {
+    position: 'relative',
     minHeight: 48,
     borderRadius: radius.md,
     borderColor: colors.border,
@@ -1070,6 +1376,13 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 15,
     fontWeight: fontWeights.bold,
+  },
+  selectButtonDisabled: {
+    backgroundColor: '#f8fafc',
+    borderColor: '#e2e8f0',
+  },
+  selectButtonTextDisabled: {
+    color: '#475569',
   },
   placeholderText: {
     color: '#94a3b8',

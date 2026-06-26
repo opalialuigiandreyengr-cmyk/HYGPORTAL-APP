@@ -37,6 +37,9 @@ type AssignmentRow = {
 
 type ProfileDetailRow = {
   employee_type: string | null;
+  payroll_class?: string | null;
+  time_schedule?: string | null;
+  day_off?: string | null;
   tin: string | null;
   sss: string | null;
   pagibig: string | null;
@@ -46,6 +49,7 @@ type ProfileDetailRow = {
   education: string | null;
   present_address: string | null;
   emergency_contact: string | null;
+  emergency_contact_no?: string | null;
   religion?: string | null;
   birth_place?: string | null;
   nationality?: string | null;
@@ -109,6 +113,9 @@ function isMissingSchemaMessage(message: string) {
 async function loadProfileDetails(employeeId: string) {
   const fullSelect = `
     employee_type,
+    payroll_class,
+    time_schedule,
+    day_off,
     tin,
     sss,
     pagibig,
@@ -118,6 +125,7 @@ async function loadProfileDetails(employeeId: string) {
     education,
     present_address,
     emergency_contact,
+    emergency_contact_no,
     religion,
     birth_place,
     nationality,
@@ -165,7 +173,7 @@ async function loadProfileDetails(employeeId: string) {
 
   return supabase
     .from('employee_profile_details')
-    .select('employee_type, tin, sss, pagibig, philhealth, bank_type, account_no, education, present_address, emergency_contact')
+    .select('employee_type, payroll_class, time_schedule, day_off, tin, sss, pagibig, philhealth, bank_type, account_no, education, present_address, emergency_contact')
     .eq('employee_id', employeeId)
     .maybeSingle<ProfileDetailRow>();
 }
@@ -356,6 +364,9 @@ export async function loadEmployeeProfile(authUserId: string): Promise<ProfileLo
   const profileDetails: Partial<EmployeeProfileSummary> = detailsResponse.data
     ? {
         employeeType: detailsResponse.data.employee_type,
+        payrollClass: detailsResponse.data.payroll_class,
+        timeSchedule: detailsResponse.data.time_schedule,
+        dayOff: detailsResponse.data.day_off,
         tin: detailsResponse.data.tin,
         sss: detailsResponse.data.sss,
         pagibig: detailsResponse.data.pagibig,
@@ -365,6 +376,7 @@ export async function loadEmployeeProfile(authUserId: string): Promise<ProfileLo
         education: detailsResponse.data.education,
         presentAddress: detailsResponse.data.present_address,
         emergencyContact: detailsResponse.data.emergency_contact,
+        emergencyContactNo: detailsResponse.data.emergency_contact_no,
         religion: detailsResponse.data.religion,
         birthPlace: detailsResponse.data.birth_place,
         nationality: detailsResponse.data.nationality,
@@ -445,6 +457,7 @@ export type UpdateEmployeeProfileInput = {
   education: string;
   presentAddress: string;
   emergencyContact: string;
+  emergencyContactNo: string;
   religion: string;
   birthPlace: string;
   nationality: string;
@@ -518,6 +531,7 @@ export async function updateEmployeeProfile(input: UpdateEmployeeProfileInput) {
     education: input.education.trim(),
     presentAddress: input.presentAddress.trim(),
     emergencyContact: input.emergencyContact.trim(),
+    emergencyContactNo: input.emergencyContactNo.trim(),
     religion: input.religion.trim(),
     birthPlace: input.birthPlace.trim(),
     nationality: input.nationality.trim(),

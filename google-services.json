@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1007022660756",
+    "project_id": "hyg-portal",
+    "storage_bucket": "hyg-portal.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1007022660756:android:6382b14253114c705fa881",
+        "android_client_info": {
+          "package_name": "com.hyg.portal"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD5g9LhCVTA0e1VGP5fRottJZK06ddYvYI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

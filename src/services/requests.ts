@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 
 export type RequestApprovalSummary = {
   step_order: number;
@@ -47,11 +48,23 @@ export type MyRequest = {
 };
 
 export async function loadMyRequests() {
+  const cacheKey = 'my_requests_v1';
   const { data, error } = await supabase.rpc('get_my_requests');
 
   if (error) {
+    const cached = await getCacheJSON<MyRequest[]>(cacheKey);
+    if (cached) {
+      return cached;
+    }
     throw error;
   }
 
-  return (data ?? []) as MyRequest[];
+  const items = (data ?? []) as MyRequest[];
+  await setCacheJSON(cacheKey, items);
+  return items;
+}
+
+export async function loadMyRequestsCached() {
+  const cacheKey = 'my_requests_v1';
+  return (await getCacheJSON<MyRequest[]>(cacheKey)) ?? [];
 }

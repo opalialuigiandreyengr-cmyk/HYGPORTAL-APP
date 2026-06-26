@@ -1,13 +1,13 @@
 {
   "name": "mobile",
-  "version": "1.0.0",
+  "version": "1.5.1",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "build:web": "expo export --platform web",
+    "build:web": "expo export --platform web && node scripts/copy-pwa-assets.js",
     "check:assistant": "node scripts/check-assistant-edge-cases.js"
   },
   "dependencies": {
@@ -17,8 +17,16 @@
     "@react-native-picker/picker": "2.11.1",
     "@supabase/supabase-js": "^2.105.4",
     "expo": "~54.0.33",
+    "expo-file-system": "~19.0.23",
     "expo-image-picker": "~17.0.11",
+    "expo-local-authentication": "~17.0.8",
+    "expo-mlkit-ocr": "^0.2.7",
+    "expo-notifications": "~0.32.17",
+    "expo-secure-store": "~15.0.8",
+    "expo-sharing": "~14.0.8",
+    "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",
+    "expo-updates": "~29.0.18",
     "lucide-react-native": "^1.14.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
@@ -26,7 +34,8 @@
     "react-native-safe-area-context": "~5.6.0",
     "react-native-svg": "15.12.1",
     "react-native-url-polyfill": "^3.0.0",
-    "react-native-web": "^0.21.0"
+    "react-native-web": "^0.21.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/react": "~19.1.0",

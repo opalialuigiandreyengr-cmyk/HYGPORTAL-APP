@@ -28,6 +28,7 @@ export type DepartmentPositionCatalogRow = {
   department_name: string;
   position_id: string | null;
   position_name: string | null;
+  authority_level: number | null;
   employee_count: number;
 };
 
@@ -41,6 +42,30 @@ export type DepartmentApprovalLadderRow = {
   department_id: string;
   department_name: string;
   route_levels: number[];
+  route_roles?: Record<string, { position_id: string; position_name: string }>;
+  route_approvers?: Record<string, string[]>;
+};
+
+export type AdminClusterRow = {
+  cluster_id: string;
+  cluster_name: string;
+  company_id: string;
+  company_name: string;
+  area_id: string | null;
+  area_name: string | null;
+  store_count: number;
+  is_active: boolean;
+};
+
+export type AdminStoreClusterRow = {
+  store_id: string;
+  store_name: string;
+  company_id: string;
+  company_name: string;
+  cluster_id: string | null;
+  cluster_name: string | null;
+  area_id: string | null;
+  area_name: string | null;
 };
 
 function messageFromError(error: { message?: string; details?: string | null; hint?: string | null }) {
@@ -186,10 +211,87 @@ export async function loadDepartmentApprovalLadders() {
   return (data ?? []) as DepartmentApprovalLadderRow[];
 }
 
-export async function setDepartmentApprovalLadder(departmentId: string, levels: number[]) {
+export async function setDepartmentApprovalLadder(
+  departmentId: string,
+  levels: number[],
+  roles: Record<number, string> = {},
+) {
   const { data, error } = await supabase.rpc('admin_set_department_approval_ladder', {
     p_department_id: departmentId,
     p_levels: levels,
+    p_roles: Object.fromEntries(Object.entries(roles).map(([level, positionId]) => [level, positionId])),
+  });
+
+  if (error?.code === 'PGRST202' && !Object.keys(roles).length) {
+    const fallback = await supabase.rpc('admin_set_department_approval_ladder', {
+      p_department_id: departmentId,
+      p_levels: levels,
+    });
+
+    if (fallback.error) {
+      throw new Error(messageFromError(fallback.error));
+    }
+
+    return fallback.data as string;
+  }
+
+  if (error) {
+    throw new Error(messageFromError(error));
+  }
+
+  return data as string;
+}
+
+export async function loadAdminClusters() {
+  const { data, error } = await supabase.rpc('admin_cluster_directory');
+
+  if (error) {
+    throw new Error(messageFromError(error));
+  }
+
+  return (data ?? []) as AdminClusterRow[];
+}
+
+export async function loadAdminStoreClusterCatalog() {
+  const { data, error } = await supabase.rpc('admin_store_cluster_catalog');
+
+  if (error) {
+    throw new Error(messageFromError(error));
+  }
+
+  return (data ?? []) as AdminStoreClusterRow[];
+}
+
+export async function createAdminCluster(companyName: string, name: string) {
+  const { data, error } = await supabase.rpc('admin_create_cluster', {
+    p_company_name: companyName,
+    p_name: name,
+  });
+
+  if (error) {
+    throw new Error(messageFromError(error));
+  }
+
+  return data as string;
+}
+
+export async function assignStoreCluster(storeId: string, clusterId: string | null) {
+  const { data, error } = await supabase.rpc('admin_assign_store_cluster', {
+    p_store_id: storeId,
+    p_cluster_id: clusterId,
+  });
+
+  if (error) {
+    throw new Error(messageFromError(error));
+  }
+
+  return data as string;
+}
+
+export async function setEmployeeClusterScope(employeeId: string, clusterId: string) {
+  const { data, error } = await supabase.rpc('admin_set_employee_cluster_scope', {
+    p_employee_id: employeeId,
+    p_cluster_id: clusterId,
   });
 
   if (error) {

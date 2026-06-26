@@ -1,5 +1,15 @@
 import { supabase } from '../lib/supabase';
 
+export type PendingApprovalStep = {
+  step_order: number;
+  required_level: number;
+  status: string;
+  acted_at: string | null;
+  skipped_reason: string | null;
+  approver_name: string | null;
+  approver_position_name?: string | null;
+};
+
 export type PendingApproval = {
   step_id: string;
   request_id: string;
@@ -8,6 +18,7 @@ export type PendingApproval = {
   request_type_name: string;
   requester_name: string;
   requester_employee_no: string | null;
+  requester_photo_url?: string | null;
   date_from: string | null;
   date_to: string | null;
   time_from: string | null;
@@ -22,6 +33,7 @@ export type PendingApproval = {
   unpaid_days: number | null;
   reason: string | null;
   submitted_at: string;
+  approval_summary: PendingApprovalStep[];
 };
 
 export async function loadPendingApprovals() {

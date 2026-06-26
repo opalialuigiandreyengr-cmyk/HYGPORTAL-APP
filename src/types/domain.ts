@@ -63,6 +63,7 @@ export type EmployeeProfileSummary = {
   positionName?: string | null;
   dateHired?: string | null;
   employeeType?: string | null;
+  payrollClass?: string | null;
   tin?: string | null;
   sss?: string | null;
   pagibig?: string | null;
@@ -84,6 +85,9 @@ export type EmployeeProfileSummary = {
   zipCode?: string | null;
   permanentAddress?: string | null;
   emergencyContact?: string | null;
+  emergencyContactNo?: string | null;
+  timeSchedule?: string | null;
+  dayOff?: string | null;
   fatherName?: string | null;
   fatherOccupation?: string | null;
   motherMaidenName?: string | null;

@@ -111,12 +111,12 @@ export const assistantFaqRules = [
   {
     keywords: ['what is employee charge', 'employee charge'],
     answer:
-      'Employee Charge is a credit purchase request under Perks. It may require product details, amount validation, and email verification.',
+      'Employee Charge is a credit purchase request under Perks. Cash discount and credit charge share the same 15% discount benefit: PHP 3,000 cap and 6 transactions per year. Credit charge has a PHP 3,000 per-request threshold.',
   },
   {
     keywords: ['employee discount', 'cash discount', 'perk'],
     answer:
-      'Perks include Employee Discount for cash purchases and Employee Charge for credit purchases. Product details and email verification are required before approval.',
+      'Perks include Employee Discount for cash purchases and Employee Charge for credit purchases. Both share the same 15% discount benefit: PHP 3,000 cap and 6 transactions per year. Product details and email verification are required before approval.',
   },
   {
     keywords: ['update my profile', 'change profile', 'profile photo', 'profile details'],

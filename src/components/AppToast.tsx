@@ -123,7 +123,8 @@ const styles = StyleSheet.create({
     top: spacing.xl + spacing.sm,
     left: spacing.lg,
     right: 0,
-    zIndex: 20,
+    zIndex: 9999,
+    elevation: 20,
     alignItems: 'flex-end',
   },
   toastInner: {

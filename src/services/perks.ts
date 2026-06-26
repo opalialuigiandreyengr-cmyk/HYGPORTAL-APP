@@ -41,6 +41,11 @@ export type PerkUsage = {
   creditAmountLimit: number;
   creditFirstDiscountUsed: boolean;
   creditTransactionsUsed: number;
+  sharedDiscountAmountUsed: number;
+  sharedDiscountAmountLimit: number;
+  sharedDiscountTransactionsUsed: number;
+  sharedDiscountTransactionsLimit: number;
+  creditTransactionLimit: number;
 };
 
 export async function loadPerkUsage() {
@@ -51,6 +56,9 @@ export async function loadPerkUsage() {
   }
 
   const row = Array.isArray(data) ? data[0] : data;
+  const fallbackSharedUsed = Number(row?.cash_amount_used ?? 0) + Number(row?.credit_amount_used ?? 0);
+  const fallbackSharedTransactions = Number(row?.cash_transactions_used ?? 0)
+    + (Boolean(row?.credit_first_discount_used) ? 1 : 0);
   return {
     cashAmountUsed: Number(row?.cash_amount_used ?? 0),
     cashAmountLimit: Number(row?.cash_amount_limit ?? 3000),
@@ -60,6 +68,11 @@ export async function loadPerkUsage() {
     creditAmountLimit: Number(row?.credit_amount_limit ?? 3000),
     creditFirstDiscountUsed: Boolean(row?.credit_first_discount_used),
     creditTransactionsUsed: Number(row?.credit_transactions_used ?? 0),
+    sharedDiscountAmountUsed: Number(row?.shared_discount_amount_used ?? fallbackSharedUsed),
+    sharedDiscountAmountLimit: Number(row?.shared_discount_amount_limit ?? 3000),
+    sharedDiscountTransactionsUsed: Number(row?.shared_discount_transactions_used ?? fallbackSharedTransactions),
+    sharedDiscountTransactionsLimit: Number(row?.shared_discount_transactions_limit ?? 6),
+    creditTransactionLimit: Number(row?.credit_transaction_limit ?? 3000),
   } satisfies PerkUsage;
 }
 

@@ -14,7 +14,6 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import {
-  ArrowLeft,
   CalendarDays,
   Check,
   ChevronDown,
@@ -24,6 +23,7 @@ import {
 } from 'lucide-react-native';
 
 import { TopBar } from '../components/TopBar';
+import { WebNativeDateInput } from '../components/WebNativeDateInput';
 import type { AppToastMessage } from '../components/AppToast';
 import { leaveCategoryOptions, leaveTypeOptions } from '../constants/requestOptions';
 import { supabase } from '../lib/supabase';
@@ -37,10 +37,13 @@ type SectionKey = 'dates' | 'details' | 'reason';
 
 type RequestLeaveProps = {
   name?: string | null;
+  username?: string | null;
   photoUrl?: string | null;
   leaveCreditRemaining?: number;
   initialDraft?: Extract<AssistantDraft, { intent: 'draft_leave_request' }> | null;
+  notificationCount?: number;
   onAssistant?: () => void;
+  onNotifications?: () => void;
   onBack?: () => void;
   onToast?: (toast: AppToastMessage) => void;
   onSubmitted?: () => void | Promise<void>;
@@ -50,10 +53,13 @@ const today = formatDateInput(new Date());
 
 const RequestLeave = ({
   name,
+  username,
   photoUrl,
   leaveCreditRemaining = 7,
   initialDraft,
+  notificationCount = 0,
   onAssistant,
+  onNotifications,
   onBack,
   onToast,
   onSubmitted,
@@ -81,9 +87,10 @@ const RequestLeave = ({
   const totalLeaveDays = calculateLeaveDays(dateFrom, dateTo);
   const disabledLeaveTypes = getDisabledLeaveTypes(totalLeaveDays, leaveCreditRemaining);
   const leaveBreakdown = getLeaveBreakdown(leaveType, totalLeaveDays, paidLeaveDays, unpaidLeaveDays);
+  const remainingCredits = Math.max(0, leaveCreditRemaining - leaveBreakdown.paidDays);
   const creditUsedPercent =
     leaveCreditRemaining > 0
-      ? Math.min(100, Math.round((leaveBreakdown.paidDays / leaveCreditRemaining) * 100))
+      ? Math.min(100, Math.round((remainingCredits / leaveCreditRemaining) * 100))
       : 0;
   const hasUnsavedChanges =
     dateFrom !== (initialDraft?.fields.startDate ?? today) ||
@@ -172,7 +179,10 @@ const RequestLeave = ({
   }
 
   function applyPickerValue(kind: 'date_from' | 'date_to', selectedDate: Date) {
-    const value = formatDateInput(selectedDate);
+    applyDateValue(kind, formatDateInput(selectedDate));
+  }
+
+  function applyDateValue(kind: 'date_from' | 'date_to', value: string) {
     if (kind === 'date_from') {
       setDateFrom(value);
       setValidationErrors((current) => ({ ...current, dateFrom: undefined, dateTo: undefined, leaveDays: undefined }));
@@ -293,22 +303,22 @@ const RequestLeave = ({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={name} photoUrl={photoUrl} onMessages={onAssistant ? () => confirmDiscard(onAssistant) : undefined} />
+      <TopBar
+        name={name}
+        username={username}
+        photoUrl={photoUrl}
+        notificationCount={notificationCount}
+        onBackHome={onBack ? () => confirmDiscard(onBack) : undefined}
+        backTitle="Request Leave"
+        onMessages={onAssistant ? () => confirmDiscard(onAssistant) : undefined}
+        onNotifications={onNotifications ? () => confirmDiscard(onNotifications) : undefined}
+      />
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.header}>
-          <Pressable style={styles.backButton} onPress={() => confirmDiscard(onBack)}>
-            <ArrowLeft size={20} color={colors.text} strokeWidth={2.5} />
-          </Pressable>
-          <View style={styles.headerText}>
-            <Text style={styles.title}>Request Leave</Text>
-          </View>
-        </View>
-
         <View style={styles.creditPanel}>
           <View style={styles.creditHeader}>
             <View>
@@ -343,6 +353,8 @@ const RequestLeave = ({
               value={formatDateDisplay(dateFrom)}
               placeholder="mm/dd/yyyy"
               onPress={() => openPicker('date_from')}
+              webValue={dateFrom}
+              onWebChange={(value) => applyDateValue('date_from', value)}
               error={validationErrors.dateFrom}
             />
             <PickerButton
@@ -350,6 +362,8 @@ const RequestLeave = ({
               value={formatDateDisplay(dateTo)}
               placeholder="mm/dd/yyyy"
               onPress={() => openPicker('date_to')}
+              webValue={dateTo}
+              onWebChange={(value) => applyDateValue('date_to', value)}
               error={validationErrors.dateTo}
             />
           </View>
@@ -671,20 +685,30 @@ function PickerButton({
   value,
   placeholder,
   onPress,
+  webValue,
+  onWebChange,
   error,
 }: {
   label: string;
   value: string;
   placeholder: string;
   onPress: () => void;
+  webValue?: string;
+  onWebChange?: (value: string) => void;
   error?: string;
 }) {
+  const useWebNativeDate = Platform.OS === 'web' && onWebChange;
+
   return (
     <View style={styles.textFieldWrap}>
       <FieldLabel label={label} />
-      <Pressable style={[styles.selectButton, error ? styles.inputError : null]} onPress={onPress}>
+      <Pressable
+        style={[styles.selectButton, error ? styles.inputError : null]}
+        onPress={useWebNativeDate ? undefined : onPress}
+      >
         <Text style={[styles.selectButtonText, !value ? styles.placeholderText : null]}>{value || placeholder}</Text>
         <ChevronDown size={16} color={error ? colors.semantic.danger : '#94a3b8'} strokeWidth={2.4} />
+        {useWebNativeDate ? <WebNativeDateInput value={webValue ?? ''} label={label} onChange={onWebChange} /> : null}
       </Pressable>
       {error ? <Text style={styles.fieldError}>{error}</Text> : null}
     </View>
@@ -880,6 +904,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   selectButton: {
+    position: 'relative',
     minHeight: 48,
     borderRadius: radius.md,
     borderColor: colors.border,
