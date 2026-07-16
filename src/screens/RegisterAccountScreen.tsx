@@ -8,6 +8,8 @@ import { AppScreen, Card } from '../components/ui';
 import { isSupabaseConfigured } from '../lib/supabase';
 import {
   normalizeUsername,
+  validateRegistrationEmail,
+  validateRegistrationPassword,
   registerEmployeeLoginAccount,
   verifyEmployeeForRegistration,
   type EmployeeRegistrationVerification,
@@ -70,10 +72,12 @@ export function RegisterAccountScreen({ onBack }: RegisterAccountScreenProps) {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const verifyMissing = !verifyForm.firstName.trim() || !verifyForm.lastName.trim() || !verifyForm.birthDate.trim();
+  const accountEmailError = showAccountErrors ? validateRegistrationEmail(accountForm.email) : '';
+  const accountPasswordError = showAccountErrors ? validateRegistrationPassword(accountForm.password) : '';
   const accountMissing =
     !accountForm.username.trim() ||
-    !accountForm.email.trim() ||
-    !accountForm.password ||
+    Boolean(validateRegistrationEmail(accountForm.email)) ||
+    Boolean(validateRegistrationPassword(accountForm.password)) ||
     accountForm.password !== accountForm.confirmPassword ||
     !accountForm.termsAccepted;
 
@@ -285,7 +289,7 @@ export function RegisterAccountScreen({ onBack }: RegisterAccountScreenProps) {
                 onChangeText={(value) => updateAccountField('email', value)}
                 keyboardType="email-address"
                 autoCapitalize="none"
-                error={showAccountErrors && !accountForm.email.trim() ? 'Required' : ''}
+                error={accountEmailError}
               />
               <FormTextField
                 label="Password *"
@@ -302,7 +306,7 @@ export function RegisterAccountScreen({ onBack }: RegisterAccountScreenProps) {
                 value={accountForm.password}
                 onChangeText={(value) => updateAccountField('password', value)}
                 secureTextEntry={!showPassword}
-                error={showAccountErrors && !accountForm.password ? 'Required' : ''}
+                error={accountPasswordError}
               />
               <FormTextField
                 label="Confirm Password *"

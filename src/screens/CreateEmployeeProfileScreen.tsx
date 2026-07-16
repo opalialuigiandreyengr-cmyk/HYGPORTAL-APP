@@ -1,7 +1,6 @@
 import { createElement, type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
 import { BriefcaseBusiness, CalendarDays, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Send, UserRound, X } from 'lucide-react-native';
 
@@ -942,66 +941,6 @@ function SelectModal({
   onClose: () => void;
   onSelect: (field: keyof FormState, value: string) => void;
 }) {
-  const androidScrollRef = useRef<ScrollView>(null);
-  const wheelItemHeight = 44;
-
-  useEffect(() => {
-    if (Platform.OS === 'ios' || !config) {
-      return;
-    }
-
-    const selectedIndex = Math.max(0, config.options.indexOf(iosValue || config.options[0]));
-    requestAnimationFrame(() => {
-      androidScrollRef.current?.scrollTo({ y: selectedIndex * wheelItemHeight, animated: false });
-    });
-  }, [config, iosValue]);
-
-  if (Platform.OS === 'ios') {
-    return (
-      <Modal transparent animationType="fade" visible={Boolean(config)} onRequestClose={onClose}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.optionSheet}>
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>{config?.title}</Text>
-              <Pressable style={styles.sheetClose} onPress={onClose}>
-                <X size={18} color={colors.text} strokeWidth={2.6} />
-              </Pressable>
-            </View>
-            {config ? (
-              <View style={styles.iosPickerFrame}>
-                <Picker
-                  selectedValue={iosValue || config.options[0]}
-                  onValueChange={onIosValueChange}
-                  style={styles.iosWheelPicker}
-                  itemStyle={styles.iosPickerItem}
-                >
-                  {config.options.map((option) => (
-                    <Picker.Item key={option} label={option} value={option} />
-                  ))}
-                </Picker>
-              </View>
-            ) : null}
-            <View style={styles.dateActions}>
-              <Pressable style={styles.dateCancel} onPress={onClose}>
-                <Text style={styles.dateCancelText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={styles.dateDone}
-                onPress={() => {
-                  if (config) {
-                    onSelect(config.field, iosValue || config.options[0]);
-                  }
-                }}
-              >
-                <Text style={styles.dateDoneText}>Done</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-    );
-  }
-
   return (
     <Modal transparent animationType="fade" visible={Boolean(config)} onRequestClose={onClose}>
       <View style={styles.modalBackdrop}>
@@ -1012,27 +951,7 @@ function SelectModal({
               <X size={18} color={colors.text} strokeWidth={2.6} />
             </Pressable>
           </View>
-          <View style={styles.androidWheelFrame}>
-            <View pointerEvents="none" style={styles.androidWheelSelection} />
-            <ScrollView
-              ref={androidScrollRef}
-              style={styles.androidPickerFrame}
-              contentContainerStyle={styles.androidPickerContent}
-              showsVerticalScrollIndicator={false}
-              snapToInterval={wheelItemHeight}
-              decelerationRate="fast"
-              onMomentumScrollEnd={(event) => {
-                if (!config) {
-                  return;
-                }
-
-                const selectedIndex = Math.min(
-                  config.options.length - 1,
-                  Math.max(0, Math.round(event.nativeEvent.contentOffset.y / wheelItemHeight)),
-                );
-                onIosValueChange(config.options[selectedIndex]);
-              }}
-            >
+          <ScrollView style={styles.selectOptionList} contentContainerStyle={styles.selectOptionListContent} showsVerticalScrollIndicator={false}>
             {config?.options.map((option) => {
               const selected = (iosValue || config.options[0]) === option;
 
@@ -1047,7 +966,12 @@ function SelectModal({
                   onLongPress={() => onPressIn(option)}
                   onPressIn={() => onPressIn(option)}
                   onPressOut={onPressOut}
-                  onPress={() => onIosValueChange(option)}
+                  onPress={() => {
+                    onIosValueChange(option);
+                    if (config) {
+                      onSelect(config.field, option);
+                    }
+                  }}
                   delayLongPress={120}
                   android_ripple={{ color: '#fde68a', borderless: false }}
                 >
@@ -1055,21 +979,10 @@ function SelectModal({
                 </Pressable>
               );
             })}
-            </ScrollView>
-          </View>
+          </ScrollView>
           <View style={styles.dateActions}>
-            <Pressable style={styles.dateCancel} onPress={onClose}>
+            <Pressable style={[styles.dateCancel, styles.selectCancelButton]} onPress={onClose}>
               <Text style={styles.dateCancelText}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              style={styles.dateDone}
-              onPress={() => {
-                if (config) {
-                  onSelect(config.field, iosValue || config.options[0]);
-                }
-              }}
-            >
-              <Text style={styles.dateDoneText}>Done</Text>
             </Pressable>
           </View>
         </View>
@@ -1670,6 +1583,12 @@ const styles = StyleSheet.create({
   androidPickerContent: {
     paddingVertical: 67,
   },
+  selectOptionList: {
+    maxHeight: 320,
+  },
+  selectOptionListContent: {
+    paddingVertical: spacing.xs,
+  },
   sheetHeader: {
     minHeight: 52,
     flexDirection: 'row',
@@ -1725,6 +1644,9 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderWidth: 1,
     marginRight: spacing.xs,
+  },
+  selectCancelButton: {
+    marginRight: 0,
   },
   dateCancelText: {
     color: colors.text,

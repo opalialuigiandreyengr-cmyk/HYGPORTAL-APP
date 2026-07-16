@@ -21,12 +21,44 @@ function errorMessage(error: { message?: string; details?: string | null; hint?:
   return [error.message, error.details, error.hint].filter(Boolean).join(' ');
 }
 
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_PASSWORD_LENGTH = 6;
+
 export function normalizeUsername(username: string) {
   return username
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9._-]/g, '')
     .replace(/^[._-]+|[._-]+$/g, '');
+}
+
+export function normalizeRegistrationEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+export function validateRegistrationEmail(email: string) {
+  const normalizedEmail = normalizeRegistrationEmail(email);
+  if (!normalizedEmail) {
+    return 'Required';
+  }
+
+  if (!EMAIL_PATTERN.test(normalizedEmail)) {
+    return 'Enter a valid email address.';
+  }
+
+  return '';
+}
+
+export function validateRegistrationPassword(password: string) {
+  if (!password) {
+    return 'Required';
+  }
+
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return `Use at least ${MIN_PASSWORD_LENGTH} characters.`;
+  }
+
+  return '';
 }
 
 export async function resolveLoginEmail(username: string) {
@@ -84,9 +116,15 @@ export async function registerEmployeeLoginAccount({
     throw new Error('Enter a valid username.');
   }
 
-  const authEmail = email.trim().toLowerCase();
-  if (!authEmail || !authEmail.includes('@')) {
-    throw new Error('Enter a valid email address.');
+  const authEmail = normalizeRegistrationEmail(email);
+  const emailError = validateRegistrationEmail(authEmail);
+  if (emailError) {
+    throw new Error(emailError);
+  }
+
+  const passwordError = validateRegistrationPassword(password);
+  if (passwordError) {
+    throw new Error(passwordError);
   }
 
   const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
@@ -95,7 +133,7 @@ export async function registerEmployeeLoginAccount({
   });
 
   if (signUpError) {
-    throw new Error(signUpError.message);
+    throw new Error(readableSignUpError(signUpError));
   }
 
   const authUserId = signUpData.user?.id;
@@ -115,4 +153,27 @@ export async function registerEmployeeLoginAccount({
   }
 
   return data as string;
+}
+
+function readableSignUpError(error: { message?: string; code?: string; status?: number }) {
+  const message = error.message || 'Unable to create login account.';
+  const normalizedMessage = message.toLowerCase();
+
+  if (
+    error.code === 'user_already_exists' ||
+    normalizedMessage.includes('already registered') ||
+    normalizedMessage.includes('already exists')
+  ) {
+    return 'This email is already registered. Try signing in or use another email address.';
+  }
+
+  if (error.code === 'weak_password' || normalizedMessage.includes('password')) {
+    return message;
+  }
+
+  if (error.status === 422) {
+    return 'Supabase rejected the signup details. Check the email and password, then try again.';
+  }
+
+  return message;
 }

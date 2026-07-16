@@ -19,11 +19,15 @@
   "redirects": [
     {
       "source": "/hygportal.apk",
-      "destination": "https://expo.dev/artifacts/eas/GNhZ8MxdfAsbNsa96wd1GA5gRjJgSA1PcaSzC46X_f8.apk",
+      "destination": "https://expo.dev/artifacts/eas/pcBfuPRYe4cUDpjgdvUK0IWaZWytUELlgUFEczFH2Is.apk",
       "permanent": false
     }
   ],
   "rewrites": [
+    {
+      "source": "/api/inventory/store_inventory_data",
+      "destination": "https://luigiandreyopalia.pythonanywhere.com/inventory/store_inventory_data"
+    },
     {
       "source": "/(.*)",
       "destination": "/index.html"

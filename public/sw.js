@@ -1,5 +1,5 @@
-// Version: 20260616-v1.5.9
-const CACHE_NAME = 'hygportal-assets-20260616-v1.5.9';
+// Version: 20260708-v1.5.2
+const CACHE_NAME = 'hygportal-assets-20260708-v1.5.2';
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
@@ -65,6 +65,22 @@ self.addEventListener('fetch', (event) => {
 
   const url = event.request.url;
   if (!SHOULD_CACHE(url)) return;
+  const path = new URL(url).pathname;
+
+  if (event.request.mode === 'navigate' || path === '/' || path === '/index.html') {
+    event.respondWith(
+      fetch(event.request).then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const responseToCache = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache);
+          });
+        }
+        return networkResponse;
+      }).catch(() => caches.match(event.request))
+    );
+    return;
+  }
 
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {

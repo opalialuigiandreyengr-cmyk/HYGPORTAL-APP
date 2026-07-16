@@ -11,6 +11,7 @@ import type { AssistantDraft } from '../services/assistant';
 import { loadPerkUsage, startPerkRequest, verifyPerkRequest, type PerkProductInput, type PerkUsage } from '../services/perks';
 import { formatDateInput, dateStringToDate } from '../utils/dateTime';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
+import { env } from '../lib/env';
 
 type DiscountMode = 'cash' | 'charge';
 
@@ -26,7 +27,12 @@ type ProductOption = {
   price: number;
 };
 
-const inventoryUrl = 'https://luigiandreyopalia.pythonanywhere.com/inventory/store_inventory_data';
+const defaultInventoryUrl = 'https://luigiandreyopalia.pythonanywhere.com/inventory/store_inventory_data';
+const configuredInventoryUrl = env.inventoryUrl || defaultInventoryUrl;
+const inventoryUrl = Platform.OS === 'web' && configuredInventoryUrl === defaultInventoryUrl
+  ? '/api/inventory/store_inventory_data'
+  : configuredInventoryUrl;
+const inventoryCacheKey = 'inventory_products_v1';
 const today = formatDateInput(new Date());
 
 export function ApplyDiscountScreen({
@@ -150,39 +156,37 @@ export function ApplyDiscountScreen({
   async function loadInventoryProducts() {
     setIsLoadingProducts(true);
     setProductStatus('Loading products...');
+    let cachedProducts: ProductOption[] = [];
     try {
-      const cached = await getCacheJSON<ProductOption[]>('inventory_products_v1');
+      const cached = await getCacheJSON<ProductOption[]>(inventoryCacheKey);
       if (cached && cached.length > 0) {
+        cachedProducts = cached;
         setProducts(cached);
         setProductStatus('');
       }
     } catch (_) {}
 
     try {
-      const response = await fetch(inventoryUrl, {
-        headers: { Accept: 'application/json' },
-      });
+      const response = await fetchWithTimeout(inventoryUrl);
+      if (!response.ok) {
+        throw new Error(`Inventory returned HTTP ${response.status}.`);
+      }
       const payload = await response.json();
-      const inventories = Array.isArray(payload?.inventories) ? payload.inventories : [];
-      const nextProducts = inventories
-        .map((item: { item_name?: unknown; price?: unknown }) => {
-          const productName = typeof item.item_name === 'string' ? item.item_name.trim() : '';
-          const price = Number(item.price ?? 0);
-          return productName ? { name: productName, price: Number.isFinite(price) ? price : 0 } : null;
-        })
-        .filter((item: ProductOption | null): item is ProductOption => Boolean(item));
+      const nextProducts = parseInventoryProducts(payload);
 
       if (nextProducts.length > 0) {
         setProducts(nextProducts);
         setProductStatus('');
-        await setCacheJSON('inventory_products_v1', nextProducts);
-      } else if (products.length === 0) {
+        await setCacheJSON(inventoryCacheKey, nextProducts);
+      } else if (cachedProducts.length === 0) {
         setProductStatus('No products loaded.');
       }
     } catch {
-      if (products.length === 0) {
+      if (cachedProducts.length === 0) {
         setProducts([]);
-        setProductStatus('Products unavailable. Please check your internet connection.');
+        setProductStatus('Products unavailable. Inventory server could not be reached.');
+      } else {
+        setProductStatus('');
       }
     } finally {
       setIsLoadingProducts(false);
@@ -460,26 +464,28 @@ export function ApplyDiscountScreen({
                 </Text>
                 <ChevronDown size={14} color={colors.muted} strokeWidth={2.5} />
               </Pressable>
-              <TextInput
-                value={line.quantity}
-                onChangeText={(value) => updateLine(line.id, { quantity: value })}
-                keyboardType="decimal-pad"
-                placeholder="0"
-                placeholderTextColor={colors.muted}
-                style={[styles.productTextInput, styles.quantityColumn]}
-              />
-              <TextInput
-                value={line.unitPrice}
-                editable={false}
-                placeholder="0.00"
-                placeholderTextColor={colors.muted}
-                style={[
-                  styles.productTextInput,
-                  styles.priceColumn,
-                  styles.productInputDisabled,
-                  { backgroundColor: colors.surface },
-                ]}
-              />
+              <View style={styles.productNumberRow}>
+                <TextInput
+                  value={line.quantity}
+                  onChangeText={(value) => updateLine(line.id, { quantity: value })}
+                  keyboardType="decimal-pad"
+                  placeholder="0"
+                  placeholderTextColor={colors.muted}
+                  style={[styles.productTextInput, styles.quantityColumn]}
+                />
+                <TextInput
+                  value={line.unitPrice}
+                  editable={false}
+                  placeholder="0.00"
+                  placeholderTextColor={colors.muted}
+                  style={[
+                    styles.productTextInput,
+                    styles.priceColumn,
+                    styles.productInputDisabled,
+                    { backgroundColor: colors.surface },
+                  ]}
+                />
+              </View>
             </View>
           ))}
 
@@ -718,6 +724,42 @@ function formatDateDisplay(value: string) {
   const [year, month, day] = value.split('-');
   if (!year || !month || !day) return value;
   return `${month}/${day}/${year}`;
+}
+
+function fetchWithTimeout(url: string, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, {
+    headers: { Accept: 'application/json' },
+    signal: controller.signal,
+  }).finally(() => clearTimeout(timeout));
+}
+
+function parseInventoryProducts(payload: unknown) {
+  const data = payload as { inventories?: unknown; products?: unknown };
+  const rows = Array.isArray(data.products)
+    ? data.products
+    : Array.isArray(data.inventories)
+      ? data.inventories
+      : [];
+  const seen = new Set<string>();
+
+  return rows
+    .map((item) => {
+      const row = item as { name?: unknown; item_name?: unknown; price?: unknown };
+      const productName = typeof row.name === 'string'
+        ? row.name.trim()
+        : typeof row.item_name === 'string'
+          ? row.item_name.trim()
+          : '';
+      const price = Number(row.price ?? 0);
+      if (!productName || seen.has(productName.toLowerCase())) {
+        return null;
+      }
+      seen.add(productName.toLowerCase());
+      return { name: productName, price: Number.isFinite(price) ? price : 0 };
+    })
+    .filter((item: ProductOption | null): item is ProductOption => Boolean(item));
 }
 
 const styles = StyleSheet.create({
@@ -982,19 +1024,25 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.bold,
   },
   productNameColumn: {
-    flex: 1.35,
+    flex: 1,
+    minWidth: 0,
   },
   quantityColumn: {
-    flex: 0.58,
+    flex: 0.85,
+    minWidth: 0,
   },
   priceColumn: {
-    flex: 0.78,
+    flex: 1,
+    minWidth: 0,
   },
   productRow: {
+    gap: 7,
+    marginBottom: spacing.sm,
+  },
+  productNumberRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    marginBottom: spacing.sm,
+    gap: 7,
   },
   productInput: {
     minHeight: 44,
@@ -1006,6 +1054,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
     paddingHorizontal: 9,
+    width: '100%',
   },
   productInputDisabled: {
     opacity: 0.62,

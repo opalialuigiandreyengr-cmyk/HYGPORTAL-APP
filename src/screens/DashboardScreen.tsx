@@ -83,7 +83,7 @@ export function DashboardScreen({
   }, []);
 
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
-  const employeeName = profile?.fullName ?? userEmail;
+  const employeeName = formatHomeEmployeeName(profile, userEmail);
   const photoUrl = profile?.photoUrl ?? null;
   const orgUnit = profile?.departmentName || profile?.storeName || 'Work unit pending';
   const position = profile?.positionName || 'Position pending';
@@ -500,6 +500,23 @@ function hasChildrenFields(profile: EmployeeProfileSummary) {
 
 function normalizeCompletionText(value?: string | null) {
   return String(value ?? '').trim().toLowerCase();
+}
+
+function formatHomeEmployeeName(profile: EmployeeProfileSummary | null, fallback: string) {
+  if (!profile) {
+    return fallback;
+  }
+
+  const middleInitial = profile.middleName?.trim()?.[0];
+  return [
+    profile.firstName,
+    middleInitial ? `${middleInitial}.` : null,
+    profile.lastName,
+    profile.suffix,
+  ]
+    .map((part) => part?.trim())
+    .filter(Boolean)
+    .join(' ') || profile.fullName || fallback;
 }
 
 function formatPeso(value: number) {
