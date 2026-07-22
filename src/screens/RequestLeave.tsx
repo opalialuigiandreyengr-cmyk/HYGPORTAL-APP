@@ -1,6 +1,5 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
-  Alert,
   Keyboard,
   Modal,
   Platform,
@@ -27,6 +26,7 @@ import { WebNativeDateInput } from '../components/WebNativeDateInput';
 import type { AppToastMessage } from '../components/AppToast';
 import { leaveCategoryOptions, leaveTypeOptions } from '../constants/requestOptions';
 import { supabase } from '../lib/supabase';
+import { platformAlert } from '../utils/platformAlert';
 import type { AssistantDraft } from '../services/assistant';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { calculateLeaveDays, dateStringToDate, formatDateInput } from '../utils/dateTime';
@@ -110,7 +110,7 @@ const RequestLeave = ({
       return;
     }
 
-    Alert.alert('Discard leave request?', 'Your leave draft has unsaved changes.', [
+    platformAlert('Discard leave request?', 'Your leave draft has unsaved changes.', [
       { text: 'Keep editing', style: 'cancel' },
       { text: 'Discard', style: 'destructive', onPress: action },
     ]);

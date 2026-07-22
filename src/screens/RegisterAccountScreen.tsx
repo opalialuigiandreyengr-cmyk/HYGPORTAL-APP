@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { createElement, useState, type CSSProperties } from 'react';
-import { ActivityIndicator, Alert, Image, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
+import { ActivityIndicator, Image, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { CalendarDays, CheckCircle2, ChevronLeft, Eye, EyeOff, LockKeyhole, Mail, UserRound } from 'lucide-react-native';
 
@@ -15,6 +15,7 @@ import {
   type EmployeeRegistrationVerification,
 } from '../services/registerAccount';
 import { colors, fontWeights, radius, spacing, typography } from '../theme';
+import { platformAlert } from '../utils/platformAlert';
 import { dateStringToDate, formatDateInput } from '../utils/dateTime';
 
 const hygLogo = require('../../assets/HYG LOGO.png');
@@ -125,7 +126,7 @@ export function RegisterAccountScreen({ onBack }: RegisterAccountScreenProps) {
     }
 
     if (!isSupabaseConfigured) {
-      Alert.alert('Supabase is not configured', 'Check the mobile .env file.');
+      platformAlert('Supabase is not configured', 'Check the mobile .env file.');
       return;
     }
 
@@ -143,7 +144,7 @@ export function RegisterAccountScreen({ onBack }: RegisterAccountScreenProps) {
       setVerifiedEmployee(result);
       setStep(1);
     } catch (error) {
-      Alert.alert('Verification failed', error instanceof Error ? error.message : 'Unable to verify employee profile.');
+      platformAlert('Verification failed', error instanceof Error ? error.message : 'Unable to verify employee profile.');
     } finally {
       setIsBusy(false);
     }
@@ -156,7 +157,7 @@ export function RegisterAccountScreen({ onBack }: RegisterAccountScreenProps) {
     }
 
     if (!normalizeUsername(accountForm.username)) {
-      Alert.alert('Check username', 'Use letters or numbers in your username.');
+      platformAlert('Check username', 'Use letters or numbers in your username.');
       return;
     }
 
@@ -173,7 +174,7 @@ export function RegisterAccountScreen({ onBack }: RegisterAccountScreenProps) {
       });
       setSuccessVisible(true);
     } catch (error) {
-      Alert.alert('Registration failed', error instanceof Error ? error.message : 'Unable to create login account.');
+      platformAlert('Registration failed', error instanceof Error ? error.message : 'Unable to create login account.');
     } finally {
       setIsBusy(false);
     }

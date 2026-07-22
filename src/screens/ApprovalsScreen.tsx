@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { CalendarDays, Check, Clock3, Eye, FileText, Funnel, RefreshCcw, Search, Users, X } from 'lucide-react-native';
 
@@ -7,6 +7,7 @@ import { TopBar } from '../components/TopBar';
 import { Avatar } from '../components/Avatar';
 import type { AppToastMessage } from '../components/AppToast';
 import { colors, fontWeights, radius, spacing } from '../theme';
+import { platformAlert } from '../utils/platformAlert';
 import { decideApprovalStep, loadPendingApprovals, type PendingApproval } from '../services/approvals';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
@@ -123,7 +124,7 @@ export function ApprovalsScreen({ profileResult, notificationCount = 0, onAssist
   }
 
   function confirmApprove(item: PendingApproval) {
-    Alert.alert(
+    platformAlert(
       'Approve request?',
       `Are you sure you want to approve ${item.request_type_name || formatApprovalType(item)} from ${item.requester_name || 'this employee'}?`,
       [

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { BadgePercent, CalendarDays, Check, ChevronDown, Plus, ShoppingCart, X } from 'lucide-react-native';
@@ -7,6 +7,7 @@ import { BadgePercent, CalendarDays, Check, ChevronDown, Plus, ShoppingCart, X }
 import { TopBar } from '../components/TopBar';
 import type { AppToastMessage } from '../components/AppToast';
 import { colors, fontWeights, radius, spacing } from '../theme';
+import { platformAlert } from '../utils/platformAlert';
 import type { AssistantDraft } from '../services/assistant';
 import { loadPerkUsage, startPerkRequest, verifyPerkRequest, type PerkProductInput, type PerkUsage } from '../services/perks';
 import { formatDateInput, dateStringToDate } from '../utils/dateTime';
@@ -139,7 +140,7 @@ export function ApplyDiscountScreen({
       return;
     }
 
-    Alert.alert('Discard perk request?', 'Your perk request has unsaved changes.', [
+    platformAlert('Discard perk request?', 'Your perk request has unsaved changes.', [
       { text: 'Keep editing', style: 'cancel' },
       { text: 'Discard', style: 'destructive', onPress: action },
     ]);

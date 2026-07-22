@@ -1,6 +1,5 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
-  Alert,
   Keyboard,
   Modal,
   Platform,
@@ -28,6 +27,7 @@ import { supabase } from '../lib/supabase';
 import type { AssistantDraft } from '../services/assistant';
 import { loadMyFlexibleSchedule } from '../services/team';
 import { colors, fontWeights, radius, spacing } from '../theme';
+import { platformAlert } from '../utils/platformAlert';
 import type { RequestTypeCode } from '../types/domain';
 import { calculateRequestHours } from '../utils/requestCalculations';
 import { dateStringToDate, formatDateInput, formatTimeDisplay, formatTimeInput, timeStringToDate } from '../utils/dateTime';
@@ -389,15 +389,7 @@ export function ApplyEsarfScreen({
       return;
     }
 
-    if (Platform.OS === 'web') {
-      const confirm = (globalThis as unknown as { confirm?: (message: string) => boolean }).confirm;
-      if (confirm?.('Discard this ESARF draft? Your unsaved changes will be lost.')) {
-        action();
-      }
-      return;
-    }
-
-    Alert.alert('Discard request?', 'Your ESARF draft has unsaved changes.', [
+    platformAlert('Discard request?', 'Your ESARF draft has unsaved changes.', [
       { text: 'Keep editing', style: 'cancel' },
       { text: 'Discard', style: 'destructive', onPress: action },
     ]);

@@ -1,5 +1,5 @@
 import { createElement, type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
+import { ActivityIndicator, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
 import { BriefcaseBusiness, CalendarDays, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Send, UserRound, X } from 'lucide-react-native';
@@ -18,6 +18,7 @@ import {
 import { uploadEmployeeDocumentToDrive, type EmployeeDocType, type UploadedDocRef } from '../services/gdriveDocs';
 import { colors, fontWeights, radius, spacing, typography } from '../theme';
 import { env } from '../lib/env';
+import { platformAlert } from '../utils/platformAlert';
 import { dateStringToDate, formatDateInput } from '../utils/dateTime';
 
 const hygLogo = require('../../assets/HYG LOGO.png');
@@ -252,13 +253,13 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
 
   async function captureAndUploadDocument(docType: EmployeeDocType) {
     if (!form.company.trim() || !form.workUnit.trim()) {
-      Alert.alert('Missing assignment', 'Please select company and department first in Employment step.');
+      platformAlert('Missing assignment', 'Please select company and department first in Employment step.');
       return;
     }
 
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
-      Alert.alert('Camera permission needed', 'Please allow camera access to capture document photos.');
+      platformAlert('Camera permission needed', 'Please allow camera access to capture document photos.');
       return;
     }
 
@@ -276,7 +277,7 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
     const asset = photo.assets[0];
     const capturedBase64 = asset.base64 ?? '';
     if (!capturedBase64 || !asset.uri) {
-      Alert.alert('Capture failed', 'Unable to read captured image.');
+      platformAlert('Capture failed', 'Unable to read captured image.');
       return;
     }
 
@@ -303,7 +304,7 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
       const message = error instanceof Error ? error.message : 'Upload failed.';
       updateDocState(docType, (current) => ({ ...current, uploading: false, error: message }));
       setSubmitStatus(`Upload failed: ${message}`);
-      Alert.alert('Upload failed', message);
+      platformAlert('Upload failed', message);
     }
   }
 
@@ -341,7 +342,7 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
 
     if (step === 0) {
       if (!isSupabaseConfigured) {
-        Alert.alert('Supabase is not configured', 'Check the mobile .env file.');
+        platformAlert('Supabase is not configured', 'Check the mobile .env file.');
         return;
       }
 
@@ -354,12 +355,12 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
             : duplicate.duplicate_name
               ? 'An employee profile with this full name already exists.'
               : 'An employee profile with this email address already exists.';
-          Alert.alert('Profile already exists', message);
+          platformAlert('Profile already exists', message);
           return;
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to check for duplicate profiles.';
-        Alert.alert('Duplicate check failed', message);
+        platformAlert('Duplicate check failed', message);
         return;
       } finally {
         setIsCheckingDuplicate(false);
@@ -383,7 +384,7 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
 
   async function submitProfile() {
     if (!isSupabaseConfigured) {
-      Alert.alert('Supabase is not configured', 'Check the mobile .env file.');
+      platformAlert('Supabase is not configured', 'Check the mobile .env file.');
       return;
     }
 
@@ -453,7 +454,7 @@ export function CreateEmployeeProfileScreen({ onBack }: CreateEmployeeProfileScr
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to save employee profile.';
       setSubmitStatus(`Save failed: ${message}`);
-      Alert.alert('Save failed', message);
+      platformAlert('Save failed', message);
     } finally {
       setIsSavingProfile(false);
       setTimeout(() => {
