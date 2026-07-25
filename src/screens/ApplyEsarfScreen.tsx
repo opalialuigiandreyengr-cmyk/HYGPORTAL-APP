@@ -127,16 +127,13 @@ export function ApplyEsarfScreen({
   const [activePicker, setActivePicker] = useState<'date_from' | 'date_to' | 'time_from' | 'time_to' | null>(null);
   const [activeSelect, setActiveSelect] = useState<'schedule' | 'day_off' | 'payroll_class' | null>(null);
   const [showSubmissionNotes, setShowSubmissionNotes] = useState(false);
-  const [showReasonComposer, setShowReasonComposer] = useState(false);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatus, setSubmitStatus] = useState('');
   const [scheduleStatus, setScheduleStatus] = useState('');
   const [validationErrors, setValidationErrors] = useState<Partial<Record<ValidationKey, string>>>({});
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
   const scrollRef = useRef<ScrollView | null>(null);
-  const reasonComposerInputRef = useRef<TextInput | null>(null);
-  const reasonFocusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reasonInputRef = useRef<TextInput | null>(null);
   const sectionY = useRef<Record<SectionKey, number>>({ request: 0, transactions: 0, datetime: 0 });
 
   useEffect(() => {
@@ -189,46 +186,10 @@ export function ApplyEsarfScreen({
   }, [dateFrom, fixedDayOff, fixedSchedule, isOperationsDepartment]);
 
   useEffect(() => {
-    if (!showReasonComposer) {
-      if (reasonFocusTimer.current) {
-        clearTimeout(reasonFocusTimer.current);
-        reasonFocusTimer.current = null;
-      }
-      return;
-    }
-
-    reasonFocusTimer.current = setTimeout(() => {
-      reasonComposerInputRef.current?.focus();
-    }, 80);
-
-    return () => {
-      if (reasonFocusTimer.current) {
-        clearTimeout(reasonFocusTimer.current);
-        reasonFocusTimer.current = null;
-      }
-    };
-  }, [showReasonComposer]);
-
-  useEffect(() => {
-    const showSubscription = Keyboard.addListener('keyboardDidShow', (event) => {
-      setKeyboardHeight(event.endCoordinates.height);
-    });
-    const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
-      setKeyboardHeight(0);
-    });
-
-    return () => {
-      showSubscription.remove();
-      hideSubscription.remove();
-    };
-  }, []);
-
-  useEffect(() => {
     if (!isOvertimeAllowedForPayroll(payrollClass)) {
       setTransactions((current) => current.filter((item) => item !== 'ot'));
     }
   }, [payrollClass]);
-
   function toggleTransaction(key: string) {
     setValidationErrors((current) => ({ ...current, transactions: undefined }));
     setTransactions((current) => {
@@ -257,10 +218,6 @@ export function ApplyEsarfScreen({
   function openPicker(kind: 'date_from' | 'date_to' | 'time_from' | 'time_to') {
     setTempPickerDate(valueForPicker(kind));
     setActivePicker(kind);
-  }
-
-  function openReasonComposer() {
-    setShowReasonComposer(true);
   }
 
   function applyPickerValue(kind: 'date_from' | 'date_to' | 'time_from' | 'time_to', selectedDate: Date) {
@@ -374,7 +331,6 @@ export function ApplyEsarfScreen({
     Keyboard.dismiss();
     setActivePicker(null);
     setActiveSelect(null);
-    setShowReasonComposer(false);
     setShowSubmissionNotes(false);
   }
 
@@ -421,7 +377,7 @@ export function ApplyEsarfScreen({
     if (firstSection) {
       scrollRef.current?.scrollTo({ y: Math.max(0, sectionY.current[firstSection] - 12), animated: true });
       if (firstSection === 'datetime' && nextErrors.reason) {
-        setTimeout(() => setShowReasonComposer(true), 260);
+        setTimeout(() => reasonInputRef.current?.focus(), 260);
       }
       const message = getValidationErrorMessage(nextErrors);
       setSubmitStatus(message);
@@ -664,14 +620,19 @@ export function ApplyEsarfScreen({
           ) : null}
 
           <FieldLabel label="Reason" />
-          <Pressable
+          <TextInput
+            ref={reasonInputRef}
+            value={reason}
+            onChangeText={(value) => {
+              setReason(value);
+              setValidationErrors((current) => ({ ...current, reason: undefined }));
+            }}
+            placeholder="Enter reason"
+            placeholderTextColor="#94a3b8"
+            multiline
+            textAlignVertical="top"
             style={[styles.reasonInput, validationErrors.reason ? styles.inputError : null]}
-            onPress={openReasonComposer}
-          >
-            <Text style={reason ? styles.reasonPreviewText : styles.reasonPlaceholderText}>
-              {reason || 'Enter reason'}
-            </Text>
-          </Pressable>
+          />
           {validationErrors.reason ? <Text style={styles.fieldError}>{validationErrors.reason}</Text> : null}
         </Section>
 
@@ -789,36 +750,7 @@ export function ApplyEsarfScreen({
           </View>
         </Modal>
 
-        <Modal
-          transparent
-          animationType="fade"
-          visible={showReasonComposer}
-          onRequestClose={() => setShowReasonComposer(false)}
-          onShow={() => reasonComposerInputRef.current?.focus()}
-        >
-          <View style={styles.composerBackdrop}>
-            <Pressable style={styles.composerDismissArea} onPress={() => setShowReasonComposer(false)} />
-            <View style={[styles.reasonComposer, { marginBottom: Platform.OS === 'ios' ? keyboardHeight : 0 }]}>
-              <TextInput
-                ref={reasonComposerInputRef}
-                autoFocus
-                value={reason}
-                onChangeText={(value) => {
-                  setReason(value);
-                  setValidationErrors((current) => ({ ...current, reason: undefined }));
-                }}
-                placeholder="Enter reason"
-                placeholderTextColor="#94a3b8"
-                multiline
-                textAlignVertical="top"
-                style={styles.reasonComposerInput}
-              />
-              <Pressable style={styles.reasonComposerDone} onPress={() => setShowReasonComposer(false)}>
-                <Text style={styles.reasonComposerDoneText}>Done</Text>
-              </Pressable>
-            </View>
-          </View>
-        </Modal>
+
       </ScrollView>
     </View>
   );
@@ -1464,16 +1396,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     padding: spacing.md,
     marginBottom: spacing.sm,
-  },
-  reasonPreviewText: {
     color: colors.text,
     fontSize: 15,
     lineHeight: 21,
-  },
-  reasonPlaceholderText: {
-    color: '#94a3b8',
-    fontSize: 15,
-    lineHeight: 21,
+    textAlignVertical: 'top',
   },
   disabledInput: {
     minHeight: 48,
