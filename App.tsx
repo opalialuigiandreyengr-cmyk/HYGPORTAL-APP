@@ -89,6 +89,7 @@ import {
   getInitialAppUpdateState,
   restartToApplyAppUpdate,
   type AppUpdateState,
+  NATIVE_APP_VERSION,
 } from './src/services/appUpdates';
 import { AssistantScreen } from './src/screens/AssistantScreen';
 import { ApplyDiscountScreen } from './src/screens/ApplyDiscountScreen';
@@ -131,7 +132,7 @@ type QuickRequestScreen = 'assistant' | 'apply_esarf' | 'request_leave' | 'apply
 const SUPER_ADMIN_EMAIL = 'hygportal@gmail.com';
 const hygLogo = hygPortalLogo;
 const hygCoinsImage = require('./assets/hygcoins.png');
-const NATIVE_APP_VERSION = '1.5.2';
+
 const APP_VERSION = Platform.OS === 'web' ? PWA_VERSION : NATIVE_APP_VERSION;
 const authorityLevelColors = [
   { background: '#cffafe', text: '#0e7490' },
@@ -3093,7 +3094,7 @@ function SettingsTabScreen({
 
   async function handleRestartForUpdate() {
     try {
-      await restartToApplyAppUpdate();
+      await restartToApplyAppUpdate(appUpdateState.currentUpdateId);
     } catch (error) {
       setAppUpdateState((current) => ({
         ...current,
