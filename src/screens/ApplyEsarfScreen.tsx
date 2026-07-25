@@ -128,6 +128,7 @@ export function ApplyEsarfScreen({
   const [activeSelect, setActiveSelect] = useState<'schedule' | 'day_off' | 'payroll_class' | null>(null);
   const [showSubmissionNotes, setShowSubmissionNotes] = useState(false);
   const [showReasonComposer, setShowReasonComposer] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatus, setSubmitStatus] = useState('');
   const [scheduleStatus, setScheduleStatus] = useState('');
@@ -207,6 +208,20 @@ export function ApplyEsarfScreen({
       }
     };
   }, [showReasonComposer]);
+
+  useEffect(() => {
+    const showSubscription = Keyboard.addListener('keyboardDidShow', (event) => {
+      setKeyboardHeight(event.endCoordinates.height);
+    });
+    const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardHeight(0);
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (!isOvertimeAllowedForPayroll(payrollClass)) {
@@ -783,31 +798,25 @@ export function ApplyEsarfScreen({
         >
           <View style={styles.composerBackdrop}>
             <Pressable style={styles.composerDismissArea} onPress={() => setShowReasonComposer(false)} />
-            <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-              keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
-              style={{ width: '100%' }}
-            >
-              <View style={styles.reasonComposer}>
-                <TextInput
-                  ref={reasonComposerInputRef}
-                  autoFocus
-                  value={reason}
-                  onChangeText={(value) => {
-                    setReason(value);
-                    setValidationErrors((current) => ({ ...current, reason: undefined }));
-                  }}
-                  placeholder="Enter reason"
-                  placeholderTextColor="#94a3b8"
-                  multiline
-                  textAlignVertical="top"
-                  style={styles.reasonComposerInput}
-                />
-                <Pressable style={styles.reasonComposerDone} onPress={() => setShowReasonComposer(false)}>
-                  <Text style={styles.reasonComposerDoneText}>Done</Text>
-                </Pressable>
-              </View>
-            </KeyboardAvoidingView>
+            <View style={[styles.reasonComposer, { marginBottom: Platform.OS === 'ios' ? keyboardHeight : 0 }]}>
+              <TextInput
+                ref={reasonComposerInputRef}
+                autoFocus
+                value={reason}
+                onChangeText={(value) => {
+                  setReason(value);
+                  setValidationErrors((current) => ({ ...current, reason: undefined }));
+                }}
+                placeholder="Enter reason"
+                placeholderTextColor="#94a3b8"
+                multiline
+                textAlignVertical="top"
+                style={styles.reasonComposerInput}
+              />
+              <Pressable style={styles.reasonComposerDone} onPress={() => setShowReasonComposer(false)}>
+                <Text style={styles.reasonComposerDoneText}>Done</Text>
+              </Pressable>
+            </View>
           </View>
         </Modal>
       </ScrollView>
