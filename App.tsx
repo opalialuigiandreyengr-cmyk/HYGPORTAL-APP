@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, BackHandler, Dimensions, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, useWindowDimensions, View } from 'react-native';
+import { Alert, Animated, BackHandler, Dimensions, Image, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, useWindowDimensions, View } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -191,6 +191,11 @@ export default function App() {
   const [publicScreen, setPublicScreen] = useState<PublicScreen>('login');
   const [notificationsEnabled, setNotificationsEnabledState] = useState(false);
   const [adminScreen, setAdminScreen] = useState<AdminScreen>('home');
+  const [recoverySession, setRecoverySession] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
+  const [updatePasswordError, setUpdatePasswordError] = useState('');
   const didAutoPromptBiometricRef = useRef(false);
   const canUseApprovals =
     profileResult?.status === 'linked' && Number(profileResult.profile.authorityLevel ?? 1) > 1;
@@ -225,6 +230,15 @@ export default function App() {
       }
       setNotificationsEnabledState(notifEnabled);
 
+      const isRecoveryUrl = Platform.OS === 'web' && typeof window !== 'undefined' &&
+        ((window.location.hash || '').includes('type=recovery') ||
+         (window.location.search || '').includes('type=recovery') ||
+         (window.location.pathname || '').includes('reset-password'));
+
+      if (isRecoveryUrl) {
+        setRecoverySession(true);
+      }
+
       const {
         data: { session },
       } = await supabase.auth.getSession();
@@ -234,28 +248,58 @@ export default function App() {
       }
 
       if (enabled && available) {
-        const unlocked = await promptBiometric('Unlock HYG Portal');
-        if (!unlocked) {
-          return;
+        if (!isRecoveryUrl) {
+          const unlocked = await promptBiometric('Unlock HYG Portal');
+          if (!unlocked) {
+            return;
+          }
         }
       }
 
-      setSignedInUser(session.user);
-      if ((session.user.email ?? '').toLowerCase() !== SUPER_ADMIN_EMAIL) {
-        await loadProfileForUser(session.user);
-        await refreshDashboard();
-        await refreshPendingApprovalCount();
-        await refreshNotificationUnreadCount();
+      // If we are on a recovery URL, do NOT set signedInUser or load dashboard/profiles yet
+      if (!isRecoveryUrl) {
+        setSignedInUser(session.user);
+        if ((session.user.email ?? '').toLowerCase() !== SUPER_ADMIN_EMAIL) {
+          await loadProfileForUser(session.user);
+          await refreshDashboard();
+          await refreshPendingApprovalCount();
+          await refreshNotificationUnreadCount();
+        }
       }
     })();
 
-    const { data: authSub } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: authSub } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!active) {
         return;
       }
+
+      const isRecoveryUrl = Platform.OS === 'web' && typeof window !== 'undefined' &&
+        ((window.location.hash || '').includes('type=recovery') ||
+         (window.location.search || '').includes('type=recovery') ||
+         (window.location.pathname || '').includes('reset-password'));
+
+      if (event === 'PASSWORD_RECOVERY' || (event === 'SIGNED_IN' && isRecoveryUrl)) {
+        setRecoverySession(true);
+      }
+
       if (!session?.user) {
         setSignedInUser(null);
         setProfileResult(null);
+        // Only reset recoverySession if we are NOT in the middle of a recovery flow URL
+        if (!isRecoveryUrl) {
+          setRecoverySession(false);
+        }
+      } else {
+        // If the user signed in normally (not in recovery mode), auto-login them
+        if (event === 'SIGNED_IN' && !isRecoveryUrl && !recoverySession) {
+          setSignedInUser(session.user);
+          if ((session.user.email ?? '').toLowerCase() !== SUPER_ADMIN_EMAIL) {
+            await loadProfileForUser(session.user);
+            await refreshDashboard();
+            await refreshPendingApprovalCount();
+            await refreshNotificationUnreadCount();
+          }
+        }
       }
     });
 
@@ -370,12 +414,140 @@ export default function App() {
     setAppToast(null);
   }, []);
 
+  async function handleResetPasswordSave() {
+    if (!newPassword) {
+      setUpdatePasswordError('Password is required');
+      return;
+    }
+    if (newPassword.length < 6) {
+      setUpdatePasswordError('Password must be at least 6 characters');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setUpdatePasswordError('Passwords do not match');
+      return;
+    }
+
+    setIsUpdatingPassword(true);
+    setUpdatePasswordError('');
+
+    try {
+      const { data, error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) {
+        throw new Error(error.message);
+      }
+      setRecoverySession(false);
+      setNewPassword('');
+      setConfirmPassword('');
+      setAppToast({
+        tone: 'success',
+        title: 'Success',
+        message: 'Your password has been changed successfully. You are now logged in.',
+      });
+      if (data?.user) {
+        await completeLogin(data.user);
+      }
+    } catch (error) {
+      setUpdatePasswordError(error instanceof Error ? error.message : 'Unable to change password.');
+    } finally {
+      setIsUpdatingPassword(false);
+    }
+  }
+
   function withToast(screen: ReactNode) {
     return (
       <SafeAreaProvider>
         <View style={styles.appShell}>
           {screen}
           <AppToast toast={appToast} onDismiss={dismissAppToast} />
+
+          <Modal
+            transparent
+            animationType="fade"
+            visible={recoverySession}
+            onRequestClose={() => {}}
+          >
+            <View style={styles.recoveryBackdrop}>
+              <KeyboardAvoidingView
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+                style={{ width: '100%', alignItems: 'center' }}
+              >
+                <View style={styles.recoveryCard}>
+                  <Text style={styles.recoveryTitle}>Change Password</Text>
+                  <Text style={styles.recoverySubtitle}>
+                    Your account has been verified. Please enter a new password below to secure your account.
+                  </Text>
+
+                  {updatePasswordError ? (
+                    <Text style={styles.recoveryError}>{updatePasswordError}</Text>
+                  ) : null}
+
+                  <View style={styles.recoveryInputGroup}>
+                    <Text style={styles.recoveryInputLabel}>New Password</Text>
+                    <TextInput
+                      style={styles.recoveryInput}
+                      secureTextEntry
+                      value={newPassword}
+                      onChangeText={(text) => {
+                        setNewPassword(text);
+                        setUpdatePasswordError('');
+                      }}
+                      placeholder="At least 6 characters"
+                      placeholderTextColor="#94a3b8"
+                    />
+                  </View>
+
+                  <View style={styles.recoveryInputGroup}>
+                    <Text style={styles.recoveryInputLabel}>Confirm New Password</Text>
+                    <TextInput
+                      style={styles.recoveryInput}
+                      secureTextEntry
+                      value={confirmPassword}
+                      onChangeText={(text) => {
+                        setConfirmPassword(text);
+                        setUpdatePasswordError('');
+                      }}
+                      placeholder="Confirm your password"
+                      placeholderTextColor="#94a3b8"
+                    />
+                  </View>
+
+                  <View style={styles.recoveryActions}>
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.recoverySaveBtn,
+                        isUpdatingPassword ? styles.recoveryBtnDisabled : null,
+                        pressed ? styles.recoveryBtnPressed : null
+                      ]}
+                      disabled={isUpdatingPassword}
+                      onPress={handleResetPasswordSave}
+                    >
+                      <Text style={styles.recoverySaveBtnText}>
+                        {isUpdatingPassword ? 'Saving Password...' : 'Save and Log In'}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.recoveryCancelBtn,
+                        isUpdatingPassword ? styles.recoveryBtnDisabled : null,
+                        pressed ? styles.recoveryBtnPressed : null
+                      ]}
+                      disabled={isUpdatingPassword}
+                      onPress={async () => {
+                        await supabase.auth.signOut();
+                        setRecoverySession(false);
+                        setNewPassword('');
+                        setConfirmPassword('');
+                      }}
+                    >
+                      <Text style={styles.recoveryCancelBtnText}>Cancel</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </KeyboardAvoidingView>
+            </View>
+          </Modal>
         </View>
       </SafeAreaProvider>
     );
@@ -5066,6 +5238,103 @@ function TimeRequestScreen({
 }
 
 const styles = StyleSheet.create({
+  recoveryBackdrop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.62)',
+    padding: 16,
+  },
+  recoveryCard: {
+    width: '100%',
+    maxWidth: 380,
+    borderRadius: 8,
+    backgroundColor: '#ffffff',
+    borderColor: '#e2e8f0',
+    borderWidth: 1,
+    padding: 24,
+    elevation: 5,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+  },
+  recoveryTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#0f172a',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  recoverySubtitle: {
+    fontSize: 13,
+    color: '#64748b',
+    lineHeight: 18,
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  recoveryError: {
+    color: '#dc2626',
+    backgroundColor: '#fef2f2',
+    padding: 8,
+    borderRadius: 6,
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  recoveryInputGroup: {
+    marginBottom: 14,
+  },
+  recoveryInputLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#475569',
+    marginBottom: 4,
+  },
+  recoveryInput: {
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+    color: '#0f172a',
+  },
+  recoveryActions: {
+    marginTop: 16,
+    gap: 8,
+  },
+  recoverySaveBtn: {
+    minHeight: 44,
+    backgroundColor: '#facc15',
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  recoverySaveBtnText: {
+    color: '#1e293b',
+    fontWeight: '800',
+    fontSize: 14,
+  },
+  recoveryCancelBtn: {
+    minHeight: 40,
+    backgroundColor: '#f1f5f9',
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  recoveryCancelBtnText: {
+    color: '#64748b',
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  recoveryBtnDisabled: {
+    opacity: 0.5,
+  },
+  recoveryBtnPressed: {
+    opacity: 0.8,
+  },
   appShell: {
     flex: 1,
   },

@@ -551,7 +551,12 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
         </View>
 
         <View style={styles.tabsCard}>
-          <View style={styles.sectionTabs}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.sectionTabs}
+            keyboardShouldPersistTaps="handled"
+          >
             {PROFILE_SECTION_TABS.map((tab) => {
               const isActive = activeProfileSection === tab.key;
               const TabIcon = tab.icon;
@@ -566,13 +571,13 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
                   }}
                 >
                   <TabIcon size={14} color={isActive ? '#2563eb' : tab.color} strokeWidth={2.6} />
-                  <Text style={[styles.sectionTabText, isActive ? styles.sectionTabTextActive : null]}>
+                  <Text numberOfLines={1} style={[styles.sectionTabText, isActive ? styles.sectionTabTextActive : null]}>
                     {tab.label}
                   </Text>
                 </Pressable>
               );
             })}
-          </View>
+          </ScrollView>
         </View>
 
         <View
@@ -1764,11 +1769,14 @@ const styles = StyleSheet.create({
   // Profile actions
   profileActionRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
     marginTop: 12,
   },
   updateBtn: {
-    flex: 1.35,
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 160,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1785,7 +1793,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0,
   },
   profileSignOutBtn: {
-    flex: 0.8,
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 100,
     minHeight: 42,
     flexDirection: 'row',
     alignItems: 'center',
@@ -1810,35 +1820,32 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    padding: 10,
+    paddingVertical: 10,
     marginBottom: 10,
   },
   sectionTabs: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: 8,
+    paddingHorizontal: 10,
   },
   sectionTab: {
-    width: '48.8%',
-    minHeight: 50,
+    minHeight: 40,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-start',
-    gap: 5,
-    paddingHorizontal: 9,
-    borderRadius: 5,
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: '#e2e8f0',
     backgroundColor: '#ffffff',
   },
   sectionTabActive: {
-    borderColor: '#60a5fa',
+    borderColor: '#3b82f6',
     backgroundColor: '#eff6ff',
   },
   sectionTabText: {
-    flex: 1,
-    fontSize: 15,
-    lineHeight: 19,
+    fontSize: 14,
     fontWeight: fontWeights.bold,
     color: '#475569',
   },
@@ -1910,9 +1917,12 @@ const styles = StyleSheet.create({
     rowGap: 10,
   },
   detailTile: {
-    width: '48.1%',
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 140,
     minHeight: 76,
     justifyContent: 'flex-start',
+    maxWidth: '100%',
   },
   detailTileFull: {
     width: '100%',

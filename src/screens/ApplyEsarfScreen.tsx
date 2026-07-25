@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
   Keyboard,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -103,10 +104,10 @@ export function ApplyEsarfScreen({
   const operationsScopeLabel = isOperationsDepartment
     ? formatOperationsScopeLabel(profileDepartmentName, profileStoreName)
     : '';
-  const fixedSchedule = profileSchedule?.trim() || NO_SCHEDULE_LABEL;
-  const fixedDayOff = profileDayOff?.trim() || NO_DAY_OFF_LABEL;
-  const initialSchedule = initialDraft?.fields.schedule ?? fixedSchedule;
-  const initialDayOff = initialDraft?.fields.dayOff ?? fixedDayOff;
+  const fixedSchedule = normalizeSchedule(profileSchedule);
+  const fixedDayOff = normalizeDayOff(profileDayOff);
+  const initialSchedule = initialDraft?.fields.schedule ? normalizeSchedule(initialDraft.fields.schedule) : fixedSchedule;
+  const initialDayOff = initialDraft?.fields.dayOff ? normalizeDayOff(initialDraft.fields.dayOff) : fixedDayOff;
   const initialPayrollClass = initialDraft?.fields.payrollClass ?? profilePayrollClass ?? 'Select payroll class';
   const initialTransactions = initialDraft?.fields.transactions ?? [];
   const initialDateFrom = initialDraft?.fields.dateFrom ?? '';
@@ -131,26 +132,11 @@ export function ApplyEsarfScreen({
   const [submitStatus, setSubmitStatus] = useState('');
   const [scheduleStatus, setScheduleStatus] = useState('');
   const [validationErrors, setValidationErrors] = useState<Partial<Record<ValidationKey, string>>>({});
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
   const scrollRef = useRef<ScrollView | null>(null);
   const reasonComposerInputRef = useRef<TextInput | null>(null);
   const reasonFocusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sectionY = useRef<Record<SectionKey, number>>({ request: 0, transactions: 0, datetime: 0 });
-
-  useEffect(() => {
-    const showSubscription = Keyboard.addListener('keyboardDidShow', (event) => {
-      setKeyboardHeight(event.endCoordinates.height);
-    });
-    const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
-      setKeyboardHeight(0);
-    });
-
-    return () => {
-      showSubscription.remove();
-      hideSubscription.remove();
-    };
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -797,25 +783,31 @@ export function ApplyEsarfScreen({
         >
           <View style={styles.composerBackdrop}>
             <Pressable style={styles.composerDismissArea} onPress={() => setShowReasonComposer(false)} />
-            <View style={[styles.reasonComposer, { marginBottom: Platform.OS === 'ios' ? keyboardHeight : 0 }]}>
-              <TextInput
-                ref={reasonComposerInputRef}
-                autoFocus
-                value={reason}
-                onChangeText={(value) => {
-                  setReason(value);
-                  setValidationErrors((current) => ({ ...current, reason: undefined }));
-                }}
-                placeholder="Enter reason"
-                placeholderTextColor="#94a3b8"
-                multiline
-                textAlignVertical="top"
-                style={styles.reasonComposerInput}
-              />
-              <Pressable style={styles.reasonComposerDone} onPress={() => setShowReasonComposer(false)}>
-                <Text style={styles.reasonComposerDoneText}>Done</Text>
-              </Pressable>
-            </View>
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+              style={{ width: '100%' }}
+            >
+              <View style={styles.reasonComposer}>
+                <TextInput
+                  ref={reasonComposerInputRef}
+                  autoFocus
+                  value={reason}
+                  onChangeText={(value) => {
+                    setReason(value);
+                    setValidationErrors((current) => ({ ...current, reason: undefined }));
+                  }}
+                  placeholder="Enter reason"
+                  placeholderTextColor="#94a3b8"
+                  multiline
+                  textAlignVertical="top"
+                  style={styles.reasonComposerInput}
+                />
+                <Pressable style={styles.reasonComposerDone} onPress={() => setShowReasonComposer(false)}>
+                  <Text style={styles.reasonComposerDoneText}>Done</Text>
+                </Pressable>
+              </View>
+            </KeyboardAvoidingView>
           </View>
         </Modal>
       </ScrollView>
@@ -970,7 +962,52 @@ function formatFlexibleScheduleLabel(fromTime?: string | null, toTime?: string |
 }
 
 function parseScheduleLabel(value: string) {
-  return value.trim().match(/^\d{1,2}:\d{2}\s?(AM|PM)\s-\s\d{1,2}:\d{2}\s?(AM|PM)$/i);
+  return value.trim().match(/^\d{1,2}(?::\d{2})?\s?(AM|PM)\s-\s\d{1,2}(?::\d{2})?\s?(AM|PM)$/i);
+}
+
+function normalizeSchedule(value?: string | null): string {
+  if (!value) return NO_SCHEDULE_LABEL;
+  const trimmed = value.trim();
+  const lower = trimmed.toLowerCase();
+  if (lower === 'no schedule' || lower === 'no_schedule' || lower === '') {
+    return NO_SCHEDULE_LABEL;
+  }
+  const match = trimmed.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
+  if (match) {
+    const startHour = match[1];
+    const startMin = match[2] || '00';
+    const startAmPm = match[3].toUpperCase();
+    const endHour = match[4];
+    const endMin = match[5] || '00';
+    const endAmPm = match[6].toUpperCase();
+    return `${startHour}:${startMin}${startAmPm} - ${endHour}:${endMin}${endAmPm}`;
+  }
+  return trimmed;
+}
+
+function normalizeDayOff(value?: string | null): string {
+  if (!value) return NO_DAY_OFF_LABEL;
+  const trimmed = value.trim().toUpperCase();
+  if (trimmed === 'NO DAY OFF' || trimmed === 'NO_DAY_OFF' || trimmed === '') {
+    return NO_DAY_OFF_LABEL;
+  }
+  const dayMap: Record<string, string> = {
+    MON: 'Mon',
+    MONDAY: 'Mon',
+    TUE: 'Tue',
+    TUESDAY: 'Tue',
+    WED: 'Wed',
+    WEDNESDAY: 'Wed',
+    THU: 'Thu',
+    THURSDAY: 'Thu',
+    FRI: 'Fri',
+    FRIDAY: 'Fri',
+    SAT: 'Sat',
+    SATURDAY: 'Sat',
+    SUN: 'Sun',
+    SUNDAY: 'Sun',
+  };
+  return dayMap[trimmed] ?? value;
 }
 
 function getScheduleContextError({

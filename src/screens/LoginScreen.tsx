@@ -1,11 +1,12 @@
 import { StatusBar } from 'expo-status-bar';
 import { type ReactNode, useEffect, useState } from 'react';
-import { Image, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { CalendarCheck, Download, FileCheck2, Fingerprint, LockKeyhole, Mail, ShieldCheck, Smartphone } from 'lucide-react-native';
+import { Image, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { CalendarCheck, Download, FileCheck2, Fingerprint, LockKeyhole, Mail, ShieldCheck, Smartphone, X } from 'lucide-react-native';
 
 import { AppScreen, Card, IconTextField, PrimaryButton } from '../components/ui';
 import { colors, fontWeights, radius, spacing, typography } from '../theme';
 import { getInstallPlatform, isPwaInstalled } from '../constants/download';
+import { supabase } from '../lib/supabase';
 
 const hygLogo = require('../../assets/HYG LOGO.png');
 
@@ -43,6 +44,12 @@ export function LoginScreen({
   const [showAndroidDownload, setShowAndroidDownload] = useState(false);
   const [showIosInstall, setShowIosInstall] = useState(false);
 
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetInput, setResetInput] = useState('');
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetError, setResetError] = useState('');
+  const [resetSuccess, setResetSuccess] = useState('');
+
   useEffect(() => {
     // Only show install/download prompts on web when PWA is not installed
     if (Platform.OS === 'web' && !isPwaInstalled()) {
@@ -65,6 +72,103 @@ export function LoginScreen({
     const message = 'To install HYG Portal on iPhone:\n\n1. Open this site in Safari\n2. Tap the Share button\n3. Tap "Add to Home Screen"\n4. Tap "Add" to confirm';
     if (typeof window !== 'undefined') {
       window.alert(message);
+    }
+  };
+
+  const handleResetSubmit = async () => {
+    const input = resetInput.trim();
+    if (!input) {
+      setResetError('Required');
+      return;
+    }
+
+    setIsResetting(true);
+    setResetError('');
+
+    try {
+      const isEmail = input.includes('@');
+      let targetEmail = '';
+
+      if (isEmail) {
+        // 1. Check if email exists in employees table
+        const { data: dupData, error: dupError } = await supabase.rpc('check_employee_profile_duplicate', {
+          p_last_name: '',
+          p_first_name: '',
+          p_middle_name: '',
+          p_suffix: '',
+          p_email: input,
+        });
+
+        if (dupError) {
+          throw new Error(dupError.message);
+        }
+
+        const emailExists = dupData?.duplicate_email;
+        if (!emailExists) {
+          setResetError('This email address is not registered in our system.');
+          setIsResetting(false);
+          return;
+        }
+
+        // 2. Check if login account exists
+        try {
+          await supabase.rpc('resolve_login_email', { p_username: input });
+          targetEmail = input;
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : '';
+          if (errMsg.includes('not registered yet') || errMsg.includes('no login account')) {
+            setResetError('An employee profile exists with this email, but no login account is registered yet. Please register first.');
+            setIsResetting(false);
+            return;
+          }
+          targetEmail = input;
+        }
+      } else {
+        // It's a username
+        try {
+          const { data: resolvedEmail, error: resolveError } = await supabase.rpc('resolve_login_email', {
+            p_username: input,
+          });
+
+          if (resolveError) {
+            throw new Error(resolveError.message);
+          }
+
+          if (resolvedEmail) {
+            targetEmail = resolvedEmail;
+          } else {
+            throw new Error('Username not found.');
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : '';
+          if (errMsg.includes('not registered yet') || errMsg.includes('no login account')) {
+            setResetError('An employee profile exists for this username, but no login account is registered yet.');
+          } else {
+            setResetError('This username was not found in our system.');
+          }
+          setIsResetting(false);
+          return;
+        }
+      }
+
+      // Send reset password email
+      const redirectUrl = Platform.OS === 'web' && typeof window !== 'undefined'
+        ? window.location.origin + '/reset-password'
+        : 'https://hygportal.vercel.app/reset-password';
+
+      const { error: resetErrorObj } = await supabase.auth.resetPasswordForEmail(targetEmail, {
+        redirectTo: redirectUrl,
+      });
+
+      if (resetErrorObj) {
+        throw new Error(resetErrorObj.message);
+      }
+
+      setResetSuccess(`A password reset link has been sent to your registered email: ${targetEmail}`);
+    } catch (error) {
+      setResetError(error instanceof Error ? error.message : 'Unable to send reset link. Please try again.');
+    } finally {
+      setIsResetting(false);
     }
   };
 
@@ -167,6 +271,12 @@ export function LoginScreen({
             }}
           />
 
+          <View style={styles.forgotPasswordRow}>
+            <Pressable onPress={() => setShowForgotPassword(true)} hitSlop={8}>
+              <Text style={styles.forgotPasswordText}>Forgot password?</Text>
+            </Pressable>
+          </View>
+
           <PrimaryButton
             label={isSubmitting ? 'Please wait...' : 'Sign In'}
             disabled={isSubmitting}
@@ -205,6 +315,105 @@ export function LoginScreen({
           </View>
         </Card>
       </View>
+
+      <Modal
+        transparent
+        animationType="fade"
+        visible={showForgotPassword}
+        onRequestClose={() => {
+          if (!isResetting) {
+            setShowForgotPassword(false);
+            setResetInput('');
+            setResetError('');
+            setResetSuccess('');
+          }
+        }}
+      >
+        <View style={styles.modalBackdrop}>
+          <Pressable
+            style={styles.modalDismissArea}
+            disabled={isResetting}
+            onPress={() => {
+              setShowForgotPassword(false);
+              setResetInput('');
+              setResetError('');
+              setResetSuccess('');
+            }}
+          />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+            style={{ width: '100%', alignItems: 'center' }}
+          >
+            <View style={styles.resetCard}>
+              <View style={styles.resetHeader}>
+                <Text style={styles.resetTitle}>Reset Password</Text>
+                <Pressable
+                  disabled={isResetting}
+                  onPress={() => {
+                    setShowForgotPassword(false);
+                    setResetInput('');
+                    setResetError('');
+                    setResetSuccess('');
+                  }}
+                  style={styles.resetCloseBtn}
+                >
+                  <X size={20} color={colors.text} strokeWidth={2.5} />
+                </Pressable>
+              </View>
+
+              {resetSuccess ? (
+                <View style={styles.successPanel}>
+                  <Text style={styles.successText}>{resetSuccess}</Text>
+                  <PrimaryButton
+                    label="Back to Sign In"
+                    variant="gold"
+                    onPress={() => {
+                      setShowForgotPassword(false);
+                      setResetInput('');
+                      setResetError('');
+                      setResetSuccess('');
+                    }}
+                  />
+                </View>
+              ) : (
+                <View style={styles.resetForm}>
+                  <Text style={styles.resetSubtitle}>
+                    Enter your registered email address or username to receive a password reset link.
+                  </Text>
+
+                  <IconTextField
+                    label="Email or Username"
+                    icon={<Mail size={17} color={colors.muted} strokeWidth={2.5} />}
+                    error={resetError}
+                    inputProps={{
+                      value: resetInput,
+                      onChangeText: (text) => {
+                        setResetInput(text);
+                        setResetError('');
+                      },
+                      autoCapitalize: 'none',
+                      autoCorrect: false,
+                      placeholder: 'Email or Username',
+                      returnKeyType: 'done',
+                      onSubmitEditing: handleResetSubmit,
+                    }}
+                  />
+
+                  <View style={styles.resetActions}>
+                    <PrimaryButton
+                      label={isResetting ? 'Verifying...' : 'Send Reset Link'}
+                      disabled={isResetting}
+                      variant="gold"
+                      onPress={handleResetSubmit}
+                    />
+                  </View>
+                </View>
+              )}
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </AppScreen>
   );
 }
@@ -406,5 +615,76 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: fontWeights.heavy,
     textAlign: 'center',
+  },
+  forgotPasswordRow: {
+    alignSelf: 'flex-end',
+    marginTop: -spacing.xs,
+    marginBottom: spacing.md,
+  },
+  forgotPasswordText: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: fontWeights.semibold,
+  },
+  modalBackdrop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.62)',
+    padding: spacing.lg,
+  },
+  modalDismissArea: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  resetCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1,
+    padding: spacing.lg,
+    elevation: 5,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+  },
+  resetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+  },
+  resetTitle: {
+    fontSize: 20,
+    fontWeight: fontWeights.heavy,
+    color: colors.text,
+  },
+  resetCloseBtn: {
+    padding: 4,
+  },
+  resetSubtitle: {
+    fontSize: 13,
+    color: colors.muted,
+    lineHeight: 18,
+    marginBottom: spacing.md,
+  },
+  resetForm: {
+    alignSelf: 'stretch',
+  },
+  resetActions: {
+    marginTop: spacing.md,
+  },
+  successPanel: {
+    alignItems: 'center',
+    alignSelf: 'stretch',
+  },
+  successText: {
+    fontSize: 14,
+    color: colors.text,
+    lineHeight: 20,
+    textAlign: 'center',
+    marginBottom: spacing.lg,
   },
 });
