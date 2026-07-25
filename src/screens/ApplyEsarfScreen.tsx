@@ -456,10 +456,16 @@ export function ApplyEsarfScreen({
         onMessages={onAssistant ? () => confirmDiscard(onAssistant) : undefined}
         onNotifications={onNotifications ? () => confirmDiscard(onNotifications) : undefined}
       />
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+        style={styles.keyboardAvoider}
+      >
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
       >
         <Section
@@ -627,6 +633,11 @@ export function ApplyEsarfScreen({
               setReason(value);
               setValidationErrors((current) => ({ ...current, reason: undefined }));
             }}
+            onFocus={() => {
+              setTimeout(() => {
+                scrollRef.current?.scrollToEnd({ animated: true });
+              }, 300);
+            }}
             placeholder="Enter reason"
             placeholderTextColor="#94a3b8"
             multiline
@@ -752,6 +763,7 @@ export function ApplyEsarfScreen({
 
 
       </ScrollView>
+      </KeyboardAvoidingView>
     </View>
   );
 }
@@ -1135,7 +1147,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
+  keyboardAvoider: {
+    flex: 1,
+  },
   scroll: {
+    flexGrow: 1,
     padding: spacing.md,
     paddingBottom: spacing.xl,
   },

@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
   Keyboard,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -77,11 +78,9 @@ const RequestLeave = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatus, setSubmitStatus] = useState('');
   const [validationErrors, setValidationErrors] = useState<Partial<Record<ValidationKey, string>>>({});
-  const [showReasonComposer, setShowReasonComposer] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const scrollRef = useRef<ScrollView | null>(null);
-  const reasonComposerInputRef = useRef<TextInput | null>(null);
-  const reasonFocusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reasonInputRef = useRef<TextInput | null>(null);
   const sectionY = useRef<Record<SectionKey, number>>({ dates: 0, details: 0, reason: 0 });
 
   const totalLeaveDays = calculateLeaveDays(dateFrom, dateTo);
@@ -130,26 +129,7 @@ const RequestLeave = ({
     };
   }, []);
 
-  useEffect(() => {
-    if (!showReasonComposer) {
-      if (reasonFocusTimer.current) {
-        clearTimeout(reasonFocusTimer.current);
-        reasonFocusTimer.current = null;
-      }
-      return;
-    }
 
-    reasonFocusTimer.current = setTimeout(() => {
-      reasonComposerInputRef.current?.focus();
-    }, 80);
-
-    return () => {
-      if (reasonFocusTimer.current) {
-        clearTimeout(reasonFocusTimer.current);
-        reasonFocusTimer.current = null;
-      }
-    };
-  }, [showReasonComposer]);
 
   useEffect(() => {
     if (!disabledLeaveTypes.includes(leaveType)) {
@@ -229,9 +209,7 @@ const RequestLeave = ({
     setActiveSelect(null);
   }
 
-  function openReasonComposer() {
-    setShowReasonComposer(true);
-  }
+
 
   async function submit() {
     if (isSubmitting) {
@@ -254,7 +232,7 @@ const RequestLeave = ({
     if (firstSection) {
       scrollRef.current?.scrollTo({ y: Math.max(0, sectionY.current[firstSection] - 12), animated: true });
       if (firstSection === 'reason') {
-        setTimeout(() => setShowReasonComposer(true), 260);
+        setTimeout(() => reasonInputRef.current?.focus(), 260);
       }
       setSubmitStatus('Please complete all required fields.');
       return;
@@ -313,6 +291,11 @@ const RequestLeave = ({
         onMessages={onAssistant ? () => confirmDiscard(onAssistant) : undefined}
         onNotifications={onNotifications ? () => confirmDiscard(onNotifications) : undefined}
       />
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+        style={styles.keyboardAvoider}
+      >
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}
@@ -443,14 +426,24 @@ const RequestLeave = ({
           }}
         >
           <FieldLabel label="Reason for leave" />
-          <Pressable
+          <TextInput
+            ref={reasonInputRef}
+            value={reason}
+            onChangeText={(value) => {
+              setReason(value);
+              setValidationErrors((current) => ({ ...current, reason: undefined }));
+            }}
+            onFocus={() => {
+              setTimeout(() => {
+                scrollRef.current?.scrollToEnd({ animated: true });
+              }, 300);
+            }}
+            placeholder="Enter reason"
+            placeholderTextColor="#94a3b8"
+            multiline
+            textAlignVertical="top"
             style={[styles.reasonInput, validationErrors.reason ? styles.inputError : null]}
-            onPress={openReasonComposer}
-          >
-            <Text style={reason ? styles.reasonPreviewText : styles.reasonPlaceholderText}>
-              {reason || 'Enter reason'}
-            </Text>
-          </Pressable>
+          />
           {validationErrors.reason ? <Text style={styles.fieldError}>{validationErrors.reason}</Text> : null}
         </Section>
 
@@ -468,6 +461,7 @@ const RequestLeave = ({
         </View>
         {submitStatus ? <Text style={styles.submitStatus}>{submitStatus}</Text> : null}
       </ScrollView>
+      </KeyboardAvoidingView>
 
       {activePicker && Platform.OS === 'ios' ? (
         <Modal transparent animationType="fade" visible onRequestClose={() => setActivePicker(null)}>
@@ -536,36 +530,7 @@ const RequestLeave = ({
         </Modal>
       ) : null}
 
-      <Modal
-        transparent
-        animationType="fade"
-        visible={showReasonComposer}
-        onRequestClose={() => setShowReasonComposer(false)}
-        onShow={() => reasonComposerInputRef.current?.focus()}
-      >
-        <View style={styles.composerBackdrop}>
-          <Pressable style={styles.composerDismissArea} onPress={() => setShowReasonComposer(false)} />
-          <View style={[styles.reasonComposer, { marginBottom: Platform.OS === 'ios' ? keyboardHeight : 0 }]}>
-            <TextInput
-              ref={reasonComposerInputRef}
-              autoFocus
-              value={reason}
-              onChangeText={(value) => {
-                setReason(value);
-                setValidationErrors((current) => ({ ...current, reason: undefined }));
-              }}
-              placeholder="Enter reason"
-              placeholderTextColor="#94a3b8"
-              multiline
-              textAlignVertical="top"
-              style={styles.reasonComposerInput}
-            />
-            <Pressable style={styles.reasonComposerDone} onPress={() => setShowReasonComposer(false)}>
-              <Text style={styles.reasonComposerDoneText}>Done</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
+
     </View>
   );
 };
@@ -761,7 +726,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
+  keyboardAvoider: {
+    flex: 1,
+  },
   scroll: {
+    flexGrow: 1,
     padding: spacing.md,
     paddingBottom: spacing.xl,
   },
