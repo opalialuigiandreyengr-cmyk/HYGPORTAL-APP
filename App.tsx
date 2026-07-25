@@ -237,6 +237,31 @@ export default function App() {
 
       if (isRecoveryUrl) {
         setRecoverySession(true);
+
+        // Manually handle session establishment from URL on Web since detectSessionInUrl: false
+        if (Platform.OS === 'web' && typeof window !== 'undefined') {
+          try {
+            const queryParams = new URLSearchParams(window.location.search);
+            const code = queryParams.get('code');
+            if (code) {
+              await supabase.auth.exchangeCodeForSession(code);
+              window.history.replaceState({}, document.title, window.location.pathname);
+            } else {
+              const hashParams = new URLSearchParams(window.location.hash.substring(1));
+              const accessToken = hashParams.get('access_token');
+              const refreshToken = hashParams.get('refresh_token');
+              if (accessToken && refreshToken) {
+                await supabase.auth.setSession({
+                  access_token: accessToken,
+                  refresh_token: refreshToken,
+                });
+                window.history.replaceState({}, document.title, window.location.pathname);
+              }
+            }
+          } catch (err) {
+            console.error('Error exchanging recovery session from URL:', err);
+          }
+        }
       }
 
       const {
