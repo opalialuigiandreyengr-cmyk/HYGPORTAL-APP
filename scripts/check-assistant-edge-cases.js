@@ -100,6 +100,75 @@ assertEqual(
   1,
 );
 
+assertEqual(
+  'overtime 6am to 6pm with official working hours 9am to 6pm yields 3 hours',
+  calculateRequestHours({
+    requestType: 'overtime',
+    dateFrom: '2026-05-20',
+    timeFrom: '06:00',
+    timeTo: '18:00',
+    timeSchedule: '9:00AM - 6:00PM',
+    dayOff: 'Sun',
+  }),
+  3,
+);
+
+assertEqual(
+  'overtime 7am to 8pm with official working hours 9am to 6pm yields 4 hours',
+  calculateRequestHours({
+    requestType: 'overtime',
+    dateFrom: '2026-05-20',
+    timeFrom: '07:00',
+    timeTo: '20:00',
+    timeSchedule: '9:00AM - 6:00PM',
+    dayOff: 'Sun',
+    isFullHours: false,
+  }),
+  4,
+);
+
+assertEqual(
+  'fio or ob without overtime counts full time range excluding lunch',
+  calculateRequestHours({
+    requestType: 'overtime',
+    dateFrom: '2026-05-20',
+    timeFrom: '06:00',
+    timeTo: '18:00',
+    timeSchedule: '9:00AM - 6:00PM',
+    dayOff: 'Sun',
+    isFullHours: true,
+  }),
+  11,
+);
+
+assertEqual(
+  'undertime 9am to 3pm counts rendered time excluding 12pm to 1pm lunch',
+  calculateRequestHours({
+    requestType: 'overtime',
+    dateFrom: '2026-05-20',
+    timeFrom: '09:00',
+    timeTo: '15:00',
+    timeSchedule: '9:00AM - 6:00PM',
+    dayOff: 'Sun',
+    isFullHours: true,
+  }),
+  5,
+);
+
+assertEqual(
+  'undertime 9am to 12pm has no lunch overlap and yields 3 hours',
+  calculateRequestHours({
+    requestType: 'overtime',
+    dateFrom: '2026-05-20',
+    timeFrom: '09:00',
+    timeTo: '12:00',
+    timeSchedule: '9:00AM - 6:00PM',
+    dayOff: 'Sun',
+    isFullHours: true,
+  }),
+  3,
+);
+
 assertEqual('overnight request range', calculateRequestHours({
   requestType: 'use_offset',
   dateFrom: '2026-05-20',

@@ -43,6 +43,8 @@ export function getDisabledLeaveTypes(totalDays: number, leaveCreditRemaining: n
   return disabled;
 }
 
+const DEFAULT_OFFICIAL_SCHEDULE = '9:00AM - 6:00PM';
+
 export function calculateRequestHours({
   requestType,
   dateFrom,
@@ -75,7 +77,7 @@ export function calculateRequestHours({
     return roundHours(workedMinutes);
   }
 
-  const scheduleRange = parseScheduleRange(timeSchedule);
+  const scheduleRange = parseScheduleRange(timeSchedule) || parseScheduleRange(DEFAULT_OFFICIAL_SCHEDULE);
   if (!scheduleRange) {
     return roundHours(workedMinutes);
   }
@@ -83,16 +85,21 @@ export function calculateRequestHours({
   return roundHours(computeOvertimeMinutes(scheduleRange, workStart, workEnd));
 }
 
-export function getHoursHint(requestType: RequestTypeCode, dateFrom: string, dayOff: string) {
-  if (requestType === 'use_offset') {
-    return 'Use Offset counts the selected time range.';
+export function getHoursHint(
+  requestType: RequestTypeCode,
+  dateFrom: string,
+  dayOff: string,
+  isFullHours: boolean = false,
+) {
+  if (requestType === 'use_offset' || isFullHours) {
+    return 'Full selected time range will be counted.';
   }
 
   if (isDateDayOff(dateFrom, dayOff)) {
     return 'Day off date: full worked hours are counted.';
   }
 
-  return 'Regular scheduled day: only hours outside the schedule are counted.';
+  return 'Regular scheduled day: only hours outside official working hours (9:00 AM - 6:00 PM) are counted.';
 }
 
 function parseDayNumber(value: string) {
@@ -162,14 +169,29 @@ function parseScheduleRange(scheduleText: string) {
   return { scheduleStart, scheduleEnd };
 }
 
-function computeWorkedMinutes(workStartBase: number, workEndBase: number) {
+const LUNCH_START_MINUTES = 12 * 60; // 12:00 PM (720 min)
+const LUNCH_END_MINUTES = 13 * 60;   // 1:00 PM (780 min)
+
+function computeLunchBreakOverlap(workStart: number, workEnd: number) {
+  const overlapStart = Math.max(workStart, LUNCH_START_MINUTES);
+  const overlapEnd = Math.min(workEnd, LUNCH_END_MINUTES);
+  return Math.max(0, overlapEnd - overlapStart);
+}
+
+function computeWorkedMinutes(workStartBase: number, workEndBase: number, deductLunch: boolean = true) {
   let workEnd = workEndBase;
 
   if (workEnd <= workStartBase) {
     workEnd += 24 * 60;
   }
 
-  return Math.max(0, workEnd - workStartBase);
+  const grossMinutes = Math.max(0, workEnd - workStartBase);
+  if (grossMinutes <= 0 || !deductLunch) {
+    return grossMinutes;
+  }
+
+  const lunchOverlap = computeLunchBreakOverlap(workStartBase, workEnd);
+  return Math.max(0, grossMinutes - lunchOverlap);
 }
 
 function alignWorkAndScheduleRanges(

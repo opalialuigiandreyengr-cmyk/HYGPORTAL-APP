@@ -307,8 +307,10 @@ export function ApplyEsarfScreen({
   const selectSheet = getSelectSheet(activeSelect, schedule, dayOff, payrollClass);
   const effectiveScheduleForHours = schedule === NO_SCHEDULE_LABEL ? '' : schedule;
   const effectiveDayOffForHours = dayOff === NO_DAY_OFF_LABEL ? '' : dayOff;
+  const isOtSelected = transactions.includes('ot');
   const isUseOffsetSelected = transactions.includes('use_offset');
-  const hasFioOrOb = transactions.some((key) => key === 'fio' || key === 'ob');
+  const hasFullHoursTransaction = transactions.some((key) => key === 'fio' || key === 'ob' || key === 'ut');
+  const isFullHours = (hasFullHoursTransaction && !isOtSelected) || isUseOffsetSelected;
   const totalHours = calculateRequestHours({
     requestType: isUseOffsetSelected ? 'use_offset' : 'overtime',
     dateFrom,
@@ -316,7 +318,7 @@ export function ApplyEsarfScreen({
     timeTo,
     timeSchedule: effectiveScheduleForHours,
     dayOff: effectiveDayOffForHours,
-    isFullHours: hasFioOrOb,
+    isFullHours,
   });
   const scheduleContextError = getScheduleContextError({
     dateFrom,
