@@ -427,7 +427,11 @@ function DatePickerModal({
     return null;
   }
 
-  if (Platform.OS !== 'ios') {
+  if (Platform.OS === 'web') {
+    return null;
+  }
+
+  if (Platform.OS === 'android') {
     return <DateTimePicker value={value} mode="date" display="default" onChange={onChange} />;
   }
 

@@ -484,7 +484,7 @@ const RequestLeave = ({
             </View>
           </View>
         </Modal>
-      ) : activePicker ? (
+      ) : activePicker && Platform.OS !== 'web' ? (
         <DateTimePicker value={valueForPicker(activePicker)} mode="date" display="default" onChange={handlePickerChange} />
       ) : null}
 

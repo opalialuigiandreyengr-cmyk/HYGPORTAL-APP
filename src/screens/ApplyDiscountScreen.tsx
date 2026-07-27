@@ -578,7 +578,7 @@ export function ApplyDiscountScreen({
             </View>
           </View>
         </Modal>
-      ) : activePicker ? (
+      ) : activePicker && Platform.OS !== 'web' ? (
         <DateTimePicker value={dateStringToDate(transactionDate)} mode="date" display="default" onChange={handleDateChange} />
       ) : null}
 

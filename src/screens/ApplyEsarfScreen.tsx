@@ -711,7 +711,7 @@ export function ApplyEsarfScreen({
               </View>
             </View>
           </Modal>
-        ) : activePicker ? (
+        ) : activePicker && Platform.OS !== 'web' ? (
           <DateTimePicker
             value={pickerValue()}
             mode={activePicker.startsWith('date') ? 'date' : 'time'}
