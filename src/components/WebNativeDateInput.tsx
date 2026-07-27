@@ -5,20 +5,21 @@ type WebNativeDateInputProps = {
   value: string;
   label: string;
   onChange: (value: string) => void;
+  type?: 'date' | 'time';
 };
 
 type HtmlDateInputElement = HTMLInputElement & {
   showPicker?: () => void;
 };
 
-export function WebNativeDateInput({ value, label, onChange }: WebNativeDateInputProps) {
+export function WebNativeDateInput({ value, label, onChange, type = 'date' }: WebNativeDateInputProps) {
   if (Platform.OS !== 'web') {
     return null;
   }
 
   return React.createElement('input', {
     'aria-label': label,
-    type: 'date',
+    type,
     value,
     onChange: (event: React.ChangeEvent<HtmlDateInputElement>) => {
       onChange(event.currentTarget.value);

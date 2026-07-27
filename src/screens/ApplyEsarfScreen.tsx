@@ -244,6 +244,16 @@ export function ApplyEsarfScreen({
     }
   }
 
+  function applyTimeValue(kind: 'time_from' | 'time_to', value: string) {
+    if (kind === 'time_from') {
+      setTimeFrom(value);
+      setValidationErrors((current) => ({ ...current, timeFrom: undefined, totalHours: undefined }));
+    } else {
+      setTimeTo(value);
+      setValidationErrors((current) => ({ ...current, timeTo: undefined, totalHours: undefined }));
+    }
+  }
+
   function pickerValue() {
     if (Platform.OS === 'ios') {
       return tempPickerDate;
@@ -598,6 +608,9 @@ export function ApplyEsarfScreen({
               value={timeFrom ? formatTimeDisplay(timeFrom) : ''}
               placeholder="--:-- --"
               onPress={() => openPicker('time_from')}
+              webValue={timeFrom}
+              onWebChange={(value) => applyTimeValue('time_from', value)}
+              type="time"
               error={validationErrors.timeFrom}
             />
             <PickerButton
@@ -605,6 +618,9 @@ export function ApplyEsarfScreen({
               value={timeTo ? formatTimeDisplay(timeTo) : ''}
               placeholder="--:-- --"
               onPress={() => openPicker('time_to')}
+              webValue={timeTo}
+              onWebChange={(value) => applyTimeValue('time_to', value)}
+              type="time"
               error={validationErrors.timeTo}
             />
           </View>
@@ -1105,6 +1121,7 @@ function PickerButton({
   disabled = false,
   webValue,
   onWebChange,
+  type = 'date',
   error,
 }: {
   label: string;
@@ -1114,6 +1131,7 @@ function PickerButton({
   disabled?: boolean;
   webValue?: string;
   onWebChange?: (value: string) => void;
+  type?: 'date' | 'time';
   error?: string;
 }) {
   const useWebNativeDate = Platform.OS === 'web' && onWebChange && !disabled;
@@ -1124,7 +1142,7 @@ function PickerButton({
       <Pressable disabled={disabled} style={[styles.selectButton, disabled ? styles.selectButtonDisabled : null, error ? styles.inputError : null]} onPress={useWebNativeDate ? undefined : onPress}>
         <Text style={[styles.selectButtonText, disabled ? styles.selectButtonTextDisabled : null, !value ? styles.placeholderText : null]}>{value || placeholder}</Text>
         {disabled ? null : <ChevronDown size={16} color={error ? colors.semantic.danger : '#94a3b8'} strokeWidth={2.4} />}
-        {useWebNativeDate ? <WebNativeDateInput value={webValue ?? ''} label={label} onChange={onWebChange} /> : null}
+        {useWebNativeDate ? <WebNativeDateInput value={webValue ?? ''} label={label} onChange={onWebChange} type={type} /> : null}
       </Pressable>
       {error ? <Text style={styles.fieldError}>{error}</Text> : null}
     </View>
