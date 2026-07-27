@@ -23,6 +23,7 @@ import {
 
 import { TopBar } from '../components/TopBar';
 import { WebNativeDateInput } from '../components/WebNativeDateInput';
+import { WebTimePickerModal } from '../components/WebTimePickerModal';
 import { dayOffOptions, payrollClassOptions, scheduleOptions } from '../constants/requestOptions';
 import { supabase } from '../lib/supabase';
 import type { AssistantDraft } from '../services/assistant';
@@ -608,9 +609,6 @@ export function ApplyEsarfScreen({
               value={timeFrom ? formatTimeDisplay(timeFrom) : ''}
               placeholder="--:-- --"
               onPress={() => openPicker('time_from')}
-              webValue={timeFrom}
-              onWebChange={(value) => applyTimeValue('time_from', value)}
-              type="time"
               error={validationErrors.timeFrom}
             />
             <PickerButton
@@ -618,9 +616,6 @@ export function ApplyEsarfScreen({
               value={timeTo ? formatTimeDisplay(timeTo) : ''}
               placeholder="--:-- --"
               onPress={() => openPicker('time_to')}
-              webValue={timeTo}
-              onWebChange={(value) => applyTimeValue('time_to', value)}
-              type="time"
               error={validationErrors.timeTo}
             />
           </View>
@@ -677,7 +672,24 @@ export function ApplyEsarfScreen({
         </View>
         {submitStatus ? <Text style={styles.submitStatus}>{submitStatus}</Text> : null}
 
-        {activePicker && Platform.OS === 'ios' ? (
+        {activePicker && activePicker.startsWith('time') && Platform.OS === 'web' ? (
+          <WebTimePickerModal
+            visible={Boolean(activePicker)}
+            title={activePicker === 'time_from' ? 'Select Time From' : 'Select Time To'}
+            value={activePicker === 'time_from' ? timeFrom : timeTo}
+            onConfirm={(selectedTime24) => {
+              if (activePicker === 'time_from') {
+                setTimeFrom(selectedTime24);
+                setValidationErrors((current) => ({ ...current, timeFrom: undefined, totalHours: undefined }));
+              } else if (activePicker === 'time_to') {
+                setTimeTo(selectedTime24);
+                setValidationErrors((current) => ({ ...current, timeTo: undefined, totalHours: undefined }));
+              }
+              setActivePicker(null);
+            }}
+            onClose={() => setActivePicker(null)}
+          />
+        ) : activePicker && Platform.OS === 'ios' ? (
           <Modal transparent animationType="fade" visible onRequestClose={() => setActivePicker(null)}>
             <View style={styles.modalBackdrop}>
               <View style={styles.iosPickerPanel}>
