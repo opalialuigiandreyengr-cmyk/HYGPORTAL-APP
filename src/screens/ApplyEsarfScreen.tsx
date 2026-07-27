@@ -23,7 +23,6 @@ import {
 
 import { TopBar } from '../components/TopBar';
 import { WebNativeDateInput } from '../components/WebNativeDateInput';
-import { WebTimePickerModal } from '../components/WebTimePickerModal';
 import { dayOffOptions, payrollClassOptions, scheduleOptions } from '../constants/requestOptions';
 import { supabase } from '../lib/supabase';
 import type { AssistantDraft } from '../services/assistant';
@@ -49,13 +48,13 @@ type ValidationKey =
 type SectionKey = 'request' | 'transactions' | 'datetime';
 
 const transactionOptions = [
-  { key: 'ut', label: 'Undertime (UT)', requestType: 'overtime' },
-  { key: 'ot', label: 'Overtime (OT)', requestType: 'overtime' },
-  { key: 'fio', label: 'Failure to Punch In/Out (FIO)', requestType: 'overtime' },
-  { key: 'ob', label: 'Official Business (OB)', requestType: 'overtime' },
-  { key: 'offset', label: 'Offset', requestType: 'offset_earn' },
-  { key: 'use_offset', label: 'Use Offset', requestType: 'use_offset' },
-] satisfies { key: string; label: string; requestType: RequestTypeCode }[];
+  { key: 'ut', label: 'Undertime (UT)', shortLabel: 'UT', requestType: 'overtime' },
+  { key: 'ot', label: 'Overtime (OT)', shortLabel: 'OT', requestType: 'overtime' },
+  { key: 'fio', label: 'Failure to Punch In/Out (FIO)', shortLabel: 'FIO', requestType: 'overtime' },
+  { key: 'ob', label: 'Official Business (OB)', shortLabel: 'OB', requestType: 'overtime' },
+  { key: 'offset', label: 'Offset', shortLabel: 'Offset', requestType: 'offset_earn' },
+  { key: 'use_offset', label: 'Use Offset', shortLabel: 'Use Offset', requestType: 'use_offset' },
+] satisfies { key: string; label: string; shortLabel: string; requestType: RequestTypeCode }[];
 
 const exclusiveTransactionGroups = [
   ['ut', 'ot'],
@@ -309,6 +308,7 @@ export function ApplyEsarfScreen({
   const effectiveScheduleForHours = schedule === NO_SCHEDULE_LABEL ? '' : schedule;
   const effectiveDayOffForHours = dayOff === NO_DAY_OFF_LABEL ? '' : dayOff;
   const isUseOffsetSelected = transactions.includes('use_offset');
+  const hasFioOrOb = transactions.some((key) => key === 'fio' || key === 'ob');
   const totalHours = calculateRequestHours({
     requestType: isUseOffsetSelected ? 'use_offset' : 'overtime',
     dateFrom,
@@ -316,6 +316,7 @@ export function ApplyEsarfScreen({
     timeTo,
     timeSchedule: effectiveScheduleForHours,
     dayOff: effectiveDayOffForHours,
+    isFullHours: hasFioOrOb,
   });
   const scheduleContextError = getScheduleContextError({
     dateFrom,
@@ -405,38 +406,40 @@ export function ApplyEsarfScreen({
 
     try {
       const selectedTransactions = transactionOptions.filter((option) => transactions.includes(option.key));
-      const requestIds: string[] = [];
-
-      for (const transaction of selectedTransactions) {
-        const { data, error } = await supabase.rpc('submit_time_request', {
-          p_request_type_code: transaction.requestType,
-          p_date_from: dateFrom,
-          p_date_to: dateTo,
-          p_time_from: timeFrom,
-          p_time_to: timeTo,
-          p_total_hours: totalHours,
-          p_reason: reason.trim(),
-          p_time_schedule: schedule,
-          p_day_off: dayOff,
-          p_payroll_class: payrollClass,
-          p_transaction_type: transaction.label,
-        });
-
-        if (error) {
-          throw new Error(error.message);
-        }
-
-        if (data) {
-          requestIds.push(String(data));
-        }
+      if (selectedTransactions.length === 0) {
+        throw new Error('Select at least one transaction type.');
       }
 
-      const count = requestIds.length;
-      setSubmitStatus(`Submitted ${count} request(s).`);
+      const transactionLabel =
+        selectedTransactions.length === 1
+          ? selectedTransactions[0].label
+          : selectedTransactions.map((t) => t.shortLabel).join('/');
+
+      const primaryRequestType = selectedTransactions[0].requestType;
+
+      const { data, error } = await supabase.rpc('submit_time_request', {
+        p_request_type_code: primaryRequestType,
+        p_date_from: dateFrom,
+        p_date_to: dateTo,
+        p_time_from: timeFrom,
+        p_time_to: timeTo,
+        p_total_hours: totalHours,
+        p_reason: reason.trim(),
+        p_time_schedule: schedule,
+        p_day_off: dayOff,
+        p_payroll_class: payrollClass,
+        p_transaction_type: transactionLabel,
+      });
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      setSubmitStatus('Submitted 1 request.');
       onToast?.({
         tone: 'success',
         title: 'ESARF submitted',
-        message: `${count} request${count === 1 ? '' : 's'} sent for approval.`,
+        message: '1 request sent for approval.',
       });
       await onSubmitted?.();
     } catch (error) {
@@ -609,6 +612,9 @@ export function ApplyEsarfScreen({
               value={timeFrom ? formatTimeDisplay(timeFrom) : ''}
               placeholder="--:-- --"
               onPress={() => openPicker('time_from')}
+              webValue={timeFrom}
+              onWebChange={(value) => applyTimeValue('time_from', value)}
+              type="time"
               error={validationErrors.timeFrom}
             />
             <PickerButton
@@ -616,6 +622,9 @@ export function ApplyEsarfScreen({
               value={timeTo ? formatTimeDisplay(timeTo) : ''}
               placeholder="--:-- --"
               onPress={() => openPicker('time_to')}
+              webValue={timeTo}
+              onWebChange={(value) => applyTimeValue('time_to', value)}
+              type="time"
               error={validationErrors.timeTo}
             />
           </View>
@@ -672,24 +681,7 @@ export function ApplyEsarfScreen({
         </View>
         {submitStatus ? <Text style={styles.submitStatus}>{submitStatus}</Text> : null}
 
-        {activePicker && activePicker.startsWith('time') && Platform.OS === 'web' ? (
-          <WebTimePickerModal
-            visible={Boolean(activePicker)}
-            title={activePicker === 'time_from' ? 'Select Time From' : 'Select Time To'}
-            value={activePicker === 'time_from' ? timeFrom : timeTo}
-            onConfirm={(selectedTime24) => {
-              if (activePicker === 'time_from') {
-                setTimeFrom(selectedTime24);
-                setValidationErrors((current) => ({ ...current, timeFrom: undefined, totalHours: undefined }));
-              } else if (activePicker === 'time_to') {
-                setTimeTo(selectedTime24);
-                setValidationErrors((current) => ({ ...current, timeTo: undefined, totalHours: undefined }));
-              }
-              setActivePicker(null);
-            }}
-            onClose={() => setActivePicker(null)}
-          />
-        ) : activePicker && Platform.OS === 'ios' ? (
+        {activePicker && Platform.OS === 'ios' ? (
           <Modal transparent animationType="fade" visible onRequestClose={() => setActivePicker(null)}>
             <View style={styles.modalBackdrop}>
               <View style={styles.iosPickerPanel}>
@@ -711,7 +703,7 @@ export function ApplyEsarfScreen({
               </View>
             </View>
           </Modal>
-        ) : activePicker && Platform.OS !== 'web' ? (
+        ) : activePicker ? (
           <DateTimePicker
             value={pickerValue()}
             mode={activePicker.startsWith('date') ? 'date' : 'time'}

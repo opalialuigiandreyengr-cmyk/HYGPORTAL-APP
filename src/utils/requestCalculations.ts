@@ -50,6 +50,7 @@ export function calculateRequestHours({
   timeTo,
   timeSchedule,
   dayOff,
+  isFullHours = false,
 }: {
   requestType: RequestTypeCode;
   dateFrom: string;
@@ -57,6 +58,7 @@ export function calculateRequestHours({
   timeTo: string;
   timeSchedule: string;
   dayOff: string;
+  isFullHours?: boolean;
 }) {
   const workStart = parseTimeToMinutes(timeFrom);
   const workEnd = parseTimeToMinutes(timeTo);
@@ -69,7 +71,7 @@ export function calculateRequestHours({
     return 0;
   }
 
-  if (requestType === 'use_offset' || isDateDayOff(dateFrom, dayOff)) {
+  if (requestType === 'use_offset' || isFullHours || isDateDayOff(dateFrom, dayOff)) {
     return roundHours(workedMinutes);
   }
 
