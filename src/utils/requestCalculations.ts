@@ -178,7 +178,7 @@ function computeLunchBreakOverlap(workStart: number, workEnd: number) {
   return Math.max(0, overlapEnd - overlapStart);
 }
 
-function computeWorkedMinutes(workStartBase: number, workEndBase: number, deductLunch: boolean = true) {
+function computeWorkedMinutes(workStartBase: number, workEndBase: number, deductLunch: boolean = false) {
   let workEnd = workEndBase;
 
   if (workEnd <= workStartBase) {

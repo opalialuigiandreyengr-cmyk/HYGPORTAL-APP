@@ -128,7 +128,7 @@ assertEqual(
 );
 
 assertEqual(
-  'fio or ob without overtime counts full time range excluding lunch',
+  'fio or ob without overtime counts full time range including lunch',
   calculateRequestHours({
     requestType: 'overtime',
     dateFrom: '2026-05-20',
@@ -138,11 +138,11 @@ assertEqual(
     dayOff: 'Sun',
     isFullHours: true,
   }),
-  11,
+  12,
 );
 
 assertEqual(
-  'undertime 9am to 3pm counts rendered time excluding 12pm to 1pm lunch',
+  'undertime 9am to 3pm counts rendered time including 12pm to 1pm lunch',
   calculateRequestHours({
     requestType: 'overtime',
     dateFrom: '2026-05-20',
@@ -152,7 +152,7 @@ assertEqual(
     dayOff: 'Sun',
     isFullHours: true,
   }),
-  5,
+  6,
 );
 
 assertEqual(
