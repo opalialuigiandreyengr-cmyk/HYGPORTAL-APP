@@ -1,3 +1,7 @@
+import type { MyRequest } from '../services/requests';
+
+export type { MyRequest };
+
 export type AuthorityLevel = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
 export type RequestTypeCode = 'overtime' | 'offset_earn' | 'use_offset' | 'leave';

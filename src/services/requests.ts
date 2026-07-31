@@ -59,7 +59,83 @@ export async function loadMyRequests() {
     throw error;
   }
 
-  const items = (data ?? []) as MyRequest[];
+  let items = (data ?? []) as MyRequest[];
+  const cached = await getCacheJSON<MyRequest[]>(cacheKey);
+
+  // Mark all Birthday Leave requests as approved and ensure current year in date range
+  const currentYearStr = new Date().getFullYear().toString();
+  items = items.map((item) => {
+    if (item.leave_category === 'Birthday Leave' || item.reason?.toLowerCase().includes('birthday leave')) {
+      let dateFrom = item.date_from;
+      let dateTo = item.date_to;
+      let startDate = item.start_date;
+      let endDate = item.end_date;
+
+      if (dateFrom && dateFrom.length >= 10 && !dateFrom.startsWith(currentYearStr)) {
+        dateFrom = `${currentYearStr}-${dateFrom.slice(5, 10)}`;
+      }
+      if (dateTo && dateTo.length >= 10 && !dateTo.startsWith(currentYearStr)) {
+        dateTo = `${currentYearStr}-${dateTo.slice(5, 10)}`;
+      }
+      if (startDate && startDate.length >= 10 && !startDate.startsWith(currentYearStr)) {
+        startDate = `${currentYearStr}-${startDate.slice(5, 10)}`;
+      }
+      if (endDate && endDate.length >= 10 && !endDate.startsWith(currentYearStr)) {
+        endDate = `${currentYearStr}-${endDate.slice(5, 10)}`;
+      }
+
+      return {
+        ...item,
+        status: 'approved',
+        date_from: dateFrom,
+        date_to: dateTo,
+        start_date: startDate,
+        end_date: endDate,
+        final_approved_at: item.final_approved_at || item.submitted_at || new Date().toISOString(),
+      };
+    }
+    return item;
+  });
+
+  // Preserve any locally auto-approved Birthday Leave grants that aren't returned by RPC yet
+  if (cached && cached.length) {
+    const localBdayGrants = cached.filter(
+      (item) => item.leave_category === 'Birthday Leave' && item.status === 'approved',
+    );
+    for (const bdayItem of localBdayGrants) {
+      const existsInServer = items.some(
+        (serverItem) =>
+          serverItem.request_id === bdayItem.request_id ||
+          (serverItem.leave_category === 'Birthday Leave' &&
+            serverItem.start_date &&
+            bdayItem.start_date &&
+            new Date(serverItem.start_date).getFullYear() === new Date(bdayItem.start_date).getFullYear()),
+      );
+      if (!existsInServer) {
+        items = [bdayItem, ...items];
+      }
+    }
+  }
+
+  // Enforce strictly ONE (1) Birthday Leave entry per calendar year
+  const seenBirthdayYears = new Set<number>();
+  items = items.filter((item) => {
+    const isBirthdayLeave =
+      item.leave_category === 'Birthday Leave' ||
+      item.reason?.toLowerCase().includes('birthday leave');
+
+    if (isBirthdayLeave) {
+      const itemYear = item.start_date
+        ? new Date(item.start_date).getFullYear()
+        : new Date().getFullYear();
+      if (seenBirthdayYears.has(itemYear)) {
+        return false;
+      }
+      seenBirthdayYears.add(itemYear);
+    }
+    return true;
+  });
+
   await setCacheJSON(cacheKey, items);
   return items;
 }

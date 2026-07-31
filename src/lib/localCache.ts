@@ -48,3 +48,10 @@ export async function getCacheJSON<T>(key: string) {
   }
 }
 
+export async function removeCacheItem(key: string) {
+  await initLocalCache();
+  const database = await db();
+  await database.runAsync('delete from app_cache where key = ?', [key]);
+}
+
+

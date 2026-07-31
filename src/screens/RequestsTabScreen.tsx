@@ -89,7 +89,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
     return categoryItems.reduce(
       (totals, item) => {
         totals.all += 1;
-        const statusKey = normalizeStatus(item.status);
+        const statusKey = normalizeStatus(item.status, item);
         if (statusKey === 'approved') totals.approved += 1;
         else if (statusKey === 'rejected') totals.rejected += 1;
         else totals.pending += 1;
@@ -116,7 +116,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
     const toTime = parseFilterDate(dateTo, true);
 
     return items.filter((item) => {
-      const statusKey = normalizeStatus(item.status);
+      const statusKey = normalizeStatus(item.status, item);
       if (activeStatus !== 'all' && statusKey !== activeStatus) return false;
       if (activeCategory !== 'all' && requestCategory(item) !== activeCategory) return false;
 
@@ -368,7 +368,7 @@ function RequestCard({
   sequence: number;
   onView: () => void;
 }) {
-  const statusKey = normalizeStatus(item.status);
+  const statusKey = normalizeStatus(item.status, item);
   const requestDate = getRequestDate(item);
   const displayName = formatEmployeeDisplayName(profile);
   const department = formatProfileWorkUnit(profile);
@@ -444,13 +444,14 @@ function RequestDetailsSheet({
   const isPerk = isPerkRequest(item);
   const rejectedReason = getRejectedReason(item);
   const currentStatusDate = item.final_approved_at || item.rejected_at || item.submitted_at;
+  const itemStatusKey = normalizeStatus(item.status, item);
   const timelineRows = isPerk ? [
     {
-      title: normalizeStatus(item.status) === 'approved' ? 'Approval Code Success' : 'Waiting for Approval Code',
-      subtitle: normalizeStatus(item.status) === 'approved' ? 'Email approval code verified' : 'Approval code not yet verified',
+      title: itemStatusKey === 'approved' ? 'Approval Code Success' : 'Waiting for Approval Code',
+      subtitle: itemStatusKey === 'approved' ? 'Email approval code verified' : 'Approval code not yet verified',
       date: formatSheetDate(currentStatusDate),
       time: formatSheetTime(currentStatusDate),
-      tone: normalizeStatus(item.status) === 'approved' ? ('success' as const) : ('warning' as const),
+      tone: itemStatusKey === 'approved' ? ('success' as const) : ('warning' as const),
     },
   ] : [
     {
@@ -480,7 +481,7 @@ function RequestDetailsSheet({
                 <Text style={styles.sheetTitle}>{requestSheetTitle(item)}</Text>
                 <View style={styles.sheetCodeRow}>
                   <Text style={styles.sheetCode}>{formatRequestDocumentCode(item, sequence)}</Text>
-                  <Text style={[styles.sheetStatusPill, statusPillStyle(normalizeStatus(item.status))]}>
+                  <Text style={[styles.sheetStatusPill, statusPillStyle(itemStatusKey)]}>
                     {statusLabel(item)}
                   </Text>
                 </View>
@@ -714,15 +715,18 @@ function timelineDotStyle(tone: 'warning' | 'success' | 'danger' | 'muted') {
 }
 
 
-function normalizeStatus(status: string): StatusFilter {
-  const value = status.toLowerCase();
+function normalizeStatus(status: string, item?: MyRequest): StatusFilter {
+  if (item && (item.leave_category === 'Birthday Leave' || item.reason?.toLowerCase().includes('birthday leave'))) {
+    return 'approved';
+  }
+  const value = (status || '').toLowerCase();
   if (value.includes('approved')) return 'approved';
   if (value.includes('reject') || value.includes('denied')) return 'rejected';
   return 'pending';
 }
 
 function statusLabel(item: MyRequest) {
-  const statusKey = normalizeStatus(item.status);
+  const statusKey = normalizeStatus(item.status, item);
   if (isPerkRequest(item) && statusKey === 'approved') return 'APPROVED';
   if (statusKey === 'approved') return 'APPROVED';
   if (statusKey === 'rejected') return 'REJECTED';
@@ -819,7 +823,20 @@ function normalizeDepartmentName(value?: string | null) {
 }
 
 function getRequestDate(item: MyRequest) {
-  return item.request_type_code === 'leave' ? item.start_date || item.submitted_at : item.date_from || item.submitted_at;
+  const isBirthdayLeave =
+    item.leave_category === 'Birthday Leave' ||
+    item.reason?.toLowerCase().includes('birthday leave');
+
+  const rawDate = item.request_type_code === 'leave' ? item.start_date || item.date_from || item.submitted_at : item.date_from || item.submitted_at;
+
+  if (isBirthdayLeave && rawDate && rawDate.length >= 10) {
+    const currentYearStr = new Date().getFullYear().toString();
+    if (!rawDate.startsWith(currentYearStr)) {
+      return `${currentYearStr}-${rawDate.slice(5, 10)}`;
+    }
+  }
+
+  return rawDate;
 }
 
 function parseFilterDate(value: string | null, endOfDay = false) {
@@ -899,17 +916,36 @@ function formatMoney(value: number | null | undefined) {
 }
 
 function approvalTimeline(item: MyRequest) {
+  if (item.leave_category === 'Birthday Leave' || item.reason?.toLowerCase().includes('birthday leave')) {
+    return [
+      {
+        label: 'HYG Portal System',
+        status: 'Auto-Approved',
+        actedAt: item.final_approved_at || item.submitted_at,
+      },
+    ];
+  }
+
   const isLeave = item.request_type_code === 'leave';
   const fallback = isLeave ? [1] : [1, 2];
   const summary = (item.approval_summary ?? [])
     .filter((step) => !isLeave || step.step_order === 1 || step.required_level === 1)
     .slice(0, fallback.length);
   const rows: { label: string; status: string; actedAt: string | null }[] = summary.length
-    ? summary.map((step) => ({
-        label: approvalRoleLabel(step),
-        status: `L${step.required_level} • ${approvalStepStatus(step.status)}`,
-        actedAt: step.acted_at,
-      }))
+    ? summary.map((step) => {
+        const isAutoApproved =
+          step.approver_name === 'HYG Portal System' ||
+          step.remarks?.toLowerCase().includes('auto-approved') ||
+          item.reason?.toLowerCase().includes('auto-approved');
+        const statusText = isAutoApproved
+          ? 'Auto-Approved'
+          : `L${step.required_level} • ${approvalStepStatus(step.status)}`;
+        return {
+          label: approvalRoleLabel(step),
+          status: statusText,
+          actedAt: step.acted_at,
+        };
+      })
     : fallback.map((level) => ({
         label: fallbackApprovalRoleLabel(level),
         status: `L${level} • ${level === 1 ? 'Pending to approve' : 'Not yet processed'}`,
@@ -947,6 +983,9 @@ function normalizeDisplayValue(value: string | null | undefined) {
 }
 
 function formatPersonNameWithMiddleInitial(value: string) {
+  if (value.toLowerCase().includes('system') || value.toLowerCase().includes('admin')) {
+    return value;
+  }
   const parts = value.trim().split(/\s+/).filter(Boolean);
   if (parts.length < 3) return value;
 

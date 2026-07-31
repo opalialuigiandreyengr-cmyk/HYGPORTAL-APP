@@ -16,9 +16,14 @@ import {
 
 import { colors, fontWeights, spacing, radius } from '../theme';
 import { TopBar } from '../components/TopBar';
+import { BirthdayGreetingModal } from '../components/BirthdayGreetingModal';
 import type { DashboardSummary } from '../services/dashboard';
 import { loadPerkUsage, type PerkUsage } from '../services/perks';
 import { loadMyRequests, type MyRequest } from '../services/requests';
+import { addAppNotification } from '../services/notificationCenter';
+import { ensureBirthdayLeaveGrant } from '../services/birthdayLeave';
+import { getCacheJSON, setCacheJSON } from '../lib/localCache';
+import { formatDateInput } from '../utils/dateTime';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
 type Props = {
@@ -37,6 +42,7 @@ type Props = {
   onApplyEsarf?: () => void;
   onRequestLeave?: () => void;
   onApplyPerks?: () => void;
+  onBirthdayGreetingClosed?: () => void;
 };
 
 export function DashboardScreen({
@@ -55,9 +61,11 @@ export function DashboardScreen({
   onApplyEsarf,
   onRequestLeave,
   onApplyPerks,
+  onBirthdayGreetingClosed,
 }: Props) {
   const [perkUsage, setPerkUsage] = useState<PerkUsage | null>(null);
   const [recentRequests, setRecentRequests] = useState<MyRequest[]>([]);
+  const [showBirthdayModal, setShowBirthdayModal] = useState(false);
   const { width } = useWindowDimensions();
   const isCompactDashboard = width < 390;
 
@@ -94,6 +102,44 @@ export function DashboardScreen({
       .sort((left, right) => Date.parse(right.submitted_at) - Date.parse(left.submitted_at))
       .slice(0, 3);
   }, [recentRequests]);
+
+  useEffect(() => {
+    const processBirthdayGrant = async () => {
+      const identityKey = profile?.employeeId || userEmail || 'anonymous';
+      const year = new Date().getFullYear();
+      const dismissCacheKey = `birthday_modal_dismissed_${identityKey}_${year}`;
+      const isDismissed = await getCacheJSON<boolean>(dismissCacheKey);
+
+      if (!isDismissed) {
+        await ensureBirthdayLeaveGrant(profile, userEmail);
+        setShowBirthdayModal(true);
+      }
+    };
+    void processBirthdayGrant();
+  }, [profile?.birthDate, profile?.employeeId, userEmail]);
+
+  const handleCloseBirthdayModal = async () => {
+    setShowBirthdayModal(false);
+    const identityKey = profile?.employeeId || userEmail || 'anonymous';
+    const year = new Date().getFullYear();
+    const dismissCacheKey = `birthday_modal_dismissed_${identityKey}_${year}`;
+    await setCacheJSON(dismissCacheKey, true);
+
+    await ensureBirthdayLeaveGrant(profile, userEmail);
+
+    const greetingTitle = `Happy Birthday ${employeeName}! 🎉`;
+    const greetingBody = `Happy Birthday ${employeeName} !🎉 Wishing you a wonderful day filled with happiness, good health, and memorable moments. As a token of our appreciation for your hard work and dedication, we're delighted to grant you one (1) Birthday Leave, so you can celebrate your special day with your loved ones or simply take time to enjoy yourself. Thank you for being a valued member of our team. We hope your year ahead is filled with success, joy, and exciting opportunities. Have an amazing birthday! 🎂🎁`;
+
+    try {
+      await addAppNotification({
+        title: greetingTitle,
+        body: greetingBody,
+      });
+      onBirthdayGreetingClosed?.();
+    } catch (err) {
+      console.error('Unable to store birthday notification:', err);
+    }
+  };
 
   return (
     <View style={styles.root}>
@@ -191,8 +237,36 @@ export function DashboardScreen({
         </View>
 
       </ScrollView>
+
+      <BirthdayGreetingModal
+        visible={showBirthdayModal}
+        employeeName={employeeName}
+        onClose={handleCloseBirthdayModal}
+      />
     </View>
   );
+}
+
+function isBirthdayToday(birthDateStr?: string | null): boolean {
+  if (!birthDateStr) return false;
+  const today = new Date();
+  const currentMonth = today.getMonth() + 1;
+  const currentDay = today.getDate();
+
+  const str = birthDateStr.trim();
+  const match = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(str);
+  if (match) {
+    const month = parseInt(match[2], 10);
+    const day = parseInt(match[3], 10);
+    return month === currentMonth && day === currentDay;
+  }
+
+  const parsed = new Date(str);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.getMonth() + 1 === currentMonth && parsed.getDate() === currentDay;
+  }
+
+  return false;
 }
 
 function DashboardQuickAction({
