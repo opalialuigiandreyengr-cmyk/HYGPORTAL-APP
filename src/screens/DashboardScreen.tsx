@@ -105,10 +105,23 @@ export function DashboardScreen({
 
   useEffect(() => {
     const processBirthdayGrant = async () => {
-      const identityKey = profile?.employeeId || userEmail || 'anonymous';
+      if (!profile?.birthDate) {
+        return;
+      }
+
+      if (!isBirthdayToday(profile.birthDate)) {
+        return;
+      }
+
+      const identityKey = (profile.employeeId || userEmail).trim().toLowerCase();
+      const emailKey = userEmail.trim().toLowerCase();
       const year = new Date().getFullYear();
       const dismissCacheKey = `birthday_modal_dismissed_${identityKey}_${year}`;
-      const isDismissed = await getCacheJSON<boolean>(dismissCacheKey);
+      const userEmailDismissCacheKey = `birthday_modal_dismissed_${emailKey}_${year}`;
+
+      const isDismissed =
+        (await getCacheJSON<boolean>(dismissCacheKey)) ||
+        (await getCacheJSON<boolean>(userEmailDismissCacheKey));
 
       if (!isDismissed) {
         await ensureBirthdayLeaveGrant(profile, userEmail);
@@ -120,10 +133,12 @@ export function DashboardScreen({
 
   const handleCloseBirthdayModal = async () => {
     setShowBirthdayModal(false);
-    const identityKey = profile?.employeeId || userEmail || 'anonymous';
+    const identityKey = (profile?.employeeId || userEmail).trim().toLowerCase();
+    const emailKey = userEmail.trim().toLowerCase();
     const year = new Date().getFullYear();
-    const dismissCacheKey = `birthday_modal_dismissed_${identityKey}_${year}`;
-    await setCacheJSON(dismissCacheKey, true);
+
+    await setCacheJSON(`birthday_modal_dismissed_${identityKey}_${year}`, true);
+    await setCacheJSON(`birthday_modal_dismissed_${emailKey}_${year}`, true);
 
     await ensureBirthdayLeaveGrant(profile, userEmail);
 

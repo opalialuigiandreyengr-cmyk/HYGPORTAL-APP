@@ -7,6 +7,17 @@ const CACHE_KEY_PREFIX = 'birthday_leave_granted_';
 const RECORD_CACHE_PREFIX = 'birthday_leave_record_';
 const MY_REQUESTS_CACHE_KEY = 'my_requests_v1';
 
+export function isAutoApprovedBirthdayGrant(item: MyRequest | null | undefined): boolean {
+  if (!item) return false;
+  return (
+    item.request_id?.startsWith('bday_leave_') === true ||
+    item.reason === 'Auto-approved Birthday Leave Grant' ||
+    item.leave_category === 'Birthday Leave Grant' ||
+    (item.approval_summary?.[0]?.approver_name === 'HYG Portal System' &&
+      (item.leave_category === 'Birthday Leave' || item.leave_category === 'Birthday Leave Grant'))
+  );
+}
+
 export async function ensureBirthdayLeaveGrant(
   profile: EmployeeProfileSummary | null,
   userEmail: string,
@@ -50,7 +61,7 @@ export async function ensureBirthdayLeaveGrant(
     time_to: null,
     total_hours: null,
     leave_type: 'With Pay',
-    leave_category: 'Birthday Leave',
+    leave_category: 'Birthday Leave Grant',
     total_days: 1,
     paid_days: 1,
     unpaid_days: 0,
@@ -78,7 +89,7 @@ export async function ensureBirthdayLeaveGrant(
   try {
     const { error } = await supabase.rpc('submit_leave_request', {
       p_leave_type: 'With Pay',
-      p_leave_category: 'Birthday Leave',
+      p_leave_category: 'Birthday Leave Grant',
       p_start_date: birthdayThisYearStr,
       p_end_date: birthdayThisYearStr,
       p_paid_days: 0, // 0 deducted from standard annual leave credits
@@ -112,7 +123,7 @@ async function mergeIntoMyRequestsCache(bdayRequest: MyRequest) {
   const exists = cachedRequests.some(
     (req) =>
       req.request_id === bdayRequest.request_id ||
-      (req.leave_category === 'Birthday Leave' &&
+      (isAutoApprovedBirthdayGrant(req) &&
         req.start_date &&
         new Date(req.start_date).getFullYear() === new Date().getFullYear()),
   );

@@ -34,6 +34,7 @@ export async function loadDashboardSummary() {
   const birthdayLeaveCount = myRequests.filter(
     (req) =>
       req.leave_category === 'Birthday Leave' ||
+      req.leave_category === 'Birthday Leave Grant' ||
       req.reason?.toLowerCase().includes('birthday leave'),
   ).length;
 

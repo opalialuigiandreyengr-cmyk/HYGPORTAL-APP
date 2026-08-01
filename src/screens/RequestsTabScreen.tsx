@@ -8,6 +8,7 @@ import { colors, fontWeights, spacing, radius } from '../theme';
 import { Avatar } from '../components/Avatar';
 import { TopBar } from '../components/TopBar';
 import { loadMyRequests, loadMyRequestsCached, type MyRequest } from '../services/requests';
+import { isAutoApprovedBirthdayGrant } from '../services/birthdayLeave';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
 type StatusFilter = 'all' | 'pending' | 'approved' | 'rejected';
@@ -716,7 +717,7 @@ function timelineDotStyle(tone: 'warning' | 'success' | 'danger' | 'muted') {
 
 
 function normalizeStatus(status: string, item?: MyRequest): StatusFilter {
-  if (item && (item.leave_category === 'Birthday Leave' || item.reason?.toLowerCase().includes('birthday leave'))) {
+  if (item && isAutoApprovedBirthdayGrant(item)) {
     return 'approved';
   }
   const value = (status || '').toLowerCase();
@@ -775,6 +776,7 @@ function shortRequestId(requestId: string) {
 }
 
 function formatRequestType(item: MyRequest) {
+  if (isAutoApprovedBirthdayGrant(item)) return 'Birthday Leave Grant';
   if (item.transaction_type) return item.transaction_type;
   if (item.request_type_code === 'discount') return 'Employee Discount (Cash)';
   if (item.request_type_code === 'charge') return 'Employee Charge (Credit)';
@@ -823,13 +825,9 @@ function normalizeDepartmentName(value?: string | null) {
 }
 
 function getRequestDate(item: MyRequest) {
-  const isBirthdayLeave =
-    item.leave_category === 'Birthday Leave' ||
-    item.reason?.toLowerCase().includes('birthday leave');
-
   const rawDate = item.request_type_code === 'leave' ? item.start_date || item.date_from || item.submitted_at : item.date_from || item.submitted_at;
 
-  if (isBirthdayLeave && rawDate && rawDate.length >= 10) {
+  if (isAutoApprovedBirthdayGrant(item) && rawDate && rawDate.length >= 10) {
     const currentYearStr = new Date().getFullYear().toString();
     if (!rawDate.startsWith(currentYearStr)) {
       return `${currentYearStr}-${rawDate.slice(5, 10)}`;
@@ -916,7 +914,7 @@ function formatMoney(value: number | null | undefined) {
 }
 
 function approvalTimeline(item: MyRequest) {
-  if (item.leave_category === 'Birthday Leave' || item.reason?.toLowerCase().includes('birthday leave')) {
+  if (isAutoApprovedBirthdayGrant(item)) {
     return [
       {
         label: 'HYG Portal System',
