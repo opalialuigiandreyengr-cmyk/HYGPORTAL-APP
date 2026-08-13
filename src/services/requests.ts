@@ -47,6 +47,8 @@ export type MyRequest = {
   approval_summary: RequestApprovalSummary[];
 };
 
+import { isAutoApprovedBirthdayGrant } from './birthdayLeave';
+
 export async function loadMyRequests() {
   const cacheKey = 'my_requests_v1';
   const { data, error } = await supabase.rpc('get_my_requests');
@@ -59,7 +61,29 @@ export async function loadMyRequests() {
     throw error;
   }
 
-  const items = (data ?? []) as MyRequest[];
+  let items = (data ?? []) as MyRequest[];
+  const cached = await getCacheJSON<MyRequest[]>(cacheKey);
+
+  // Preserve any locally auto-approved Birthday Leave grants that aren't returned by RPC yet
+  if (cached && cached.length) {
+    const localBdayGrants = cached.filter(
+      (item) => isAutoApprovedBirthdayGrant(item) && item.status === 'approved',
+    );
+    for (const bdayItem of localBdayGrants) {
+      const existsInServer = items.some(
+        (serverItem) =>
+          serverItem.request_id === bdayItem.request_id ||
+          (isAutoApprovedBirthdayGrant(serverItem) &&
+            serverItem.start_date &&
+            bdayItem.start_date &&
+            new Date(serverItem.start_date).getFullYear() === new Date(bdayItem.start_date).getFullYear()),
+      );
+      if (!existsInServer) {
+        items = [bdayItem, ...items];
+      }
+    }
+  }
+
   await setCacheJSON(cacheKey, items);
   return items;
 }

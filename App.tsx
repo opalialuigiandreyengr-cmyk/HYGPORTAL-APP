@@ -1256,6 +1256,7 @@ export default function App() {
           onApplyEsarf={() => openQuickRequest('apply_esarf')}
           onRequestLeave={() => openQuickRequest('request_leave')}
           onApplyPerks={() => openQuickRequest('apply_discount')}
+          onBirthdayGreetingClosed={() => void refreshNotificationUnreadCount()}
           notificationCount={notificationUnreadCount}
         />
       );

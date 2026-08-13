@@ -20,3 +20,11 @@ export async function getCacheJSON<T>(key: string) {
     return null;
   }
 }
+
+export async function removeCacheItem(key: string) {
+  try {
+    window.localStorage.removeItem(`${CACHE_PREFIX}${key}`);
+  } catch {
+  }
+}
+
