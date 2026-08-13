@@ -17,7 +17,12 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
+  Clock3,
   ListChecks,
+  Plus,
+  Repeat,
+  SquarePen,
+  Trash2,
   X,
 } from 'lucide-react-native';
 
@@ -32,6 +37,16 @@ import { platformAlert } from '../utils/platformAlert';
 import type { RequestTypeCode } from '../types/domain';
 import { calculateRequestHours } from '../utils/requestCalculations';
 import { dateStringToDate, formatDateInput, formatTimeDisplay, formatTimeInput, timeStringToDate } from '../utils/dateTime';
+
+export type EsarfEntry = {
+  id: string;
+  transaction: string;
+  dateFrom: string;
+  dateTo: string;
+  timeFrom: string;
+  timeTo: string;
+  reason: string;
+};
 
 type ValidationKey =
   | 'schedule'
@@ -118,41 +133,54 @@ export function ApplyEsarfScreen({
   const [schedule, setSchedule] = useState(initialSchedule);
   const [dayOff, setDayOff] = useState(initialDayOff);
   const [payrollClass, setPayrollClass] = useState(initialPayrollClass);
-  const [transactions, setTransactions] = useState<string[]>(initialTransactions);
-  const [dateFrom, setDateFrom] = useState(initialDateFrom);
-  const [dateTo, setDateTo] = useState(initialDateTo);
-  const [timeFrom, setTimeFrom] = useState(initialTimeFrom);
-  const [timeTo, setTimeTo] = useState(initialTimeTo);
-  const [reason, setReason] = useState(initialReason);
-  const [activePicker, setActivePicker] = useState<'date_from' | 'date_to' | 'time_from' | 'time_to' | null>(null);
+
+  const [entries, setEntries] = useState<EsarfEntry[]>([
+    {
+      id: '1',
+      transaction: initialTransactions[0] ?? '',
+      dateFrom: initialDateFrom,
+      dateTo: initialDateTo,
+      timeFrom: initialTimeFrom,
+      timeTo: initialTimeTo,
+      reason: initialReason,
+    },
+  ]);
+
+  const [activeEntryPicker, setActiveEntryPicker] = useState<{
+    index: number;
+    kind: 'date_from' | 'date_to' | 'time_from' | 'time_to';
+  } | null>(null);
+  const [activeTransactionSelectIndex, setActiveTransactionSelectIndex] = useState<number | null>(null);
+  const [activeDateChoiceIndex, setActiveDateChoiceIndex] = useState<number | null>(null);
+
   const [activeSelect, setActiveSelect] = useState<'schedule' | 'day_off' | 'payroll_class' | null>(null);
   const [showSubmissionNotes, setShowSubmissionNotes] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatus, setSubmitStatus] = useState('');
   const [scheduleStatus, setScheduleStatus] = useState('');
-  const [validationErrors, setValidationErrors] = useState<Partial<Record<ValidationKey, string>>>({});
+  const [validationErrors, setValidationErrors] = useState<Partial<Record<string, string>>>({});
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
   const scrollRef = useRef<ScrollView | null>(null);
   const reasonInputRef = useRef<TextInput | null>(null);
   const sectionY = useRef<Record<SectionKey, number>>({ request: 0, transactions: 0, datetime: 0 });
 
+  const primaryDateFrom = entries[0]?.dateFrom || '';
+
   useEffect(() => {
     let active = true;
     async function refreshFlexibleSchedule() {
-      if (!dateFrom) {
+      if (!primaryDateFrom) {
         setSchedule(isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule);
         setDayOff(isOperationsDepartment ? NO_DAY_OFF_LABEL : fixedDayOff);
         setScheduleStatus(isOperationsDepartment ? 'Select an ESARF date to load your My Team schedule.' : '');
-        setValidationErrors((current) => ({ ...current, schedule: undefined, dayOff: undefined, totalHours: undefined }));
+        setValidationErrors((current) => ({ ...current, schedule: undefined, dayOff: undefined }));
         return;
       }
 
       setScheduleStatus('Loading My Team schedule...');
       try {
-        const row = await loadMyFlexibleSchedule(dateFrom);
-        if (!active) {
-          return;
-        }
+        const row = await loadMyFlexibleSchedule(primaryDateFrom);
+        if (!active) return;
 
         if (!row) {
           setSchedule(isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule);
@@ -160,18 +188,16 @@ export function ApplyEsarfScreen({
           setScheduleStatus(isOperationsDepartment ? 'No My Team schedule found for this ESARF date.' : '');
         } else if (row.is_day_off) {
           setSchedule(formatFlexibleScheduleLabel(row.previous_from_time, row.previous_to_time));
-          setDayOff(getWeekdayShortLabel(dateFrom));
+          setDayOff(getWeekdayShortLabel(primaryDateFrom));
           setScheduleStatus('Using My Team day off for this ESARF date.');
         } else {
           setSchedule(formatFlexibleScheduleLabel(row.from_time, row.to_time));
-          setDayOff(getWeekdayShortLabel(dateFrom));
+          setDayOff(getWeekdayShortLabel(primaryDateFrom));
           setScheduleStatus('Using My Team schedule for this ESARF date.');
         }
-        setValidationErrors((current) => ({ ...current, schedule: undefined, dayOff: undefined, totalHours: undefined }));
+        setValidationErrors((current) => ({ ...current, schedule: undefined, dayOff: undefined }));
       } catch (error) {
-        if (!active) {
-          return;
-        }
+        if (!active) return;
         setSchedule(isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule);
         setDayOff(isOperationsDepartment ? NO_DAY_OFF_LABEL : fixedDayOff);
         setScheduleStatus(error instanceof Error ? error.message : 'Unable to load My Team schedule.');
@@ -183,120 +209,121 @@ export function ApplyEsarfScreen({
     return () => {
       active = false;
     };
-  }, [dateFrom, fixedDayOff, fixedSchedule, isOperationsDepartment]);
+  }, [primaryDateFrom, fixedDayOff, fixedSchedule, isOperationsDepartment]);
 
-  useEffect(() => {
-    if (!isOvertimeAllowedForPayroll(payrollClass)) {
-      setTransactions((current) => current.filter((item) => item !== 'ot'));
-    }
-  }, [payrollClass]);
-  function toggleTransaction(key: string) {
-    setValidationErrors((current) => ({ ...current, transactions: undefined }));
-    setTransactions((current) => {
-      if (current.includes(key)) {
-        return current.filter((item) => item !== key);
+  function addEntry() {
+    const lastEntry = entries[entries.length - 1];
+    setEntries((prev) => [
+      ...prev,
+      {
+        id: String(Date.now()),
+        transaction: '',
+        dateFrom: lastEntry?.dateFrom || '',
+        dateTo: lastEntry?.dateTo || lastEntry?.dateFrom || '',
+        timeFrom: '',
+        timeTo: '',
+        reason: '',
+      },
+    ]);
+  }
+
+  function removeEntry(index: number) {
+    if (entries.length <= 1) return;
+    setEntries((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function updateEntry(index: number, updates: Partial<EsarfEntry>) {
+    setEntries((prev) => {
+      const next = [...prev];
+      if (next[index]) {
+        next[index] = { ...next[index], ...updates };
       }
-
-      const conflicts = getConflictingTransactions(key);
-      return [...current.filter((item) => !conflicts.includes(item)), key];
+      return next;
     });
   }
 
-  function valueForPicker(kind: 'date_from' | 'date_to' | 'time_from' | 'time_to') {
-    if (kind === 'date_to') {
-      return dateTo ? dateStringToDate(dateTo) : new Date();
+  function getEntryTotalHours(entry: EsarfEntry) {
+    if (!entry.dateFrom || !entry.timeFrom || !entry.timeTo) {
+      return 0;
     }
-    if (kind === 'time_from') {
-      return timeFrom ? timeStringToDate(timeFrom) : new Date();
-    }
-    if (kind === 'time_to') {
-      return timeTo ? timeStringToDate(timeTo) : new Date();
-    }
-    return dateFrom ? dateStringToDate(dateFrom) : new Date();
+    const isUseOffset = entry.transaction === 'use_offset';
+    const isOt = entry.transaction === 'ot';
+    const hasFullHours = entry.transaction === 'fio' || entry.transaction === 'ob' || entry.transaction === 'ut';
+    const isFullHours = (hasFullHours && !isOt) || isUseOffset;
+
+    return calculateRequestHours({
+      requestType: isUseOffset ? 'use_offset' : 'overtime',
+      dateFrom: entry.dateFrom,
+      timeFrom: entry.timeFrom,
+      timeTo: entry.timeTo,
+      timeSchedule: schedule === NO_SCHEDULE_LABEL ? '' : schedule,
+      dayOff: dayOff === NO_DAY_OFF_LABEL ? '' : dayOff,
+      isFullHours,
+    });
   }
 
-  function openPicker(kind: 'date_from' | 'date_to' | 'time_from' | 'time_to') {
-    setTempPickerDate(valueForPicker(kind));
-    setActivePicker(kind);
+  function valueForEntryPicker(index: number, kind: 'date_from' | 'date_to' | 'time_from' | 'time_to') {
+    const entry = entries[index];
+    if (!entry) return new Date();
+    if (kind === 'date_to') return entry.dateTo ? dateStringToDate(entry.dateTo) : new Date();
+    if (kind === 'time_from') return entry.timeFrom ? timeStringToDate(entry.timeFrom) : new Date();
+    if (kind === 'time_to') return entry.timeTo ? timeStringToDate(entry.timeTo) : new Date();
+    return entry.dateFrom ? dateStringToDate(entry.dateFrom) : new Date();
   }
 
-  function applyPickerValue(kind: 'date_from' | 'date_to' | 'time_from' | 'time_to', selectedDate: Date) {
+  function openEntryPicker(index: number, kind: 'date_from' | 'date_to' | 'time_from' | 'time_to') {
+    setTempPickerDate(valueForEntryPicker(index, kind));
+    setActiveEntryPicker({ index, kind });
+  }
+
+  function applyEntryPickerValue(index: number, kind: 'date_from' | 'date_to' | 'time_from' | 'time_to', selectedDate: Date) {
     if (kind === 'date_from') {
-      applyDateValue(kind, formatDateInput(selectedDate));
+      const val = formatDateInput(selectedDate);
+      const currentTo = entries[index]?.dateTo;
+      updateEntry(index, { dateFrom: val, dateTo: currentTo || val });
     } else if (kind === 'date_to') {
-      applyDateValue(kind, formatDateInput(selectedDate));
+      updateEntry(index, { dateTo: formatDateInput(selectedDate) });
     } else if (kind === 'time_from') {
-      setTimeFrom(formatTimeInput(selectedDate));
-      setValidationErrors((current) => ({ ...current, timeFrom: undefined, totalHours: undefined }));
+      updateEntry(index, { timeFrom: formatTimeInput(selectedDate) });
     } else if (kind === 'time_to') {
-      setTimeTo(formatTimeInput(selectedDate));
-      setValidationErrors((current) => ({ ...current, timeTo: undefined, totalHours: undefined }));
-    }
-  }
-
-  function applyDateValue(kind: 'date_from' | 'date_to', value: string) {
-    if (kind === 'date_from') {
-      setDateFrom(value);
-      setValidationErrors((current) => ({ ...current, dateFrom: undefined, totalHours: undefined }));
-    } else {
-      setDateTo(value);
-      setValidationErrors((current) => ({ ...current, dateTo: undefined }));
-    }
-  }
-
-  function applyTimeValue(kind: 'time_from' | 'time_to', value: string) {
-    if (kind === 'time_from') {
-      setTimeFrom(value);
-      setValidationErrors((current) => ({ ...current, timeFrom: undefined, totalHours: undefined }));
-    } else {
-      setTimeTo(value);
-      setValidationErrors((current) => ({ ...current, timeTo: undefined, totalHours: undefined }));
+      updateEntry(index, { timeTo: formatTimeInput(selectedDate) });
     }
   }
 
   function pickerValue() {
-    if (Platform.OS === 'ios') {
-      return tempPickerDate;
-    }
-    if (!activePicker) {
-      return new Date();
-    }
-    return valueForPicker(activePicker);
+    if (Platform.OS === 'ios') return tempPickerDate;
+    if (!activeEntryPicker) return new Date();
+    return valueForEntryPicker(activeEntryPicker.index, activeEntryPicker.kind);
   }
 
   function handlePickerChange(event: DateTimePickerEvent, selectedDate?: Date) {
     if (event.type === 'dismissed') {
-      setActivePicker(null);
+      setActiveEntryPicker(null);
       return;
     }
-
-    if (!selectedDate || !activePicker) {
-      return;
-    }
-
+    if (!selectedDate || !activeEntryPicker) return;
     if (Platform.OS === 'ios') {
       setTempPickerDate(selectedDate);
       return;
     }
-
-    applyPickerValue(activePicker, selectedDate);
-    setActivePicker(null);
+    applyEntryPickerValue(activeEntryPicker.index, activeEntryPicker.kind, selectedDate);
+    setActiveEntryPicker(null);
   }
 
   function confirmIosPicker() {
-    if (activePicker) {
-      applyPickerValue(activePicker, tempPickerDate);
+    if (activeEntryPicker) {
+      applyEntryPickerValue(activeEntryPicker.index, activeEntryPicker.kind, tempPickerDate);
     }
-    setActivePicker(null);
+    setActiveEntryPicker(null);
   }
 
   function chooseSelectOption(value: string) {
     if (activeSelect === 'schedule') {
       setSchedule(value);
-      setValidationErrors((current) => ({ ...current, schedule: undefined, totalHours: undefined }));
+      setValidationErrors((current) => ({ ...current, schedule: undefined }));
     } else if (activeSelect === 'day_off') {
       setDayOff(value);
-      setValidationErrors((current) => ({ ...current, dayOff: undefined, totalHours: undefined }));
+      setValidationErrors((current) => ({ ...current, dayOff: undefined }));
     } else if (activeSelect === 'payroll_class') {
       setPayrollClass(value);
       setValidationErrors((current) => ({ ...current, payrollClass: undefined }));
@@ -305,23 +332,8 @@ export function ApplyEsarfScreen({
   }
 
   const selectSheet = getSelectSheet(activeSelect, schedule, dayOff, payrollClass);
-  const effectiveScheduleForHours = schedule === NO_SCHEDULE_LABEL ? '' : schedule;
-  const effectiveDayOffForHours = dayOff === NO_DAY_OFF_LABEL ? '' : dayOff;
-  const isOtSelected = transactions.includes('ot');
-  const isUseOffsetSelected = transactions.includes('use_offset');
-  const hasFullHoursTransaction = transactions.some((key) => key === 'fio' || key === 'ob' || key === 'ut');
-  const isFullHours = (hasFullHoursTransaction && !isOtSelected) || isUseOffsetSelected;
-  const totalHours = calculateRequestHours({
-    requestType: isUseOffsetSelected ? 'use_offset' : 'overtime',
-    dateFrom,
-    timeFrom,
-    timeTo,
-    timeSchedule: effectiveScheduleForHours,
-    dayOff: effectiveDayOffForHours,
-    isFullHours,
-  });
   const scheduleContextError = getScheduleContextError({
-    dateFrom,
+    dateFrom: primaryDateFrom,
     schedule,
     dayOff,
     isOperationsDepartment,
@@ -334,16 +346,19 @@ export function ApplyEsarfScreen({
     schedule !== initialSchedule ||
     dayOff !== initialDayOff ||
     payrollClass !== initialPayrollClass ||
-    transactions.join('|') !== initialTransactions.join('|') ||
-    dateFrom !== initialDateFrom ||
-    dateTo !== initialDateTo ||
-    timeFrom !== initialTimeFrom ||
-    timeTo !== initialTimeTo ||
-    reason !== initialReason;
+    entries.length > 1 ||
+    entries[0]?.transaction !== (initialTransactions[0] ?? '') ||
+    entries[0]?.dateFrom !== initialDateFrom ||
+    entries[0]?.dateTo !== initialDateTo ||
+    entries[0]?.timeFrom !== initialTimeFrom ||
+    entries[0]?.timeTo !== initialTimeTo ||
+    entries[0]?.reason !== initialReason;
 
   function closeTransientPanels() {
     Keyboard.dismiss();
-    setActivePicker(null);
+    setActiveEntryPicker(null);
+    setActiveTransactionSelectIndex(null);
+    setActiveDateChoiceIndex(null);
     setActiveSelect(null);
     setShowSubmissionNotes(false);
   }
@@ -351,10 +366,7 @@ export function ApplyEsarfScreen({
   function confirmDiscard(action: () => void) {
     closeTransientPanels();
 
-    if (isSubmitting) {
-      return;
-    }
-
+    if (isSubmitting) return;
     if (!hasUnsavedChanges) {
       action();
       return;
@@ -366,92 +378,93 @@ export function ApplyEsarfScreen({
     ]);
   }
 
-  async function submit() {
-    if (isSubmitting) {
-      return;
-    }
+  function validateForm() {
+    const errors: Partial<Record<string, string>> = {};
 
-    const nextErrors = validateForm({
-      schedule,
-      dayOff,
-      payrollClass,
-      transactions,
-      dateFrom,
-      dateTo,
-      timeFrom,
-      timeTo,
-      totalHours,
-      offsetBalance,
-      reason,
-      scheduleContextError,
+    if (scheduleContextError) {
+      errors.schedule = scheduleContextError;
+    }
+    if (!isValidScheduleValue(schedule)) errors.schedule = 'Schedule is required.';
+    if (!isValidDayOffValue(dayOff)) errors.dayOff = 'Day off is required.';
+    if (!payrollClassOptions.includes(payrollClass)) errors.payrollClass = 'Payroll class is required.';
+
+    entries.forEach((entry, i) => {
+      const num = entries.length - i;
+      if (!entry.transaction) errors[`entry_${i}_transaction`] = `Request #${num}: Select a transaction type.`;
+      if (!isOvertimeAllowedForPayroll(payrollClass) && entry.transaction === 'ot') {
+        errors[`entry_${i}_transaction`] = `Request #${num}: Overtime is disabled for Admin and Managerial.`;
+      }
+      if (!entry.dateFrom) errors[`entry_${i}_dateFrom`] = `Request #${num}: Date From is required.`;
+      if (!entry.dateTo) errors[`entry_${i}_dateTo`] = `Request #${num}: Date To is required.`;
+      if (!entry.timeFrom) errors[`entry_${i}_timeFrom`] = `Request #${num}: Time From is required.`;
+      if (!entry.timeTo) errors[`entry_${i}_timeTo`] = `Request #${num}: Time To is required.`;
+      const hours = getEntryTotalHours(entry);
+      if (entry.dateFrom && entry.timeFrom && entry.timeTo && hours <= 0) {
+        errors[`entry_${i}_totalHours`] = `Request #${num}: Total hours must be greater than zero.`;
+      }
+      if (entry.transaction === 'use_offset' && hours > offsetBalance) {
+        errors[`entry_${i}_totalHours`] = `Request #${num}: Use Offset cannot exceed available offset balance.`;
+      }
+      if (!entry.reason.trim()) errors[`entry_${i}_reason`] = `Request #${num}: Reason is required.`;
     });
+
+    return errors;
+  }
+
+  async function submit() {
+    if (isSubmitting) return;
+
+    const nextErrors = validateForm();
     setValidationErrors(nextErrors);
 
-    const firstSection = getFirstInvalidSection(nextErrors);
-    if (firstSection) {
-      scrollRef.current?.scrollTo({ y: Math.max(0, sectionY.current[firstSection] - 12), animated: true });
-      if (firstSection === 'datetime' && nextErrors.reason) {
-        setTimeout(() => reasonInputRef.current?.focus(), 260);
-      }
-      const message = getValidationErrorMessage(nextErrors);
+    const message = Object.values(nextErrors).find((msg): msg is string => Boolean(msg));
+    if (message) {
       setSubmitStatus(message);
-      onToast?.({
-        tone: 'error',
-        title: 'ESARF error',
-        message,
-      });
+      onToast?.({ tone: 'error', title: 'ESARF error', message });
       return;
     }
 
     setIsSubmitting(true);
-    setSubmitStatus('Submitting ESARF...');
+    setSubmitStatus(`Submitting ${entries.length} request(s)...`);
 
     try {
-      const selectedTransactions = transactionOptions.filter((option) => transactions.includes(option.key));
-      if (selectedTransactions.length === 0) {
-        throw new Error('Select at least one transaction type.');
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        const selectedOption = transactionOptions.find((t) => t.key === entry.transaction);
+        const transactionLabel = selectedOption ? selectedOption.label : entry.transaction;
+        const primaryRequestType = selectedOption ? selectedOption.requestType : 'overtime';
+        const hours = getEntryTotalHours(entry);
+
+        const { error } = await supabase.rpc('submit_time_request', {
+          p_request_type_code: primaryRequestType,
+          p_date_from: entry.dateFrom,
+          p_date_to: entry.dateTo,
+          p_time_from: entry.timeFrom,
+          p_time_to: entry.timeTo,
+          p_total_hours: hours,
+          p_reason: entry.reason.trim(),
+          p_time_schedule: schedule,
+          p_day_off: dayOff,
+          p_payroll_class: payrollClass,
+          p_transaction_type: transactionLabel,
+        });
+
+        if (error) {
+          throw new Error(`Request #${i + 1} failed: ${error.message}`);
+        }
       }
 
-      const transactionLabel =
-        selectedTransactions.length === 1
-          ? selectedTransactions[0].label
-          : selectedTransactions.map((t) => t.shortLabel).join('/');
-
-      const primaryRequestType = selectedTransactions[0].requestType;
-
-      const { data, error } = await supabase.rpc('submit_time_request', {
-        p_request_type_code: primaryRequestType,
-        p_date_from: dateFrom,
-        p_date_to: dateTo,
-        p_time_from: timeFrom,
-        p_time_to: timeTo,
-        p_total_hours: totalHours,
-        p_reason: reason.trim(),
-        p_time_schedule: schedule,
-        p_day_off: dayOff,
-        p_payroll_class: payrollClass,
-        p_transaction_type: transactionLabel,
-      });
-
-      if (error) {
-        throw new Error(error.message);
-      }
-
-      setSubmitStatus('Submitted 1 request.');
+      setSubmitStatus(`Submitted ${entries.length} request(s).`);
       onToast?.({
         tone: 'success',
         title: 'ESARF submitted',
-        message: '1 request sent for approval.',
+        message: `${entries.length} request(s) sent for approval.`,
       });
       await onSubmitted?.();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to submit ESARF.';
       setSubmitStatus(message);
-      onToast?.({
-        tone: 'error',
-        title: 'ESARF failed',
-        message,
-      });
+      onToast?.({ tone: 'error', title: 'ESARF failed', message });
     } finally {
       setIsSubmitting(false);
     }
@@ -484,190 +497,324 @@ export function ApplyEsarfScreen({
         keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
       >
-        <Section
-          number="1"
-          title="Schedule and payroll"
-          icon={<CalendarDays size={18} color={colors.primary} />}
-          invalid={hasSectionError(validationErrors, 'request')}
-          onLayoutY={(y) => {
-            sectionY.current.request = y;
+        <View
+          style={[
+            styles.scheduleCard,
+            hasSectionError(validationErrors, 'request') ? styles.scheduleCardInvalid : null,
+          ]}
+          onLayout={(event) => {
+            sectionY.current.request = event.nativeEvent.layout.y;
           }}
         >
-          <PickerButton
-            label="Schedule"
-            value={schedule}
-            placeholder="Select schedule"
-            onPress={() => {}}
-            disabled={true}
-            error={validationErrors.schedule}
-          />
-          <PickerButton
-            label="Day off"
-            value={dayOff}
-            placeholder="Select day off"
-            onPress={() => {}}
-            disabled={true}
-            error={validationErrors.dayOff}
-          />
-          <PickerButton
-            label="Payroll class"
-            value={payrollClass}
-            placeholder="Select payroll class"
-            onPress={() => {}}
-            disabled={true}
-            error={validationErrors.payrollClass}
-          />
-        </Section>
-
-        <Section
-          number="2"
-          title="Transaction type"
-          icon={<ListChecks size={18} color={colors.primary} />}
-          invalid={hasSectionError(validationErrors, 'transactions')}
-          onLayoutY={(y) => {
-            sectionY.current.transactions = y;
-          }}
-        >
-          <Text style={styles.helperText}>Select one or more transactions.</Text>
-          <View style={styles.transactionGrid}>
-            {transactionOptions.map((option) => {
-              const selected = transactions.includes(option.key);
-              const disabled =
-                (!selected && isTransactionDisabled(option.key, transactions)) ||
-                (option.key === 'ot' && !isOvertimeAllowedForPayroll(payrollClass));
-              return (
-                <Pressable
-                  key={option.key}
-                  disabled={disabled}
-                  style={[
-                    styles.transactionOption,
-                    selected ? styles.transactionOptionActive : null,
-                    disabled ? styles.transactionOptionDisabled : null,
-                  ]}
-                  onPress={() => toggleTransaction(option.key)}
-                >
-                  <View style={[styles.checkbox, selected ? styles.checkboxActive : null]}>
-                    {selected ? <Check size={14} color={colors.brand.ink} strokeWidth={3} /> : null}
-                  </View>
-                  <Text
-                    style={[
-                      styles.transactionLabel,
-                      selected ? styles.transactionLabelActive : null,
-                      disabled ? styles.transactionLabelDisabled : null,
-                    ]}
-                  >
-                    {option.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
+          <View style={styles.scheduleCardHeader}>
+            <CalendarDays size={20} color={colors.primary} strokeWidth={2.2} />
+            <Text style={styles.scheduleCardTitle}>Schedule and Payroll</Text>
           </View>
 
-          {validationErrors.transactions ? <Text style={styles.fieldError}>{validationErrors.transactions}</Text> : null}
-        </Section>
+          <View style={styles.scheduleFieldGroup}>
+            <Text style={styles.scheduleFieldLabel}>Time Schedule</Text>
+            <View
+              style={[
+                styles.scheduleInputBox,
+                validationErrors.schedule ? styles.inputError : null,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.scheduleInputText,
+                  !schedule || schedule === NO_SCHEDULE_LABEL ? styles.placeholderText : null,
+                ]}
+                numberOfLines={1}
+              >
+                {schedule || 'Select time schedule'}
+              </Text>
+              <Pressable
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={styles.scheduleIconButton}
+                onPress={() => setActiveSelect('schedule')}
+              >
+                <SquarePen size={18} color="#64748b" strokeWidth={2} />
+              </Pressable>
+            </View>
+            {validationErrors.schedule ? (
+              <Text style={styles.fieldError}>{validationErrors.schedule}</Text>
+            ) : null}
+          </View>
 
-        <Section
-          number="3"
-          title="Date and time range"
-          icon={<CalendarDays size={18} color={colors.primary} />}
-          invalid={hasSectionError(validationErrors, 'datetime')}
-          onLayoutY={(y) => {
-            sectionY.current.datetime = y;
+          <View style={styles.scheduleTwoColumnRow}>
+            <View style={styles.scheduleColumnField}>
+              <Text style={styles.scheduleFieldLabel}>Day-off</Text>
+              <View
+                style={[
+                  styles.scheduleInputBox,
+                  validationErrors.dayOff ? styles.inputError : null,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.scheduleInputText,
+                    !dayOff || dayOff === NO_DAY_OFF_LABEL ? styles.placeholderText : null,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {dayOff || 'Select day off'}
+                </Text>
+                <Pressable
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  style={styles.scheduleIconButton}
+                  onPress={() => setActiveSelect('day_off')}
+                >
+                  <Repeat size={18} color="#64748b" strokeWidth={2} />
+                </Pressable>
+              </View>
+              {validationErrors.dayOff ? (
+                <Text style={styles.fieldError}>{validationErrors.dayOff}</Text>
+              ) : null}
+            </View>
+
+            <View style={styles.scheduleColumnField}>
+              <Text style={styles.scheduleFieldLabel}>Payroll Class</Text>
+              <View
+                style={[
+                  styles.scheduleInputBox,
+                  validationErrors.payrollClass ? styles.inputError : null,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.scheduleInputText,
+                    !payrollClass || payrollClass === 'Select payroll class'
+                      ? styles.placeholderText
+                      : null,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {payrollClass || 'Select payroll class'}
+                </Text>
+              </View>
+              {validationErrors.payrollClass ? (
+                <Text style={styles.fieldError}>{validationErrors.payrollClass}</Text>
+              ) : null}
+            </View>
+          </View>
+        </View>
+
+        <View
+          style={styles.entriesSectionContainer}
+          onLayout={(event) => {
+            sectionY.current.transactions = event.nativeEvent.layout.y;
+            sectionY.current.datetime = event.nativeEvent.layout.y;
           }}
         >
+          <View style={styles.entriesSectionHeader}>
+            <Text style={styles.entriesSectionTitle}>ESARF Request Information</Text>
+            <Pressable style={styles.addEntryButton} onPress={addEntry} hitSlop={6}>
+              <Plus size={18} color="#0f172a" strokeWidth={3} />
+            </Pressable>
+          </View>
+
           {operationsScopeLabel ? (
             <View style={styles.operationsScope}>
-              <Text style={styles.operationsScopeText} numberOfLines={1}>{operationsScopeLabel}</Text>
+              <Text style={styles.operationsScopeText} numberOfLines={1}>
+                {operationsScopeLabel}
+              </Text>
             </View>
           ) : null}
+
           {requestInfoNotice ? (
-            <View style={[styles.scheduleNotice, scheduleContextError || payrollContextError ? styles.scheduleNoticeError : null]}>
-              <Text style={[styles.scheduleNoticeText, scheduleContextError || payrollContextError ? styles.scheduleNoticeTextError : null]}>
+            <View
+              style={[
+                styles.scheduleNotice,
+                scheduleContextError || payrollContextError ? styles.scheduleNoticeError : null,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.scheduleNoticeText,
+                  scheduleContextError || payrollContextError ? styles.scheduleNoticeTextError : null,
+                ]}
+              >
                 {requestInfoNotice}
               </Text>
             </View>
           ) : null}
-          <View style={styles.twoColumn}>
-            <PickerButton
-              label="Date from"
-              value={formatDateDisplay(dateFrom)}
-              placeholder="mm/dd/yyyy"
-              onPress={() => openPicker('date_from')}
-              webValue={dateFrom}
-              onWebChange={(value) => applyDateValue('date_from', value)}
-              error={validationErrors.dateFrom}
-            />
-            <PickerButton
-              label="Date to"
-              value={formatDateDisplay(dateTo)}
-              placeholder="mm/dd/yyyy"
-              onPress={() => openPicker('date_to')}
-              webValue={dateTo}
-              onWebChange={(value) => applyDateValue('date_to', value)}
-              error={validationErrors.dateTo}
-            />
-          </View>
 
-          <View style={styles.twoColumn}>
-            <PickerButton
-              label="Time from"
-              value={timeFrom ? formatTimeDisplay(timeFrom) : ''}
-              placeholder="--:-- --"
-              onPress={() => openPicker('time_from')}
-              webValue={timeFrom}
-              onWebChange={(value) => applyTimeValue('time_from', value)}
-              type="time"
-              error={validationErrors.timeFrom}
-            />
-            <PickerButton
-              label="Time to"
-              value={timeTo ? formatTimeDisplay(timeTo) : ''}
-              placeholder="--:-- --"
-              onPress={() => openPicker('time_to')}
-              webValue={timeTo}
-              onWebChange={(value) => applyTimeValue('time_to', value)}
-              type="time"
-              error={validationErrors.timeTo}
-            />
-          </View>
+          {entries
+            .slice()
+            .reverse()
+            .map((entry, reverseIndex) => {
+              const actualIndex = entries.length - 1 - reverseIndex;
+              const badgeNumber = actualIndex + 1;
+              const selectedOption = transactionOptions.find((t) => t.key === entry.transaction);
+              const hours = getEntryTotalHours(entry);
+              const dateDisplayText = entry.dateFrom
+                ? `${formatDateDisplay(entry.dateFrom)}${
+                    entry.dateTo && entry.dateTo !== entry.dateFrom
+                      ? ` - ${formatDateDisplay(entry.dateTo)}`
+                      : ''
+                  }`
+                : 'mm/dd - mm/dd/yyyy';
 
-          <FieldLabel label="Total No of Hours" />
-          <View style={[styles.disabledInput, validationErrors.totalHours ? styles.inputError : null]}>
-            <Text style={styles.disabledInputText}>{totalHours.toFixed(2)}</Text>
-          </View>
-          {validationErrors.totalHours ? <Text style={styles.fieldError}>{validationErrors.totalHours}</Text> : null}
+              return (
+                <View key={entry.id} style={styles.entryCard}>
+                  <View style={styles.entryCardHeader}>
+                    <View style={styles.entryBadge}>
+                      <Text style={styles.entryBadgeText}>{badgeNumber}</Text>
+                    </View>
+                    <Text style={styles.entryCardTitle}>ESARF Request Information</Text>
+                    {entries.length > 1 ? (
+                      <Pressable
+                        style={styles.deleteEntryButton}
+                        onPress={() => removeEntry(actualIndex)}
+                        hitSlop={6}
+                      >
+                        <Trash2 size={16} color="#ef4444" strokeWidth={2.2} />
+                      </Pressable>
+                    ) : null}
+                  </View>
 
-          {isUseOffsetSelected ? (
-            <View style={[styles.offsetBalancePanel, totalHours > offsetBalance ? styles.offsetBalancePanelInvalid : null]}>
-              <Text style={styles.offsetBalanceLabel}>Offset balance available</Text>
-              <Text style={styles.offsetBalanceValue}>{offsetBalance.toFixed(2)} hour(s)</Text>
-              <Text style={styles.offsetBalanceHint}>
-                Use Offset requests cannot exceed your available offset balance.
-              </Text>
-            </View>
-          ) : null}
+                  {/* Row 1: Transaction Type & Date From-To */}
+                  <View style={styles.underlineRow}>
+                    <View style={styles.underlineField}>
+                      <Pressable
+                        style={[
+                          styles.underlineBox,
+                          validationErrors[`entry_${actualIndex}_transaction`] ? styles.inputError : null,
+                        ]}
+                        onPress={() => setActiveTransactionSelectIndex(actualIndex)}
+                      >
+                        <Text
+                          style={[
+                            styles.underlineText,
+                            !selectedOption ? styles.underlineTextPlaceholder : null,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {selectedOption ? selectedOption.label : 'Select transaction'}
+                        </Text>
+                        <ChevronDown size={16} color="#64748b" strokeWidth={2.4} />
+                      </Pressable>
+                      <Text style={styles.underlineLabel}>Transaction Type</Text>
+                      {validationErrors[`entry_${actualIndex}_transaction`] ? (
+                        <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_transaction`]}</Text>
+                      ) : null}
+                    </View>
 
-          <FieldLabel label="Reason" />
-          <TextInput
-            ref={reasonInputRef}
-            value={reason}
-            onChangeText={(value) => {
-              setReason(value);
-              setValidationErrors((current) => ({ ...current, reason: undefined }));
-            }}
-            onFocus={() => {
-              setTimeout(() => {
-                scrollRef.current?.scrollToEnd({ animated: true });
-              }, 300);
-            }}
-            placeholder="Enter reason"
-            placeholderTextColor="#94a3b8"
-            multiline
-            textAlignVertical="top"
-            style={[styles.reasonInput, validationErrors.reason ? styles.inputError : null]}
-          />
-          {validationErrors.reason ? <Text style={styles.fieldError}>{validationErrors.reason}</Text> : null}
-        </Section>
+                    <View style={styles.underlineField}>
+                      <Pressable
+                        style={[
+                          styles.underlineBox,
+                          validationErrors[`entry_${actualIndex}_dateFrom`] ? styles.inputError : null,
+                        ]}
+                        onPress={() => setActiveDateChoiceIndex(actualIndex)}
+                      >
+                        <Text
+                          style={[
+                            styles.underlineText,
+                            !entry.dateFrom ? styles.underlineTextPlaceholder : null,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {dateDisplayText}
+                        </Text>
+                        <CalendarDays size={16} color="#64748b" strokeWidth={2} />
+                      </Pressable>
+                      <Text style={styles.underlineLabel}>Date From-To</Text>
+                      {validationErrors[`entry_${actualIndex}_dateFrom`] ? (
+                        <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_dateFrom`]}</Text>
+                      ) : null}
+                    </View>
+                  </View>
+
+                  {/* Row 2: Total No of Hours, Time From, Time To */}
+                  <View style={styles.underlineRow}>
+                    <View style={styles.underlineField}>
+                      <View style={styles.underlineBox}>
+                        <Text style={styles.underlineText}>
+                          {hours > 0 ? hours.toFixed(2) : 'NaN'}
+                        </Text>
+                      </View>
+                      <Text style={styles.underlineLabel}>Total No of Hours</Text>
+                    </View>
+
+                    <View style={styles.underlineField}>
+                      <Pressable
+                        style={[
+                          styles.underlineBox,
+                          validationErrors[`entry_${actualIndex}_timeFrom`] ? styles.inputError : null,
+                        ]}
+                        onPress={() => openEntryPicker(actualIndex, 'time_from')}
+                      >
+                        <Text
+                          style={[
+                            styles.underlineText,
+                            !entry.timeFrom ? styles.underlineTextPlaceholder : null,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {entry.timeFrom ? formatTimeDisplay(entry.timeFrom) : '--:-- --'}
+                        </Text>
+                        <Clock3 size={16} color="#64748b" strokeWidth={2} />
+                      </Pressable>
+                      <Text style={styles.underlineLabel}>Time From</Text>
+                      {validationErrors[`entry_${actualIndex}_timeFrom`] ? (
+                        <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_timeFrom`]}</Text>
+                      ) : null}
+                    </View>
+
+                    <View style={styles.underlineField}>
+                      <Pressable
+                        style={[
+                          styles.underlineBox,
+                          validationErrors[`entry_${actualIndex}_timeTo`] ? styles.inputError : null,
+                        ]}
+                        onPress={() => openEntryPicker(actualIndex, 'time_to')}
+                      >
+                        <Text
+                          style={[
+                            styles.underlineText,
+                            !entry.timeTo ? styles.underlineTextPlaceholder : null,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {entry.timeTo ? formatTimeDisplay(entry.timeTo) : '--:-- --'}
+                        </Text>
+                        <Clock3 size={16} color="#64748b" strokeWidth={2} />
+                      </Pressable>
+                      <Text style={styles.underlineLabel}>Time To</Text>
+                      {validationErrors[`entry_${actualIndex}_timeTo`] ? (
+                        <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_timeTo`]}</Text>
+                      ) : null}
+                    </View>
+                  </View>
+
+                  {/* Row 3: Reason */}
+                  <View style={styles.underlineFieldFull}>
+                    <TextInput
+                      value={entry.reason}
+                      onChangeText={(text) => {
+                        updateEntry(actualIndex, { reason: text });
+                        setValidationErrors((current) => ({
+                          ...current,
+                          [`entry_${actualIndex}_reason`]: undefined,
+                        }));
+                      }}
+                      placeholder="Enter reason"
+                      placeholderTextColor="#94a3b8"
+                      style={[
+                        styles.underlineTextInput,
+                        validationErrors[`entry_${actualIndex}_reason`] ? styles.inputError : null,
+                      ]}
+                    />
+                    <Text style={styles.underlineLabel}>Reason</Text>
+                    {validationErrors[`entry_${actualIndex}_reason`] ? (
+                      <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_reason`]}</Text>
+                    ) : null}
+                  </View>
+                </View>
+              );
+            })}
+        </View>
 
         <View style={styles.actions}>
           <Pressable disabled={isSubmitting} style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
@@ -683,19 +830,19 @@ export function ApplyEsarfScreen({
         </View>
         {submitStatus ? <Text style={styles.submitStatus}>{submitStatus}</Text> : null}
 
-        {activePicker && Platform.OS === 'ios' ? (
-          <Modal transparent animationType="fade" visible onRequestClose={() => setActivePicker(null)}>
+        {activeEntryPicker && Platform.OS === 'ios' ? (
+          <Modal transparent animationType="fade" visible onRequestClose={() => setActiveEntryPicker(null)}>
             <View style={styles.modalBackdrop}>
               <View style={styles.iosPickerPanel}>
                 <DateTimePicker
                   value={pickerValue()}
-                  mode={activePicker.startsWith('date') ? 'date' : 'time'}
+                  mode={activeEntryPicker.kind.startsWith('date') ? 'date' : 'time'}
                   display="spinner"
                   is24Hour={false}
                   onChange={handlePickerChange}
                 />
                 <View style={styles.iosPickerActions}>
-                  <Pressable style={styles.iosPickerCancel} onPress={() => setActivePicker(null)}>
+                  <Pressable style={styles.iosPickerCancel} onPress={() => setActiveEntryPicker(null)}>
                     <Text style={styles.cancelText}>Cancel</Text>
                   </Pressable>
                   <Pressable style={styles.iosPickerDone} onPress={confirmIosPicker}>
@@ -705,10 +852,10 @@ export function ApplyEsarfScreen({
               </View>
             </View>
           </Modal>
-        ) : activePicker ? (
+        ) : activeEntryPicker ? (
           <DateTimePicker
             value={pickerValue()}
-            mode={activePicker.startsWith('date') ? 'date' : 'time'}
+            mode={activeEntryPicker.kind.startsWith('date') ? 'date' : 'time'}
             display="default"
             is24Hour={false}
             onChange={handlePickerChange}
@@ -736,6 +883,87 @@ export function ApplyEsarfScreen({
                   );
                 })}
                 <Pressable style={styles.sheetCancelButton} onPress={() => setActiveSelect(null)}>
+                  <Text style={styles.cancelText}>Cancel</Text>
+                </Pressable>
+              </View>
+            </View>
+          </Modal>
+        ) : null}
+
+        {activeTransactionSelectIndex !== null ? (
+          <Modal transparent animationType="fade" visible onRequestClose={() => setActiveTransactionSelectIndex(null)}>
+            <View style={styles.modalBackdrop}>
+              <Pressable style={styles.modalDismissArea} onPress={() => setActiveTransactionSelectIndex(null)} />
+              <View style={styles.optionSheet}>
+                <View style={styles.sheetHandle} />
+                <Text style={styles.sheetTitle}>Select Transaction Type</Text>
+                {transactionOptions.map((option) => {
+                  const currentTrans = entries[activeTransactionSelectIndex]?.transaction;
+                  const selected = option.key === currentTrans;
+                  const disabled = option.key === 'ot' && !isOvertimeAllowedForPayroll(payrollClass);
+                  return (
+                    <Pressable
+                      key={option.key}
+                      disabled={disabled}
+                      style={[
+                        styles.optionRow,
+                        selected ? styles.optionRowActive : null,
+                        disabled ? styles.transactionOptionDisabled : null,
+                      ]}
+                      onPress={() => {
+                        updateEntry(activeTransactionSelectIndex, { transaction: option.key });
+                        setActiveTransactionSelectIndex(null);
+                      }}
+                    >
+                      <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>
+                        {option.label}
+                      </Text>
+                      {selected ? <Check size={18} color={colors.brand.goldStrong} strokeWidth={3} /> : null}
+                    </Pressable>
+                  );
+                })}
+                <Pressable style={styles.sheetCancelButton} onPress={() => setActiveTransactionSelectIndex(null)}>
+                  <Text style={styles.cancelText}>Cancel</Text>
+                </Pressable>
+              </View>
+            </View>
+          </Modal>
+        ) : null}
+
+        {activeDateChoiceIndex !== null ? (
+          <Modal transparent animationType="fade" visible onRequestClose={() => setActiveDateChoiceIndex(null)}>
+            <View style={styles.modalBackdrop}>
+              <Pressable style={styles.modalDismissArea} onPress={() => setActiveDateChoiceIndex(null)} />
+              <View style={styles.optionSheet}>
+                <View style={styles.sheetHandle} />
+                <Text style={styles.sheetTitle}>Select Date</Text>
+                <Pressable
+                  style={styles.optionRow}
+                  onPress={() => {
+                    const idx = activeDateChoiceIndex;
+                    setActiveDateChoiceIndex(null);
+                    openEntryPicker(idx, 'date_from');
+                  }}
+                >
+                  <Text style={styles.optionText}>
+                    Date From ({entries[activeDateChoiceIndex]?.dateFrom ? formatDateDisplay(entries[activeDateChoiceIndex].dateFrom) : 'mm/dd/yyyy'})
+                  </Text>
+                  <CalendarDays size={18} color={colors.primary} />
+                </Pressable>
+                <Pressable
+                  style={styles.optionRow}
+                  onPress={() => {
+                    const idx = activeDateChoiceIndex;
+                    setActiveDateChoiceIndex(null);
+                    openEntryPicker(idx, 'date_to');
+                  }}
+                >
+                  <Text style={styles.optionText}>
+                    Date To ({entries[activeDateChoiceIndex]?.dateTo ? formatDateDisplay(entries[activeDateChoiceIndex].dateTo) : 'mm/dd/yyyy'})
+                  </Text>
+                  <CalendarDays size={18} color={colors.primary} />
+                </Pressable>
+                <Pressable style={styles.sheetCancelButton} onPress={() => setActiveDateChoiceIndex(null)}>
                   <Text style={styles.cancelText}>Cancel</Text>
                 </Pressable>
               </View>
@@ -1223,6 +1451,181 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
     paddingBottom: spacing.lg,
     marginBottom: spacing.md,
+  },
+  scheduleCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  scheduleCardInvalid: {
+    borderColor: colors.semantic.danger,
+  },
+  scheduleCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: spacing.md,
+  },
+  scheduleCardTitle: {
+    color: '#0f172a',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: fontWeights.heavy,
+  },
+  scheduleFieldGroup: {
+    marginBottom: spacing.md,
+  },
+  scheduleFieldLabel: {
+    color: '#0f172a',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: fontWeights.heavy,
+    marginBottom: 6,
+  },
+  scheduleInputBox: {
+    minHeight: 46,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    gap: 8,
+  },
+  scheduleInputText: {
+    flex: 1,
+    color: '#334155',
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+  },
+  scheduleIconButton: {
+    padding: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scheduleTwoColumnRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  scheduleColumnField: {
+    flex: 1,
+  },
+  entriesSectionContainer: {
+    marginBottom: spacing.md,
+  },
+  entriesSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.sm,
+    paddingHorizontal: 2,
+  },
+  entriesSectionTitle: {
+    color: '#0f172a',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: fontWeights.heavy,
+  },
+  addEntryButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 6,
+    backgroundColor: '#eab308',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  entryCard: {
+    backgroundColor: colors.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  entryCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: spacing.md,
+  },
+  entryBadge: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    backgroundColor: '#eab308',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  entryBadgeText: {
+    color: '#0f172a',
+    fontSize: 13,
+    fontWeight: fontWeights.heavy,
+  },
+  entryCardTitle: {
+    flex: 1,
+    color: '#0f172a',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: fontWeights.heavy,
+  },
+  deleteEntryButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+    backgroundColor: '#fef2f2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  underlineRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  underlineField: {
+    flex: 1,
+  },
+  underlineFieldFull: {
+    marginBottom: spacing.md,
+  },
+  underlineBox: {
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#cbd5e1',
+    paddingVertical: 6,
+    minHeight: 38,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 4,
+  },
+  underlineText: {
+    flex: 1,
+    color: '#0f172a',
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+  },
+  underlineTextPlaceholder: {
+    color: '#94a3b8',
+  },
+  underlineLabel: {
+    color: '#334155',
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: fontWeights.heavy,
+    marginTop: 4,
+  },
+  underlineTextInput: {
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#cbd5e1',
+    paddingVertical: 4,
+    minHeight: 38,
+    color: '#0f172a',
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
   },
   sectionInvalid: {
     borderColor: 'rgba(220, 38, 38, 0.42)',
