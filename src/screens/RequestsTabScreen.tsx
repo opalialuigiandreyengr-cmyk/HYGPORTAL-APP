@@ -339,7 +339,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
             </View>
           </View>
         </Modal>
-      ) : activeDatePicker && Platform.OS !== 'web' ? (
+      ) : activeDatePicker ? (
         <DateTimePicker
           value={dateValueForPicker(activeDatePicker)}
           mode="date"

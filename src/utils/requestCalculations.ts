@@ -169,29 +169,14 @@ function parseScheduleRange(scheduleText: string) {
   return { scheduleStart, scheduleEnd };
 }
 
-const LUNCH_START_MINUTES = 12 * 60; // 12:00 PM (720 min)
-const LUNCH_END_MINUTES = 13 * 60;   // 1:00 PM (780 min)
-
-function computeLunchBreakOverlap(workStart: number, workEnd: number) {
-  const overlapStart = Math.max(workStart, LUNCH_START_MINUTES);
-  const overlapEnd = Math.min(workEnd, LUNCH_END_MINUTES);
-  return Math.max(0, overlapEnd - overlapStart);
-}
-
-function computeWorkedMinutes(workStartBase: number, workEndBase: number, deductLunch: boolean = true) {
+function computeWorkedMinutes(workStartBase: number, workEndBase: number) {
   let workEnd = workEndBase;
 
   if (workEnd <= workStartBase) {
     workEnd += 24 * 60;
   }
 
-  const grossMinutes = Math.max(0, workEnd - workStartBase);
-  if (grossMinutes <= 0 || !deductLunch) {
-    return grossMinutes;
-  }
-
-  const lunchOverlap = computeLunchBreakOverlap(workStartBase, workEnd);
-  return Math.max(0, grossMinutes - lunchOverlap);
+  return Math.max(0, workEnd - workStartBase);
 }
 
 function alignWorkAndScheduleRanges(
@@ -242,32 +227,51 @@ function computeOvertimeMinutes(
   return Math.max(0, workDuration - scheduledOverlap);
 }
 
-function isDateDayOff(dateValue: string, dayOff: string) {
-  const selectedDayOff = normalizeDayCode(dayOff);
-  const selectedDateDay = getDayCodeFromDate(dateValue);
+const DAY_CODE_MAP: Record<string, string> = {
+  MON: 'Mon',
+  MONDAY: 'Mon',
+  TUE: 'Tue',
+  TUESDAY: 'Tue',
+  WED: 'Wed',
+  WEDNESDAY: 'Wed',
+  THU: 'Thu',
+  THURSDAY: 'Thu',
+  FRI: 'Fri',
+  FRIDAY: 'Fri',
+  SAT: 'Sat',
+  SATURDAY: 'Sat',
+  SUN: 'Sun',
+  SUNDAY: 'Sun',
+};
 
-  return Boolean(selectedDayOff && selectedDateDay && selectedDayOff === selectedDateDay);
+export function parseDayOffList(value: string): string[] {
+  if (!value) {
+    return [];
+  }
+
+  const tokens = value
+    .toUpperCase()
+    .split(/[,/&+\s\-]+|\bAND\b/);
+
+  const days: string[] = [];
+  for (const token of tokens) {
+    const cleaned = token.trim();
+    if (cleaned && DAY_CODE_MAP[cleaned]) {
+      const dayCode = DAY_CODE_MAP[cleaned];
+      if (!days.includes(dayCode)) {
+        days.push(dayCode);
+      }
+    }
+  }
+
+  return days;
 }
 
-function normalizeDayCode(value: string) {
-  const dayMap: Record<string, string> = {
-    MON: 'Mon',
-    MONDAY: 'Mon',
-    TUE: 'Tue',
-    TUESDAY: 'Tue',
-    WED: 'Wed',
-    WEDNESDAY: 'Wed',
-    THU: 'Thu',
-    THURSDAY: 'Thu',
-    FRI: 'Fri',
-    FRIDAY: 'Fri',
-    SAT: 'Sat',
-    SATURDAY: 'Sat',
-    SUN: 'Sun',
-    SUNDAY: 'Sun',
-  };
+export function isDateDayOff(dateValue: string, dayOff: string) {
+  const dayOffList = parseDayOffList(dayOff);
+  const selectedDateDay = getDayCodeFromDate(dateValue);
 
-  return dayMap[value.trim().toUpperCase()] ?? null;
+  return Boolean(selectedDateDay && dayOffList.includes(selectedDateDay));
 }
 
 function getDayCodeFromDate(dateValue: string) {

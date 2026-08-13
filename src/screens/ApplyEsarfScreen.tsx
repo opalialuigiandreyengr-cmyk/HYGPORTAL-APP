@@ -30,7 +30,7 @@ import { loadMyFlexibleSchedule } from '../services/team';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { platformAlert } from '../utils/platformAlert';
 import type { RequestTypeCode } from '../types/domain';
-import { calculateRequestHours } from '../utils/requestCalculations';
+import { calculateRequestHours, parseDayOffList } from '../utils/requestCalculations';
 import { dateStringToDate, formatDateInput, formatTimeDisplay, formatTimeInput, timeStringToDate } from '../utils/dateTime';
 
 type ValidationKey =
@@ -139,15 +139,23 @@ export function ApplyEsarfScreen({
   useEffect(() => {
     let active = true;
     async function refreshFlexibleSchedule() {
+      const hasProfileSchedule = fixedSchedule !== NO_SCHEDULE_LABEL || fixedDayOff !== NO_DAY_OFF_LABEL;
+
       if (!dateFrom) {
-        setSchedule(isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule);
-        setDayOff(isOperationsDepartment ? NO_DAY_OFF_LABEL : fixedDayOff);
-        setScheduleStatus(isOperationsDepartment ? 'Select an ESARF date to load your My Team schedule.' : '');
+        if (hasProfileSchedule) {
+          setSchedule(fixedSchedule);
+          setDayOff(fixedDayOff);
+          setScheduleStatus('');
+        } else {
+          setSchedule(isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule);
+          setDayOff(isOperationsDepartment ? NO_DAY_OFF_LABEL : fixedDayOff);
+          setScheduleStatus(isOperationsDepartment ? 'Select an ESARF date to load your My Team schedule.' : '');
+        }
         setValidationErrors((current) => ({ ...current, schedule: undefined, dayOff: undefined, totalHours: undefined }));
         return;
       }
 
-      setScheduleStatus('Loading My Team schedule...');
+      setScheduleStatus('Loading schedule...');
       try {
         const row = await loadMyFlexibleSchedule(dateFrom);
         if (!active) {
@@ -155,9 +163,15 @@ export function ApplyEsarfScreen({
         }
 
         if (!row) {
-          setSchedule(isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule);
-          setDayOff(isOperationsDepartment ? NO_DAY_OFF_LABEL : fixedDayOff);
-          setScheduleStatus(isOperationsDepartment ? 'No My Team schedule found for this ESARF date.' : '');
+          if (hasProfileSchedule) {
+            setSchedule(fixedSchedule);
+            setDayOff(fixedDayOff);
+            setScheduleStatus('Using profile schedule.');
+          } else {
+            setSchedule(NO_SCHEDULE_LABEL);
+            setDayOff(NO_DAY_OFF_LABEL);
+            setScheduleStatus(isOperationsDepartment ? 'No My Team schedule found for this ESARF date.' : 'No schedule found on your profile.');
+          }
         } else if (row.is_day_off) {
           setSchedule(formatFlexibleScheduleLabel(row.previous_from_time, row.previous_to_time));
           setDayOff(getWeekdayShortLabel(dateFrom));
@@ -172,9 +186,15 @@ export function ApplyEsarfScreen({
         if (!active) {
           return;
         }
-        setSchedule(isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule);
-        setDayOff(isOperationsDepartment ? NO_DAY_OFF_LABEL : fixedDayOff);
-        setScheduleStatus(error instanceof Error ? error.message : 'Unable to load My Team schedule.');
+        if (hasProfileSchedule) {
+          setSchedule(fixedSchedule);
+          setDayOff(fixedDayOff);
+          setScheduleStatus('Using profile schedule.');
+        } else {
+          setSchedule(NO_SCHEDULE_LABEL);
+          setDayOff(NO_DAY_OFF_LABEL);
+          setScheduleStatus(error instanceof Error ? error.message : 'Unable to load schedule.');
+        }
       }
     }
 
@@ -908,7 +928,10 @@ function isValidScheduleValue(value: string) {
 }
 
 function isValidDayOffValue(value: string) {
-  return value === NO_DAY_OFF_LABEL || dayOffOptions.includes(value);
+  if (!value || value === NO_DAY_OFF_LABEL) {
+    return value === NO_DAY_OFF_LABEL;
+  }
+  return parseDayOffList(value).length > 0 || dayOffOptions.includes(value);
 }
 
 function normalizeDepartmentName(value?: string | null) {
@@ -962,27 +985,16 @@ function normalizeSchedule(value?: string | null): string {
 
 function normalizeDayOff(value?: string | null): string {
   if (!value) return NO_DAY_OFF_LABEL;
-  const trimmed = value.trim().toUpperCase();
-  if (trimmed === 'NO DAY OFF' || trimmed === 'NO_DAY_OFF' || trimmed === '') {
+  const trimmed = value.trim();
+  const upper = trimmed.toUpperCase();
+  if (upper === 'NO DAY OFF' || upper === 'NO_DAY_OFF' || upper === '' || upper === 'NONE') {
     return NO_DAY_OFF_LABEL;
   }
-  const dayMap: Record<string, string> = {
-    MON: 'Mon',
-    MONDAY: 'Mon',
-    TUE: 'Tue',
-    TUESDAY: 'Tue',
-    WED: 'Wed',
-    WEDNESDAY: 'Wed',
-    THU: 'Thu',
-    THURSDAY: 'Thu',
-    FRI: 'Fri',
-    FRIDAY: 'Fri',
-    SAT: 'Sat',
-    SATURDAY: 'Sat',
-    SUN: 'Sun',
-    SUNDAY: 'Sun',
-  };
-  return dayMap[trimmed] ?? value;
+  const parsed = parseDayOffList(trimmed);
+  if (parsed.length > 0) {
+    return parsed.join(', ');
+  }
+  return trimmed;
 }
 
 function getScheduleContextError({

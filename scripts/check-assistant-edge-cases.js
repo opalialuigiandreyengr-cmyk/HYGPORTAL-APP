@@ -128,7 +128,7 @@ assertEqual(
 );
 
 assertEqual(
-  'fio or ob without overtime counts full time range excluding lunch',
+  'fio or ob without overtime counts full time range including break time',
   calculateRequestHours({
     requestType: 'overtime',
     dateFrom: '2026-05-20',
@@ -138,11 +138,11 @@ assertEqual(
     dayOff: 'Sun',
     isFullHours: true,
   }),
-  11,
+  12,
 );
 
 assertEqual(
-  'undertime 9am to 3pm counts rendered time excluding 12pm to 1pm lunch',
+  'undertime 9am to 3pm counts rendered time including break time',
   calculateRequestHours({
     requestType: 'overtime',
     dateFrom: '2026-05-20',
@@ -152,7 +152,7 @@ assertEqual(
     dayOff: 'Sun',
     isFullHours: true,
   }),
-  5,
+  6,
 );
 
 assertEqual(
@@ -177,6 +177,51 @@ assertEqual('overnight request range', calculateRequestHours({
   timeSchedule: '9:00AM - 6:00PM',
   dayOff: 'Sun',
 }), 7);
+
+const { parseDayOffList, isDateDayOff } = require(path.join('..', 'src', 'utils', 'requestCalculations.ts'));
+
+assertDeepEqual('parse multi-day off Saturday, Sunday', parseDayOffList('Saturday, Sunday'), ['Sat', 'Sun']);
+assertDeepEqual('parse multi-day off Sat / Sun', parseDayOffList('Sat / Sun'), ['Sat', 'Sun']);
+assertDeepEqual('parse multi-day off Sat & Sun', parseDayOffList('Sat & Sun'), ['Sat', 'Sun']);
+
+assertEqual(
+  'Saturday overtime 9am to 6pm with Saturday, Sunday dayOff credits 9 full worked hours',
+  calculateRequestHours({
+    requestType: 'overtime',
+    dateFrom: '2026-08-15', // Saturday
+    timeFrom: '09:00',
+    timeTo: '18:00',
+    timeSchedule: '9:00AM - 6:00PM',
+    dayOff: 'Saturday, Sunday',
+  }),
+  9,
+);
+
+assertEqual(
+  'Sunday offset 9am to 6pm with Sat / Sun dayOff credits 9 full worked hours',
+  calculateRequestHours({
+    requestType: 'offset_earn',
+    dateFrom: '2026-08-16', // Sunday
+    timeFrom: '09:00',
+    timeTo: '18:00',
+    timeSchedule: '9:00AM - 6:00PM',
+    dayOff: 'Sat / Sun',
+  }),
+  9,
+);
+
+assertEqual(
+  'Monday overtime with Saturday, Sunday dayOff deducts regular schedule hours',
+  calculateRequestHours({
+    requestType: 'overtime',
+    dateFrom: '2026-08-17', // Monday
+    timeFrom: '09:00',
+    timeTo: '18:00',
+    timeSchedule: '9:00AM - 6:00PM',
+    dayOff: 'Saturday, Sunday',
+  }),
+  0,
+);
 
 assertEqual('inclusive leave days', calculateLeaveDays('2026-05-20', '2026-05-21'), 2);
 assertDeepEqual('leave credits disable paid options', getDisabledLeaveTypes(2, context.leaveCreditRemaining), ['With Pay']);
