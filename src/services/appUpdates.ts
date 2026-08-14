@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 
-export const NATIVE_APP_VERSION = '1.5.5';
+export const NATIVE_APP_VERSION = '1.5.6';
 
 export type AppUpdateStatus =
   | 'unsupported'
@@ -115,6 +115,11 @@ export async function downloadAppUpdate(): Promise<AppUpdateState> {
     }
 
     const { uri } = await FileSystem.downloadAsync(apkUrl, localUri);
+
+    const downloadedInfo = await FileSystem.getInfoAsync(uri);
+    if (!downloadedInfo.exists || (downloadedInfo.size ?? 0) < 500000) {
+      throw new Error('Downloaded update binary is invalid or incomplete. Please check back shortly.');
+    }
 
     return {
       status: 'ready',
