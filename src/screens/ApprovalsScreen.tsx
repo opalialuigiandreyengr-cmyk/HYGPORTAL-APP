@@ -84,7 +84,7 @@ export function ApprovalsScreen({
     if (items.length > 0 && (targetRequestId || autoOpenFirst)) {
       if (targetRequestId) {
         const matchIdx = items.findIndex(
-          (i) => i.request_id === targetRequestId || i.id === targetRequestId || i.step_id === targetRequestId,
+          (i) => i.request_id === targetRequestId || i.step_id === targetRequestId,
         );
         if (matchIdx >= 0) {
           setSelectedApproval({ item: items[matchIdx], sequence: matchIdx + 1 });
@@ -92,7 +92,7 @@ export function ApprovalsScreen({
           return;
         } else {
           onToast?.({
-            tone: 'info',
+            tone: 'warning',
             title: 'Request Processed',
             message: 'This approval request has already been processed or is no longer pending.',
           });
@@ -462,6 +462,7 @@ function ApprovalDetailsSheet({
   if (!approval || !item) return null;
 
   async function handleConfirmRejection() {
+    if (!item) return;
     const reason = rejectReason.trim();
     if (!reason) {
       setRejectError('Please enter why this request is being rejected.');
