@@ -25,6 +25,7 @@ export function NotificationsScreen({
   onAssistant,
   onNotifications,
   onBackHome,
+  onOpenApprovalRequest,
 }: {
   profileResult?: ProfileLoadResult | null;
   notificationCount?: number;
@@ -32,6 +33,7 @@ export function NotificationsScreen({
   onAssistant?: () => void;
   onNotifications?: () => void;
   onBackHome?: () => void;
+  onOpenApprovalRequest?: (requestId?: string | null) => void;
 }) {
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
   const [items, setItems] = useState<AppNotification[]>([]);
@@ -168,6 +170,7 @@ export function NotificationsScreen({
               setSelectedGift={setSelectedGift}
               onMarkRead={handleMarkRead}
               onDelete={handleDelete}
+              onOpenApprovalRequest={onOpenApprovalRequest}
             />
           ))
         ) : (
@@ -292,6 +295,7 @@ interface AnimatedNotificationCardProps {
   setSelectedGift: (item: AppNotification) => void;
   onMarkRead: (id: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
+  onOpenApprovalRequest?: (requestId?: string | null) => void;
 }
 
 function AnimatedNotificationCard({
@@ -300,6 +304,7 @@ function AnimatedNotificationCard({
   setSelectedGift,
   onMarkRead,
   onDelete,
+  onOpenApprovalRequest,
 }: AnimatedNotificationCardProps) {
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [naturalHeight, setNaturalHeight] = useState<number | null>(null);
@@ -315,6 +320,21 @@ function AnimatedNotificationCard({
       setNaturalHeight(height);
       heightAnim.setValue(height);
     }
+  };
+
+  const handleCardPress = () => {
+    if (!item.readAt) {
+      void onMarkRead(item.id);
+    }
+
+    if (item.actionType === 'hyg_points_claim') {
+      if (item.actionStatus === 'released') {
+        setSelectedGift(item);
+      }
+      return;
+    }
+
+    onOpenApprovalRequest?.(item.actionId || null);
   };
 
   const handlePressMarkRead = () => {
@@ -412,7 +432,7 @@ function AnimatedNotificationCard({
     <Animated.View style={outerStyle} onLayout={handleLayout}>
       <Animated.View style={innerStyle}>
         <View style={[styles.card, !item.readAt ? styles.cardUnread : null]}>
-          <View style={styles.cardTop}>
+          <Pressable style={styles.cardTop} onPress={handleCardPress}>
             <View style={styles.cardIconBubble}>
               {item.actionType === 'hyg_points_claim' ? (
                 <Gift size={25} color="#a16207" strokeWidth={2.3} />
@@ -424,7 +444,7 @@ function AnimatedNotificationCard({
               <Text style={styles.cardTitle}>{item.title}</Text>
               <Text style={styles.cardBody}>{getNotificationCardBody(item)}</Text>
             </View>
-          </View>
+          </Pressable>
           <Text style={styles.cardDate}>{new Date(item.createdAt).toLocaleString()}</Text>
           <View style={styles.cardActions}>
             {item.actionType === 'hyg_points_claim' && item.actionStatus === 'released' && item.actionId ? (

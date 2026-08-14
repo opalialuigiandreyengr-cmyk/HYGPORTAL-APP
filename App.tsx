@@ -181,6 +181,8 @@ export default function App() {
   });
   const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
+  const [targetApprovalRequestId, setTargetApprovalRequestId] = useState<string | null>(null);
+  const [autoOpenApprovalModal, setAutoOpenApprovalModal] = useState(false);
   const [dashboardStatus, setDashboardStatus] = useState('');
   const [activeRequestType, setActiveRequestType] = useState<RequestTypeCode | null>(null);
   const [activeQuickRequestScreen, setActiveQuickRequestScreen] = useState<QuickRequestScreen | null>(null);
@@ -201,6 +203,34 @@ export default function App() {
   const canUseApprovals =
     profileResult?.status === 'linked' && Number(profileResult.profile.authorityLevel ?? 1) > 1;
   const canUseMyTeam = isStoreManagerProfile(profileResult);
+
+  const openApprovalFromNotification = useCallback((requestId?: string | null) => {
+    setTargetApprovalRequestId(requestId || null);
+    setAutoOpenApprovalModal(true);
+    setActiveQuickRequestScreen(null);
+    setAssistantDraft(null);
+    setActiveTab('approvals');
+  }, []);
+
+  const clearTargetRequest = useCallback(() => {
+    setTargetApprovalRequestId(null);
+    setAutoOpenApprovalModal(false);
+  }, []);
+
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data;
+      const title = response.notification.request.content.title?.toLowerCase() || '';
+      const body = response.notification.request.content.body?.toLowerCase() || '';
+
+      if (title.includes('approval') || body.includes('approval') || data?.type === 'approval') {
+        const reqId = (data?.requestId || data?.request_id) as string | undefined;
+        openApprovalFromNotification(reqId);
+      }
+    });
+
+    return () => subscription.remove();
+  }, [openApprovalFromNotification]);
 
   useEffect(() => {
     registerPwaInstallSupport();
@@ -978,6 +1008,9 @@ export default function App() {
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
           onToast={setAppToast}
+          targetRequestId={targetApprovalRequestId}
+          autoOpenFirst={autoOpenApprovalModal}
+          onClearTargetRequest={clearTargetRequest}
         />
       );
     } else if (activeTab === 'notifications') {
@@ -989,6 +1022,7 @@ export default function App() {
           onNotifications={openNotifications}
           onBackHome={() => setActiveTab('home')}
           onCountChange={setNotificationUnreadCount}
+          onOpenApprovalRequest={openApprovalFromNotification}
         />
       );
     } else if (activeTab === 'perks') {

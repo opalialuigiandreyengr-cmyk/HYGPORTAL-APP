@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import React, { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
   Keyboard,
   KeyboardAvoidingView,
@@ -35,7 +35,7 @@ import { loadMyFlexibleSchedule } from '../services/team';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { platformAlert } from '../utils/platformAlert';
 import type { RequestTypeCode } from '../types/domain';
-import { calculateRequestHours, parseDayOffList } from '../utils/requestCalculations';
+import { calculateRequestHours, parse12HourToken, parseDayOffList } from '../utils/requestCalculations';
 import { dateStringToDate, formatDateInput, formatTimeDisplay, formatTimeInput, timeStringToDate } from '../utils/dateTime';
 
 export type EsarfEntry = {
@@ -77,6 +77,30 @@ const exclusiveTransactionGroups = [
   ['ot', 'offset', 'use_offset'],
   ['ut', 'offset', 'use_offset'],
 ];
+function WebNativeTimePicker({ value, onChange }: { value: string; onChange: (val: string) => void }) {
+  if (Platform.OS !== 'web') return null;
+  return (
+    <View style={{ marginVertical: 4, alignItems: 'center' }}>
+      {React.createElement('input', {
+        type: 'time',
+        value,
+        onChange: (e: any) => onChange(e.target.value || '09:00'),
+        style: {
+          fontSize: '15px',
+          fontWeight: 'bold',
+          padding: '8px 14px',
+          borderRadius: '8px',
+          border: '1px solid #cbd5e1',
+          backgroundColor: '#ffffff',
+          color: '#0f172a',
+          outline: 'none',
+          cursor: 'pointer',
+        },
+      })}
+    </View>
+  );
+}
+
 const NO_SCHEDULE_LABEL = 'No schedule';
 const NO_DAY_OFF_LABEL = 'No day off';
 
@@ -133,6 +157,8 @@ export function ApplyEsarfScreen({
   const [schedule, setSchedule] = useState(initialSchedule);
   const [dayOff, setDayOff] = useState(initialDayOff);
   const [payrollClass, setPayrollClass] = useState(initialPayrollClass);
+  const [isUserCustomSchedule, setIsUserCustomSchedule] = useState(false);
+  const [isUserCustomDayOff, setIsUserCustomDayOff] = useState(false);
 
   const [entries, setEntries] = useState<EsarfEntry[]>([
     {
@@ -154,10 +180,14 @@ export function ApplyEsarfScreen({
   const [activeDateChoiceIndex, setActiveDateChoiceIndex] = useState<number | null>(null);
 
   const [activeSelect, setActiveSelect] = useState<'schedule' | 'day_off' | 'payroll_class' | null>(null);
+  const [isCustomScheduleOpen, setIsCustomScheduleOpen] = useState(false);
+  const [customStartTime, setCustomStartTime] = useState('09:00');
+  const [customEndTime, setCustomEndTime] = useState('18:00');
+  const [customTimePickerKind, setCustomTimePickerKind] = useState<'start' | 'end' | null>(null);
+  const [tempCustomPickerDate, setTempCustomPickerDate] = useState(new Date());
   const [showSubmissionNotes, setShowSubmissionNotes] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatus, setSubmitStatus] = useState('');
-  const [scheduleStatus, setScheduleStatus] = useState('');
   const [validationErrors, setValidationErrors] = useState<Partial<Record<string, string>>>({});
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
   const scrollRef = useRef<ScrollView | null>(null);
@@ -169,75 +199,56 @@ export function ApplyEsarfScreen({
   useEffect(() => {
     let active = true;
     async function refreshFlexibleSchedule() {
-<<<<<<< HEAD
       const hasProfileSchedule = fixedSchedule !== NO_SCHEDULE_LABEL || fixedDayOff !== NO_DAY_OFF_LABEL;
 
-      if (!dateFrom) {
-        if (hasProfileSchedule) {
-          setSchedule(fixedSchedule);
-          setDayOff(fixedDayOff);
-          setScheduleStatus('');
-        } else {
-          setSchedule(isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule);
-          setDayOff(isOperationsDepartment ? NO_DAY_OFF_LABEL : fixedDayOff);
-          setScheduleStatus(isOperationsDepartment ? 'Select an ESARF date to load your My Team schedule.' : '');
+      if (!primaryDateFrom) {
+        if (!isUserCustomSchedule) {
+          setSchedule(hasProfileSchedule ? fixedSchedule : (isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule));
+        }
+        if (!isUserCustomDayOff) {
+          setDayOff(hasProfileSchedule ? fixedDayOff : (isOperationsDepartment ? NO_DAY_OFF_LABEL : fixedDayOff));
         }
         setValidationErrors((current) => ({ ...current, schedule: undefined, dayOff: undefined, totalHours: undefined }));
-=======
-      if (!primaryDateFrom) {
-        setSchedule(isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule);
-        setDayOff(isOperationsDepartment ? NO_DAY_OFF_LABEL : fixedDayOff);
-        setScheduleStatus(isOperationsDepartment ? 'Select an ESARF date to load your My Team schedule.' : '');
-        setValidationErrors((current) => ({ ...current, schedule: undefined, dayOff: undefined }));
->>>>>>> d5736547891c499763025b53fcec1afafbaddb33
         return;
       }
 
-      setScheduleStatus('Loading schedule...');
       try {
         const row = await loadMyFlexibleSchedule(primaryDateFrom);
         if (!active) return;
 
         if (!row) {
-          if (hasProfileSchedule) {
-            setSchedule(fixedSchedule);
-            setDayOff(fixedDayOff);
-            setScheduleStatus('Using profile schedule.');
-          } else {
-            setSchedule(NO_SCHEDULE_LABEL);
-            setDayOff(NO_DAY_OFF_LABEL);
-            setScheduleStatus(isOperationsDepartment ? 'No My Team schedule found for this ESARF date.' : 'No schedule found on your profile.');
+          if (!isUserCustomSchedule) {
+            setSchedule(hasProfileSchedule ? fixedSchedule : NO_SCHEDULE_LABEL);
+          }
+          if (!isUserCustomDayOff) {
+            setDayOff(hasProfileSchedule ? fixedDayOff : NO_DAY_OFF_LABEL);
           }
         } else if (row.is_day_off) {
-          setSchedule(formatFlexibleScheduleLabel(row.previous_from_time, row.previous_to_time));
-          setDayOff(getWeekdayShortLabel(primaryDateFrom));
-          setScheduleStatus('Using My Team day off for this ESARF date.');
+          if (!isUserCustomSchedule) {
+            setSchedule(formatFlexibleScheduleLabel(row.previous_from_time, row.previous_to_time));
+          }
+          if (!isUserCustomDayOff) {
+            setDayOff(getWeekdayShortLabel(primaryDateFrom));
+          }
         } else {
-          setSchedule(formatFlexibleScheduleLabel(row.from_time, row.to_time));
-          setDayOff(getWeekdayShortLabel(primaryDateFrom));
-          setScheduleStatus('Using My Team schedule for this ESARF date.');
+          if (!isUserCustomSchedule) {
+            setSchedule(formatFlexibleScheduleLabel(row.from_time, row.to_time));
+          }
+          if (!isUserCustomDayOff) {
+            setDayOff(getWeekdayShortLabel(primaryDateFrom));
+          }
         }
         setValidationErrors((current) => ({ ...current, schedule: undefined, dayOff: undefined }));
       } catch (error) {
-<<<<<<< HEAD
         if (!active) {
           return;
         }
-        if (hasProfileSchedule) {
-          setSchedule(fixedSchedule);
-          setDayOff(fixedDayOff);
-          setScheduleStatus('Using profile schedule.');
-        } else {
-          setSchedule(NO_SCHEDULE_LABEL);
-          setDayOff(NO_DAY_OFF_LABEL);
-          setScheduleStatus(error instanceof Error ? error.message : 'Unable to load schedule.');
+        if (!isUserCustomSchedule) {
+          setSchedule(hasProfileSchedule ? fixedSchedule : NO_SCHEDULE_LABEL);
         }
-=======
-        if (!active) return;
-        setSchedule(isOperationsDepartment ? NO_SCHEDULE_LABEL : fixedSchedule);
-        setDayOff(isOperationsDepartment ? NO_DAY_OFF_LABEL : fixedDayOff);
-        setScheduleStatus(error instanceof Error ? error.message : 'Unable to load My Team schedule.');
->>>>>>> d5736547891c499763025b53fcec1afafbaddb33
+        if (!isUserCustomDayOff) {
+          setDayOff(hasProfileSchedule ? fixedDayOff : NO_DAY_OFF_LABEL);
+        }
       }
     }
 
@@ -246,17 +257,16 @@ export function ApplyEsarfScreen({
     return () => {
       active = false;
     };
-  }, [primaryDateFrom, fixedDayOff, fixedSchedule, isOperationsDepartment]);
+  }, [primaryDateFrom, fixedDayOff, fixedSchedule, isOperationsDepartment, isUserCustomSchedule, isUserCustomDayOff]);
 
   function addEntry() {
-    const lastEntry = entries[entries.length - 1];
     setEntries((prev) => [
       ...prev,
       {
         id: String(Date.now()),
         transaction: '',
-        dateFrom: lastEntry?.dateFrom || '',
-        dateTo: lastEntry?.dateTo || lastEntry?.dateFrom || '',
+        dateFrom: '',
+        dateTo: '',
         timeFrom: '',
         timeTo: '',
         reason: '',
@@ -283,19 +293,25 @@ export function ApplyEsarfScreen({
     if (!entry.dateFrom || !entry.timeFrom || !entry.timeTo) {
       return 0;
     }
-    const isUseOffset = entry.transaction === 'use_offset';
-    const isOt = entry.transaction === 'ot';
-    const hasFullHours = entry.transaction === 'fio' || entry.transaction === 'ob' || entry.transaction === 'ut';
-    const isFullHours = (hasFullHours && !isOt) || isUseOffset;
+    const transKeys = parseEntryTransactions(entry.transaction);
+    const isUseOffset = transKeys.includes('use_offset');
+    const isOffsetEarn = transKeys.includes('offset');
+
+    let requestType: RequestTypeCode = 'overtime';
+    if (isUseOffset) {
+      requestType = 'use_offset';
+    } else if (isOffsetEarn) {
+      requestType = 'offset_earn';
+    }
 
     return calculateRequestHours({
-      requestType: isUseOffset ? 'use_offset' : 'overtime',
+      requestType,
       dateFrom: entry.dateFrom,
       timeFrom: entry.timeFrom,
       timeTo: entry.timeTo,
       timeSchedule: schedule === NO_SCHEDULE_LABEL ? '' : schedule,
       dayOff: dayOff === NO_DAY_OFF_LABEL ? '' : dayOff,
-      isFullHours,
+      isFullHours: isUseOffset,
     });
   }
 
@@ -354,12 +370,74 @@ export function ApplyEsarfScreen({
     setActiveEntryPicker(null);
   }
 
+  function openCustomScheduleModal() {
+    closeTransientPanels();
+    const { startTime, endTime } = parseScheduleToTimes(schedule);
+    setCustomStartTime(startTime);
+    setCustomEndTime(endTime);
+    setCustomTimePickerKind('start');
+    setIsCustomScheduleOpen(true);
+  }
+
+  function confirmCustomSchedule() {
+    const formatted = getCustomSchedulePreview(customStartTime, customEndTime);
+    setSchedule(formatted);
+    setIsUserCustomSchedule(true);
+    setValidationErrors((current) => ({ ...current, schedule: undefined }));
+    setIsCustomScheduleOpen(false);
+  }
+
+  function openCustomTimePicker(kind: 'start' | 'end') {
+    const timeVal = kind === 'start' ? customStartTime : customEndTime;
+    const dateObj = timeStringToDate(timeVal);
+    setTempCustomPickerDate(dateObj);
+    setCustomTimePickerKind(kind);
+  }
+
+  function handleCustomTimePickerChange(event: DateTimePickerEvent, selectedDate?: Date) {
+    if (event.type === 'dismissed') {
+      setCustomTimePickerKind(null);
+      return;
+    }
+    if (!selectedDate || !customTimePickerKind) return;
+    if (Platform.OS === 'ios') {
+      setTempCustomPickerDate(selectedDate);
+      return;
+    }
+    const formattedTime = formatTimeInput(selectedDate);
+    if (customTimePickerKind === 'start') {
+      setCustomStartTime(formattedTime);
+    } else {
+      setCustomEndTime(formattedTime);
+    }
+    setCustomTimePickerKind(null);
+  }
+
+  function confirmIosCustomTimePicker() {
+    if (customTimePickerKind) {
+      const formattedTime = formatTimeInput(tempCustomPickerDate);
+      if (customTimePickerKind === 'start') {
+        setCustomStartTime(formattedTime);
+      } else {
+        setCustomEndTime(formattedTime);
+      }
+    }
+    setCustomTimePickerKind(null);
+  }
+
   function chooseSelectOption(value: string) {
     if (activeSelect === 'schedule') {
+      if (value === 'Custom schedule...') {
+        setActiveSelect(null);
+        openCustomScheduleModal();
+        return;
+      }
       setSchedule(value);
+      setIsUserCustomSchedule(true);
       setValidationErrors((current) => ({ ...current, schedule: undefined }));
     } else if (activeSelect === 'day_off') {
       setDayOff(value);
+      setIsUserCustomDayOff(true);
       setValidationErrors((current) => ({ ...current, dayOff: undefined }));
     } else if (activeSelect === 'payroll_class') {
       setPayrollClass(value);
@@ -378,7 +456,7 @@ export function ApplyEsarfScreen({
   const payrollContextError = payrollClassOptions.includes(payrollClass)
     ? ''
     : 'Payroll class is missing from your employee profile. Contact HR before submitting ESARF.';
-  const requestInfoNotice = scheduleContextError || payrollContextError || scheduleStatus;
+  const requestInfoNotice = scheduleContextError || payrollContextError;
   const hasUnsavedChanges =
     schedule !== initialSchedule ||
     dayOff !== initialDayOff ||
@@ -398,6 +476,8 @@ export function ApplyEsarfScreen({
     setActiveDateChoiceIndex(null);
     setActiveSelect(null);
     setShowSubmissionNotes(false);
+    setIsCustomScheduleOpen(false);
+    setCustomTimePickerKind(null);
   }
 
   function confirmDiscard(action: () => void) {
@@ -427,8 +507,9 @@ export function ApplyEsarfScreen({
 
     entries.forEach((entry, i) => {
       const num = entries.length - i;
-      if (!entry.transaction) errors[`entry_${i}_transaction`] = `Request #${num}: Select a transaction type.`;
-      if (!isOvertimeAllowedForPayroll(payrollClass) && entry.transaction === 'ot') {
+      const transKeys = parseEntryTransactions(entry.transaction);
+      if (!transKeys.length) errors[`entry_${i}_transaction`] = `Request #${num}: Select at least one transaction type.`;
+      if (!isOvertimeAllowedForPayroll(payrollClass) && transKeys.includes('ot')) {
         errors[`entry_${i}_transaction`] = `Request #${num}: Overtime is disabled for Admin and Managerial.`;
       }
       if (!entry.dateFrom) errors[`entry_${i}_dateFrom`] = `Request #${num}: Date From is required.`;
@@ -436,10 +517,7 @@ export function ApplyEsarfScreen({
       if (!entry.timeFrom) errors[`entry_${i}_timeFrom`] = `Request #${num}: Time From is required.`;
       if (!entry.timeTo) errors[`entry_${i}_timeTo`] = `Request #${num}: Time To is required.`;
       const hours = getEntryTotalHours(entry);
-      if (entry.dateFrom && entry.timeFrom && entry.timeTo && hours <= 0) {
-        errors[`entry_${i}_totalHours`] = `Request #${num}: Total hours must be greater than zero.`;
-      }
-      if (entry.transaction === 'use_offset' && hours > offsetBalance) {
+      if (transKeys.includes('use_offset') && hours > offsetBalance) {
         errors[`entry_${i}_totalHours`] = `Request #${num}: Use Offset cannot exceed available offset balance.`;
       }
       if (!entry.reason.trim()) errors[`entry_${i}_reason`] = `Request #${num}: Reason is required.`;
@@ -465,37 +543,74 @@ export function ApplyEsarfScreen({
     setSubmitStatus(`Submitting ${entries.length} request(s)...`);
 
     try {
-      for (let i = 0; i < entries.length; i++) {
-        const entry = entries[i];
-        const selectedOption = transactionOptions.find((t) => t.key === entry.transaction);
-        const transactionLabel = selectedOption ? selectedOption.label : entry.transaction;
-        const primaryRequestType = selectedOption ? selectedOption.requestType : 'overtime';
-        const hours = getEntryTotalHours(entry);
+      const allTransKeys = entries.flatMap((e) => parseEntryTransactions(e.transaction));
+      const isUseOffset = allTransKeys.includes('use_offset');
+      const isOffsetEarn = allTransKeys.includes('offset');
 
-        const { error } = await supabase.rpc('submit_time_request', {
-          p_request_type_code: primaryRequestType,
-          p_date_from: entry.dateFrom,
-          p_date_to: entry.dateTo,
-          p_time_from: entry.timeFrom,
-          p_time_to: entry.timeTo,
-          p_total_hours: hours,
-          p_reason: entry.reason.trim(),
-          p_time_schedule: schedule,
-          p_day_off: dayOff,
-          p_payroll_class: payrollClass,
-          p_transaction_type: transactionLabel,
-        });
-
-        if (error) {
-          throw new Error(`Request #${i + 1} failed: ${error.message}`);
-        }
+      let primaryRequestType: RequestTypeCode = 'overtime';
+      if (isUseOffset) {
+        primaryRequestType = 'use_offset';
+      } else if (isOffsetEarn) {
+        primaryRequestType = 'offset_earn';
       }
 
-      setSubmitStatus(`Submitted ${entries.length} request(s).`);
+      const transactionTypesPerEntry = entries.map((e) => {
+        const keys = parseEntryTransactions(e.transaction);
+        const opts = transactionOptions.filter((t) => keys.includes(t.key));
+        return opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
+      });
+      const combinedTransactionType = Array.from(new Set(transactionTypesPerEntry)).join(', ');
+
+      const totalHoursSum = entries.reduce((sum, e) => sum + getEntryTotalHours(e), 0);
+
+      const firstEntry = entries[0];
+      const lastEntry = entries[entries.length - 1];
+      const overallDateFrom = firstEntry.dateFrom;
+      const overallDateTo = lastEntry.dateTo || lastEntry.dateFrom || firstEntry.dateFrom;
+      const overallTimeFrom = firstEntry.timeFrom;
+      const overallTimeTo = lastEntry.timeTo || firstEntry.timeTo;
+
+      let combinedReason: string;
+      if (entries.length === 1) {
+        combinedReason = firstEntry.reason.trim();
+      } else {
+        combinedReason = entries
+          .map((e, idx) => {
+            const keys = parseEntryTransactions(e.transaction);
+            const opts = transactionOptions.filter((t) => keys.includes(t.key));
+            const transLabel = opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
+            const dateStr = formatEsarfDateRange(e.dateFrom, e.dateTo);
+            const timeFromStr = e.timeFrom ? formatTimeDisplay(e.timeFrom) : '';
+            const timeToStr = e.timeTo ? formatTimeDisplay(e.timeTo) : '';
+            const hrs = getEntryTotalHours(e);
+            return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr} (${hrs.toFixed(2)} hrs): ${e.reason.trim()}`;
+          })
+          .join('\n');
+      }
+
+      const { error } = await supabase.rpc('submit_time_request', {
+        p_request_type_code: primaryRequestType,
+        p_date_from: overallDateFrom,
+        p_date_to: overallDateTo,
+        p_time_from: overallTimeFrom,
+        p_time_to: overallTimeTo,
+        p_total_hours: totalHoursSum,
+        p_reason: combinedReason,
+        p_time_schedule: schedule,
+        p_day_off: dayOff,
+        p_payroll_class: payrollClass,
+        p_transaction_type: combinedTransactionType,
+      });
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      setSubmitStatus(`Submitted ESARF request with ${entries.length} entry(ies).`);
       onToast?.({
         tone: 'success',
         title: 'ESARF submitted',
-        message: `${entries.length} request(s) sent for approval.`,
+        message: `ESARF request with ${entries.length} entry(ies) sent for approval.`,
       });
       await onSubmitted?.();
     } catch (error) {
@@ -556,22 +671,37 @@ export function ApplyEsarfScreen({
                 validationErrors.schedule ? styles.inputError : null,
               ]}
             >
-              <Text
-                style={[
-                  styles.scheduleInputText,
-                  !schedule || schedule === NO_SCHEDULE_LABEL ? styles.placeholderText : null,
-                ]}
-                numberOfLines={1}
-              >
-                {schedule || 'Select time schedule'}
-              </Text>
               <Pressable
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                style={styles.scheduleIconButton}
+                style={styles.scheduleInputTouchable}
                 onPress={() => setActiveSelect('schedule')}
               >
-                <SquarePen size={18} color="#64748b" strokeWidth={2} />
+                <Text
+                  style={[
+                    styles.scheduleInputText,
+                    !schedule || schedule === NO_SCHEDULE_LABEL ? styles.placeholderText : null,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {schedule || 'Select time schedule'}
+                </Text>
               </Pressable>
+              <View style={styles.scheduleActionIcons}>
+                <Pressable
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  style={styles.scheduleIconButton}
+                  onPress={openCustomScheduleModal}
+                  accessibilityLabel="Set custom base schedule"
+                >
+                  <Clock3 size={18} color={colors.primary} strokeWidth={2.2} />
+                </Pressable>
+                <Pressable
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  style={styles.scheduleIconButton}
+                  onPress={() => setActiveSelect('schedule')}
+                >
+                  <SquarePen size={18} color="#64748b" strokeWidth={2} />
+                </Pressable>
+              </View>
             </View>
             {validationErrors.schedule ? (
               <Text style={styles.fieldError}>{validationErrors.schedule}</Text>
@@ -676,21 +806,16 @@ export function ApplyEsarfScreen({
             </View>
           ) : null}
 
-          {entries
-            .slice()
-            .reverse()
-            .map((entry, reverseIndex) => {
-              const actualIndex = entries.length - 1 - reverseIndex;
-              const badgeNumber = actualIndex + 1;
-              const selectedOption = transactionOptions.find((t) => t.key === entry.transaction);
+          {entries.map((entry, index) => {
+            const actualIndex = index;
+            const badgeNumber = actualIndex + 1;
+              const entryTransKeys = parseEntryTransactions(entry.transaction);
+              const selectedOptions = transactionOptions.filter((t) => entryTransKeys.includes(t.key));
+              const transactionLabelText = selectedOptions.length
+                ? selectedOptions.map((t) => t.shortLabel || t.label).join(', ')
+                : 'Select transaction';
+              const dateDisplayText = formatEsarfDateRange(entry.dateFrom, entry.dateTo);
               const hours = getEntryTotalHours(entry);
-              const dateDisplayText = entry.dateFrom
-                ? `${formatDateDisplay(entry.dateFrom)}${
-                    entry.dateTo && entry.dateTo !== entry.dateFrom
-                      ? ` - ${formatDateDisplay(entry.dateTo)}`
-                      : ''
-                  }`
-                : 'mm/dd - mm/dd/yyyy';
 
               return (
                 <View key={entry.id} style={styles.entryCard}>
@@ -723,11 +848,11 @@ export function ApplyEsarfScreen({
                         <Text
                           style={[
                             styles.underlineText,
-                            !selectedOption ? styles.underlineTextPlaceholder : null,
+                            !selectedOptions.length ? styles.underlineTextPlaceholder : null,
                           ]}
                           numberOfLines={1}
                         >
-                          {selectedOption ? selectedOption.label : 'Select transaction'}
+                          {transactionLabelText}
                         </Text>
                         <ChevronDown size={16} color="#64748b" strokeWidth={2.4} />
                       </Pressable>
@@ -768,7 +893,7 @@ export function ApplyEsarfScreen({
                     <View style={styles.underlineField}>
                       <View style={styles.underlineBox}>
                         <Text style={styles.underlineText}>
-                          {hours > 0 ? hours.toFixed(2) : 'NaN'}
+                          {(hours ?? 0).toFixed(2)}
                         </Text>
                       </View>
                       <Text style={styles.underlineLabel}>Total No of Hours</Text>
@@ -908,13 +1033,25 @@ export function ApplyEsarfScreen({
                 <Text style={styles.sheetTitle}>{selectSheet.title}</Text>
                 {selectSheet.options.map((option) => {
                   const selected = option === selectSheet.value;
+                  const isCustom = option === 'Custom schedule...';
                   return (
                     <Pressable
                       key={option}
-                      style={[styles.optionRow, selected ? styles.optionRowActive : null]}
+                      style={[
+                        styles.optionRow,
+                        selected ? styles.optionRowActive : null,
+                        isCustom ? styles.customOptionRow : null,
+                      ]}
                       onPress={() => chooseSelectOption(option)}
                     >
-                      <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>{option}</Text>
+                      {isCustom ? (
+                        <View style={styles.customOptionWrap}>
+                          <Clock3 size={16} color={colors.primary} strokeWidth={2.2} />
+                          <Text style={[styles.optionText, styles.customOptionText]}>{option}</Text>
+                        </View>
+                      ) : (
+                        <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>{option}</Text>
+                      )}
                       {selected ? <Check size={18} color={colors.brand.goldStrong} strokeWidth={3} /> : null}
                     </Pressable>
                   );
@@ -927,17 +1064,189 @@ export function ApplyEsarfScreen({
           </Modal>
         ) : null}
 
+        {isCustomScheduleOpen ? (
+          <Modal transparent animationType="fade" visible onRequestClose={() => setIsCustomScheduleOpen(false)}>
+            <View style={styles.modalBackdrop}>
+              <Pressable style={styles.modalDismissArea} onPress={() => setIsCustomScheduleOpen(false)} />
+              <View style={styles.customScheduleModalPanel}>
+                <View style={styles.sheetHandle} />
+                <View style={styles.customScheduleHeader}>
+                  <View style={styles.customScheduleIconBadge}>
+                    <Clock3 size={18} color="#0f172a" strokeWidth={2.5} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.customScheduleTitle}>Custom Base Schedule</Text>
+                    <Text style={styles.customScheduleSubtitle}>
+                      Tap Shift Start or Shift End to choose working hours.
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.customTimeRow}>
+                  <Pressable
+                    style={[
+                      styles.customTimeColCard,
+                      customTimePickerKind === 'start' ? styles.customTimeColCardActive : null,
+                    ]}
+                    onPress={() => setCustomTimePickerKind('start')}
+                  >
+                    <Text
+                      style={[
+                        styles.customTimeLabel,
+                        customTimePickerKind === 'start' ? styles.customTimeLabelActive : null,
+                      ]}
+                    >
+                      Shift Start
+                    </Text>
+                    <View style={styles.customTimeBoxInner}>
+                      <Text style={styles.customTimeText}>
+                        {formatTimeDisplay(customStartTime)}
+                      </Text>
+                      <Clock3
+                        size={16}
+                        color={customTimePickerKind === 'start' ? colors.brand.goldStrong : colors.primary}
+                        strokeWidth={2.2}
+                      />
+                    </View>
+                  </Pressable>
+
+                  <Pressable
+                    style={[
+                      styles.customTimeColCard,
+                      customTimePickerKind === 'end' ? styles.customTimeColCardActive : null,
+                    ]}
+                    onPress={() => setCustomTimePickerKind('end')}
+                  >
+                    <Text
+                      style={[
+                        styles.customTimeLabel,
+                        customTimePickerKind === 'end' ? styles.customTimeLabelActive : null,
+                      ]}
+                    >
+                      Shift End
+                    </Text>
+                    <View style={styles.customTimeBoxInner}>
+                      <Text style={styles.customTimeText}>
+                        {formatTimeDisplay(customEndTime)}
+                      </Text>
+                      <Clock3
+                        size={16}
+                        color={customTimePickerKind === 'end' ? colors.brand.goldStrong : colors.primary}
+                        strokeWidth={2.2}
+                      />
+                    </View>
+                  </Pressable>
+                </View>
+
+                {customTimePickerKind ? (
+                  <View style={styles.inlineTimePickerContainer}>
+                    <Text style={styles.inlineTimePickerHeader}>
+                      Selecting {customTimePickerKind === 'start' ? 'Shift Start Time' : 'Shift End Time'}:
+                    </Text>
+
+                    {Platform.OS === 'web' ? (
+                      <View style={styles.webTimePickerRow}>
+                        <WebNativeTimePicker
+                          value={customTimePickerKind === 'start' ? customStartTime : customEndTime}
+                          onChange={(newVal) => {
+                            if (customTimePickerKind === 'start') {
+                              setCustomStartTime(newVal);
+                            } else {
+                              setCustomEndTime(newVal);
+                            }
+                          }}
+                        />
+                      </View>
+                    ) : (
+                      <DateTimePicker
+                        value={timeStringToDate(customTimePickerKind === 'start' ? customStartTime : customEndTime)}
+                        mode="time"
+                        display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                        is24Hour={false}
+                        onChange={(event, date) => {
+                          if (date) {
+                            const formatted = formatTimeInput(date);
+                            if (customTimePickerKind === 'start') {
+                              setCustomStartTime(formatted);
+                            } else {
+                              setCustomEndTime(formatted);
+                            }
+                          }
+                        }}
+                      />
+                    )}
+
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.timePresetsScroll}
+                    >
+                      {(customTimePickerKind === 'start'
+                        ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                        : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                      ).map((timeVal) => {
+                        const activeVal = customTimePickerKind === 'start' ? customStartTime : customEndTime;
+                        const isSelected = activeVal === timeVal;
+                        return (
+                          <Pressable
+                            key={timeVal}
+                            style={[styles.presetTimePill, isSelected ? styles.presetTimePillActive : null]}
+                            onPress={() => {
+                              if (customTimePickerKind === 'start') {
+                                setCustomStartTime(timeVal);
+                              } else {
+                                setCustomEndTime(timeVal);
+                              }
+                            }}
+                          >
+                            <Text style={[styles.presetTimeText, isSelected ? styles.presetTimeTextActive : null]}>
+                              {formatTimeDisplay(timeVal)}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  </View>
+                ) : null}
+
+                <View style={styles.customSchedulePreviewBox}>
+                  <Text style={styles.customSchedulePreviewLabel}>Preview Base Schedule</Text>
+                  <Text style={styles.customSchedulePreviewValue}>
+                    {getCustomSchedulePreview(customStartTime, customEndTime)}
+                  </Text>
+                </View>
+
+                <View style={styles.customScheduleActions}>
+                  <Pressable style={styles.cancelButton} onPress={() => setIsCustomScheduleOpen(false)}>
+                    <Text style={styles.cancelText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable style={styles.submitButton} onPress={confirmCustomSchedule}>
+                    <Text style={styles.submitText}>Apply Schedule</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </Modal>
+        ) : null}
+
         {activeTransactionSelectIndex !== null ? (
           <Modal transparent animationType="fade" visible onRequestClose={() => setActiveTransactionSelectIndex(null)}>
             <View style={styles.modalBackdrop}>
               <Pressable style={styles.modalDismissArea} onPress={() => setActiveTransactionSelectIndex(null)} />
               <View style={styles.optionSheet}>
                 <View style={styles.sheetHandle} />
-                <Text style={styles.sheetTitle}>Select Transaction Type</Text>
+                <Text style={styles.sheetTitle}>Select Transaction Type(s)</Text>
+                <Text style={styles.transactionModalSubtitle}>
+                  Choose one or more transaction types for this request entry.
+                </Text>
                 {transactionOptions.map((option) => {
-                  const currentTrans = entries[activeTransactionSelectIndex]?.transaction;
-                  const selected = option.key === currentTrans;
-                  const disabled = option.key === 'ot' && !isOvertimeAllowedForPayroll(payrollClass);
+                  const currentTransStr = entries[activeTransactionSelectIndex]?.transaction || '';
+                  const currentSelectedKeys = parseEntryTransactions(currentTransStr);
+                  const selected = currentSelectedKeys.includes(option.key);
+                  const isOtDisabled = option.key === 'ot' && !isOvertimeAllowedForPayroll(payrollClass);
+                  const isConflictDisabled = !selected && isTransactionDisabled(option.key, currentSelectedKeys);
+                  const disabled = isOtDisabled || isConflictDisabled;
+
                   return (
                     <Pressable
                       key={option.key}
@@ -948,19 +1257,35 @@ export function ApplyEsarfScreen({
                         disabled ? styles.transactionOptionDisabled : null,
                       ]}
                       onPress={() => {
-                        updateEntry(activeTransactionSelectIndex, { transaction: option.key });
-                        setActiveTransactionSelectIndex(null);
+                        let newKeys: string[];
+                        if (selected) {
+                          newKeys = currentSelectedKeys.filter((k) => k !== option.key);
+                        } else {
+                          newKeys = [...currentSelectedKeys, option.key];
+                        }
+                        updateEntry(activeTransactionSelectIndex, { transaction: newKeys.join(',') });
+                        setValidationErrors((current) => ({
+                          ...current,
+                          [`entry_${activeTransactionSelectIndex}_transaction`]: undefined,
+                        }));
                       }}
                     >
-                      <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>
-                        {option.label}
-                      </Text>
-                      {selected ? <Check size={18} color={colors.brand.goldStrong} strokeWidth={3} /> : null}
+                      <View style={styles.transactionOptionCheckRow}>
+                        <View style={[styles.checkbox, selected ? styles.checkboxActive : null]}>
+                          {selected ? <Check size={14} color="#0f172a" strokeWidth={3} /> : null}
+                        </View>
+                        <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>
+                          {option.label}
+                        </Text>
+                      </View>
                     </Pressable>
                   );
                 })}
-                <Pressable style={styles.sheetCancelButton} onPress={() => setActiveTransactionSelectIndex(null)}>
-                  <Text style={styles.cancelText}>Cancel</Text>
+                <Pressable
+                  style={styles.transactionDoneButton}
+                  onPress={() => setActiveTransactionSelectIndex(null)}
+                >
+                  <Text style={styles.submitText}>Done</Text>
                 </Pressable>
               </View>
             </View>
@@ -1070,7 +1395,7 @@ function getSelectSheet(
   payrollClass: string,
 ) {
   if (activeSelect === 'schedule') {
-    return { title: 'Select schedule', value: schedule, options: scheduleOptions };
+    return { title: 'Select schedule', value: schedule, options: [...scheduleOptions, 'Custom schedule...'] };
   }
   if (activeSelect === 'day_off') {
     return { title: 'Select day off', value: dayOff, options: dayOffOptions };
@@ -1079,6 +1404,75 @@ function getSelectSheet(
     return { title: 'Select payroll class', value: payrollClass, options: payrollClassOptions };
   }
   return null;
+}
+
+function parseScheduleToTimes(scheduleText: string): { startTime: string; endTime: string } {
+  const DEFAULT_START = '09:00';
+  const DEFAULT_END = '18:00';
+  if (!scheduleText || scheduleText === NO_SCHEDULE_LABEL) {
+    return { startTime: DEFAULT_START, endTime: DEFAULT_END };
+  }
+  const parts = scheduleText.split('-');
+  if (parts.length !== 2) {
+    return { startTime: DEFAULT_START, endTime: DEFAULT_END };
+  }
+  const startMin = parse12HourToken(parts[0]);
+  const endMin = parse12HourToken(parts[1]);
+  if (startMin === null || endMin === null) {
+    return { startTime: DEFAULT_START, endTime: DEFAULT_END };
+  }
+  const startH = String(Math.floor(startMin / 60)).padStart(2, '0');
+  const startM = String(startMin % 60).padStart(2, '0');
+  const endH = String(Math.floor((endMin % (24 * 60)) / 60)).padStart(2, '0');
+  const endM = String(endMin % 60).padStart(2, '0');
+  return { startTime: `${startH}:${startM}`, endTime: `${endH}:${endM}` };
+}
+
+function getCustomSchedulePreview(startTime: string, endTime: string): string {
+  const formattedStart = formatTimeDisplay(startTime);
+  const formattedEnd = formatTimeDisplay(endTime);
+  return normalizeSchedule(`${formattedStart} - ${formattedEnd}`);
+}
+
+function parseEntryTransactions(transactionStr?: string | null): string[] {
+  if (!transactionStr) return [];
+  return transactionStr.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+export function formatEsarfDateRange(dateFromStr?: string | null, dateToStr?: string | null): string {
+  if (!dateFromStr) return 'mm/dd-dd/yyyy';
+
+  const fromParts = dateFromStr.split('-').map(Number);
+  if (fromParts.length !== 3 || fromParts.some(Number.isNaN)) return 'mm/dd-dd/yyyy';
+
+  const [y1, m1, d1] = fromParts;
+  const m1Str = String(m1).padStart(2, '0');
+  const d1Str = String(d1).padStart(2, '0');
+
+  const actualDateTo = dateToStr || dateFromStr;
+  const toParts = actualDateTo.split('-').map(Number);
+
+  if (toParts.length !== 3 || toParts.some(Number.isNaN)) {
+    return `${m1Str}/${d1Str}/${y1}`;
+  }
+
+  const [y2, m2, d2] = toParts;
+  const m2Str = String(m2).padStart(2, '0');
+  const d2Str = String(d2).padStart(2, '0');
+
+  if (dateFromStr === actualDateTo) {
+    return `${m1Str}/${d1Str}/${y1}`;
+  }
+
+  if (y1 === y2 && m1 === m2) {
+    return `${m1Str}/${d1Str}-${d2Str}/${y1}`;
+  }
+
+  if (y1 === y2) {
+    return `${m1Str}/${d1Str}-${m2Str}/${d2Str}/${y1}`;
+  }
+
+  return `${m1Str}/${d1Str}/${y1} - ${m2Str}/${d2Str}/${y2}`;
 }
 
 function getConflictingTransactions(key: string) {
@@ -1143,7 +1537,6 @@ function validateForm({
   }
   if (!timeFrom) errors.timeFrom = 'Time From is required.';
   if (!timeTo) errors.timeTo = 'Time To is required.';
-  if (dateFrom && timeFrom && timeTo && totalHours <= 0) errors.totalHours = 'Total hours must be greater than zero.';
   if (transactions.includes('use_offset') && totalHours > offsetBalance) {
     errors.totalHours = `Use Offset cannot exceed your ${offsetBalance.toFixed(2)} hour offset balance.`;
   }
@@ -2203,5 +2596,208 @@ const styles = StyleSheet.create({
     color: colors.surface,
     fontSize: 14,
     fontWeight: fontWeights.heavy,
+  },
+  scheduleInputTouchable: {
+    flex: 1,
+    paddingVertical: 10,
+    justifyContent: 'center',
+  },
+  scheduleActionIcons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  customOptionRow: {
+    backgroundColor: '#f8fafc',
+    borderColor: '#e2e8f0',
+  },
+  customOptionWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  customOptionText: {
+    color: colors.primary,
+  },
+  customScheduleModalPanel: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.lg,
+  },
+  customScheduleHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: spacing.md,
+  },
+  customScheduleIconBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: '#eab308',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  customScheduleTitle: {
+    color: colors.text,
+    fontSize: 17,
+    fontWeight: fontWeights.heavy,
+  },
+  customScheduleSubtitle: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 1,
+  },
+  customTimeRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  customTimeCol: {
+    flex: 1,
+  },
+  customTimeLabel: {
+    color: '#0f172a',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: fontWeights.heavy,
+    marginBottom: 6,
+  },
+  customTimeBox: {
+    position: 'relative',
+    minHeight: 46,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: '#f8fafc',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+  },
+  customTimeText: {
+    fontSize: 15,
+    fontWeight: fontWeights.bold,
+    color: colors.text,
+  },
+  customTimeColCard: {
+    flex: 1,
+    minHeight: 64,
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+    padding: 10,
+    justifyContent: 'center',
+  },
+  customTimeColCardActive: {
+    borderColor: '#eab308',
+    backgroundColor: '#fffbeb',
+  },
+  customTimeLabelActive: {
+    color: '#92400e',
+  },
+  customTimeBoxInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  inlineTimePickerContainer: {
+    backgroundColor: '#f8fafc',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 12,
+    marginBottom: spacing.md,
+    alignItems: 'center',
+  },
+  inlineTimePickerHeader: {
+    fontSize: 12,
+    fontWeight: fontWeights.bold,
+    color: '#475569',
+    marginBottom: 8,
+    alignSelf: 'flex-start',
+  },
+  webTimePickerRow: {
+    marginBottom: 10,
+    alignItems: 'center',
+  },
+  timePresetsScroll: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingVertical: 4,
+  },
+  presetTimePill: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: colors.surface,
+  },
+  presetTimePillActive: {
+    borderColor: '#eab308',
+    backgroundColor: '#eab308',
+  },
+  presetTimeText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#334155',
+  },
+  presetTimeTextActive: {
+    color: '#0f172a',
+  },
+  customSchedulePreviewBox: {
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    backgroundColor: '#fffbeb',
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    alignItems: 'center',
+  },
+  customSchedulePreviewLabel: {
+    color: '#b45309',
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: fontWeights.heavy,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  customSchedulePreviewValue: {
+    color: '#92400e',
+    fontSize: 20,
+    lineHeight: 25,
+    fontWeight: fontWeights.heavy,
+    marginTop: 2,
+  },
+  customScheduleActions: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  transactionModalSubtitle: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: spacing.md,
+  },
+  transactionOptionCheckRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  transactionDoneButton: {
+    minHeight: 48,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: spacing.md,
   },
 });

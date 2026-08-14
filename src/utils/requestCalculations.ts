@@ -127,7 +127,7 @@ function parseTimeToMinutes(value: string) {
   return rawHour * 60 + rawMinute;
 }
 
-function parse12HourToken(token: string) {
+export function parse12HourToken(token: string) {
   const match = token.trim().toUpperCase().replace(/\s+/g, '').match(/^(\d{1,2})(?::(\d{2}))?(AM|PM)$/);
   if (!match) {
     return null;
@@ -169,20 +169,7 @@ function parseScheduleRange(scheduleText: string) {
   return { scheduleStart, scheduleEnd };
 }
 
-<<<<<<< HEAD
 function computeWorkedMinutes(workStartBase: number, workEndBase: number) {
-=======
-const LUNCH_START_MINUTES = 12 * 60; // 12:00 PM (720 min)
-const LUNCH_END_MINUTES = 13 * 60;   // 1:00 PM (780 min)
-
-function computeLunchBreakOverlap(workStart: number, workEnd: number) {
-  const overlapStart = Math.max(workStart, LUNCH_START_MINUTES);
-  const overlapEnd = Math.min(workEnd, LUNCH_END_MINUTES);
-  return Math.max(0, overlapEnd - overlapStart);
-}
-
-function computeWorkedMinutes(workStartBase: number, workEndBase: number, deductLunch: boolean = false) {
->>>>>>> d5736547891c499763025b53fcec1afafbaddb33
   let workEnd = workEndBase;
 
   if (workEnd <= workStartBase) {
@@ -302,5 +289,8 @@ function getDayCodeFromDate(dateValue: string) {
 }
 
 function roundHours(minutes: number) {
+  if (Number.isNaN(minutes) || !Number.isFinite(minutes)) {
+    return 0;
+  }
   return Math.round((minutes / 60) * 100) / 100;
 }

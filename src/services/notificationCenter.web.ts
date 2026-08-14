@@ -96,39 +96,51 @@ async function loadServerNotifications() {
 
   await ensureMyHygPointGifts();
 
-  const { data, error } = await supabase.rpc('get_my_notifications');
-  if (error) {
-    return [];
-  }
+  const [{ data: rpcData }, { data: tableData }] = await Promise.all([
+    supabase.rpc('get_my_notifications'),
+    supabase.from('notifications').select('id, link_type, link_id').limit(100),
+  ]);
 
-  return (data ?? []).map((item: {
+  const tableMap = new Map<string, { link_type?: string | null; link_id?: string | null }>();
+  (tableData ?? []).forEach((row) => {
+    tableMap.set(row.id, { link_type: row.link_type, link_id: row.link_id });
+  });
+
+  return (rpcData ?? []).map((item: {
     id: string;
     title: string;
     body: string;
     created_at: string;
     read_at: string | null;
-    action_type?: 'hyg_points_claim' | null;
+    action_type?: 'hyg_points_claim' | string | null;
     action_label?: string | null;
     action_status?: 'released' | 'claimed' | 'cancelled' | null;
     action_id?: string | null;
     points?: number | string | null;
     release_at?: string | null;
     received_at?: string | null;
-  }) => ({
-    id: `server:${item.id}`,
-    title: item.title,
-    body: item.body,
-    createdAt: item.created_at,
-    readAt: item.read_at,
-    source: 'server' as const,
-    actionType: item.action_type ?? null,
-    actionLabel: item.action_label ?? null,
-    actionStatus: item.action_status ?? null,
-    actionId: item.action_id ?? null,
-    points: item.points == null ? null : Number(item.points),
-    releaseAt: item.release_at ?? null,
-    receivedAt: item.received_at ?? null,
-  }));
+  }) => {
+    const rawTable = tableMap.get(item.id);
+    const resolvedActionId = item.action_id || rawTable?.link_id || null;
+    const resolvedActionType =
+      item.action_type || (rawTable?.link_type === 'approval' ? 'approval' : null);
+
+    return {
+      id: `server:${item.id}`,
+      title: item.title,
+      body: item.body,
+      createdAt: item.created_at,
+      readAt: item.read_at,
+      source: 'server' as const,
+      actionType: resolvedActionType as any,
+      actionLabel: item.action_label ?? null,
+      actionStatus: item.action_status ?? null,
+      actionId: resolvedActionId,
+      points: item.points == null ? null : Number(item.points),
+      releaseAt: item.release_at ?? null,
+      receivedAt: item.received_at ?? null,
+    };
+  });
 }
 
 export async function ensureMyHygPointGifts() {

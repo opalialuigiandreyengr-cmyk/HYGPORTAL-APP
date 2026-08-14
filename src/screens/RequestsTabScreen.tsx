@@ -9,6 +9,13 @@ import { Avatar } from '../components/Avatar';
 import { TopBar } from '../components/TopBar';
 import { loadMyRequests, loadMyRequestsCached, type MyRequest } from '../services/requests';
 import { isAutoApprovedBirthdayGrant } from '../services/birthdayLeave';
+import {
+  EsarfCardView,
+  EsarfRequestInfoPanel,
+  formatUnifiedRequestCode,
+  formatUnifiedRequestType,
+  parseEsarfEntries,
+} from '../components/EsarfDetailsView';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
 type StatusFilter = 'all' | 'pending' | 'approved' | 'rejected';
@@ -27,7 +34,7 @@ const categoryTabs: { key: CategoryFilter; label: string }[] = [
   { key: 'leave', label: 'Leave' },
   { key: 'perks', label: 'Perks' },
 ];
-const pageSize = 10;
+const pageSize = 15;
 
 type Props = {
   profileResult?: ProfileLoadResult | null;
@@ -138,6 +145,10 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
         .join(' ')
         .toLowerCase();
       return haystack.includes(normalizedQuery);
+    }).sort((a, b) => {
+      const timeA = a.submitted_at ? new Date(a.submitted_at).getTime() : 0;
+      const timeB = b.submitted_at ? new Date(b.submitted_at).getTime() : 0;
+      return timeB - timeA;
     });
   }, [activeCategory, activeStatus, dateFrom, dateTo, items, query]);
   const pageCount = Math.max(1, Math.ceil(filteredItems.length / pageSize));
@@ -394,8 +405,8 @@ function RequestCard({
               <Text style={styles.cardDept}>{department}</Text>
             </View>
             <View style={styles.cardMeta}>
-              <Text style={[styles.statusPill, statusPillStyle(statusKey)]} numberOfLines={1}>
-                {statusLabel(item)}
+              <Text style={[styles.statusPill, statusPillStyle(statusKey, item)]} numberOfLines={1}>
+                {renderStatusPillContent(item)}
               </Text>
               <View style={styles.metaLine}>
                 <CalendarDays size={14} color={colors.muted} strokeWidth={2.2} />
@@ -482,8 +493,8 @@ function RequestDetailsSheet({
                 <Text style={styles.sheetTitle}>{requestSheetTitle(item)}</Text>
                 <View style={styles.sheetCodeRow}>
                   <Text style={styles.sheetCode}>{formatRequestDocumentCode(item, sequence)}</Text>
-                  <Text style={[styles.sheetStatusPill, statusPillStyle(itemStatusKey)]}>
-                    {statusLabel(item)}
+                  <Text style={[styles.sheetStatusPill, statusPillStyle(itemStatusKey, item)]}>
+                    {renderStatusPillContent(item)}
                   </Text>
                 </View>
               </View>
@@ -507,110 +518,111 @@ function RequestDetailsSheet({
               </View>
             </View>
 
-            <SectionTitle icon="file" title="Request Information" />
-            <View style={styles.detailsList}>
-              <DetailRow icon="file" label="Transaction Type" value={formatRequestType(item)} />
-              {isPerk ? (
-                <>
-                  <DetailRow icon="file" label="Approval Code" value={item.perk_approval_code || 'N/A'} />
-                  <DetailRow icon="calendar" label="Transaction Date" value={formatSheetDate(item.date_from)} />
-                  <DetailRow icon="file" label="Benefit" value={item.perk_benefit || 'N/A'} />
-                </>
-              ) : !isLeave ? (
-                <>
-                  <DetailRow icon="clock" label="Time Schedule" value={item.time_schedule || 'N/A'} />
-                  <DetailRow icon="calendar" label="Day Off" value={item.day_off || 'N/A'} />
-                  <DetailRow icon="users" label="Payroll Class" value={item.payroll_class || 'N/A'} />
-                </>
-              ) : (
-                <>
-                  <DetailRow icon="file" label="Leave Type" value={item.leave_type || 'N/A'} />
-                  <DetailRow icon="calendar" label="Leave Category" value={item.leave_category || 'N/A'} />
-                </>
-              )}
-            </View>
-
-            {isPerk ? (
-            <View style={styles.rangePanel}>
-              <View style={styles.panelTitleRow}>
-                <FileText size={15} color={colors.muted} strokeWidth={2.2} />
-                <Text style={styles.panelTitle}>Approved Slip</Text>
-              </View>
-              <View style={styles.slipItemsBox}>
-                <Text style={styles.slipItemsLabel}>Items</Text>
-                <Text style={styles.slipItemsText}>{item.reason || 'No items listed.'}</Text>
-              </View>
-              <View style={styles.slipTotals}>
-                <AmountLine label="Subtotal" value={`PHP ${formatMoney(item.perk_amount)}`} />
-                <AmountLine label="Discount 15%" value={`PHP ${formatMoney(item.perk_discount_amount)}`} />
-                <View style={styles.slipTotalDivider} />
-                <AmountLine label="Total" value={`PHP ${formatMoney(item.perk_final_amount)}`} strong />
-              </View>
-            </View>
-            ) : (
-            <View style={styles.rangePanel}>
-              <View style={styles.panelTitleRow}>
-                <CalendarDays size={15} color={colors.muted} strokeWidth={2.2} />
-                <Text style={styles.panelTitle}>Date & Time Range</Text>
-              </View>
-              <View style={styles.rangeGrid}>
-                <DetailItem label="Date From" value={formatSheetDate(isLeave ? item.start_date : item.date_from)} />
-                <DetailItem label="Date To" value={formatSheetDate(isLeave ? item.end_date : item.date_to)} />
-                {isPerk ? (
-                  <DetailItem label="Status Date" value={formatSheetDate(currentStatusDate)} />
-                ) : !isLeave ? (
-                <>
-                  <DetailItem label="Time From" value={formatSheetTime(item.time_from)} />
-                  <DetailItem label="Time To" value={formatSheetTime(item.time_to)} />
-                </>
-                ) : (
-                <DetailItem label="Total Days" value={`${item.total_days ?? 0}d`} />
-              )}
-              </View>
-              {!isLeave && !isPerk ? (
-                <View style={styles.totalHoursBox}>
-                  <View>
-                    <Text style={styles.detailLabel}>Total Hours</Text>
-                    <Text style={styles.totalHoursValue}>{formatHours(item.total_hours)}</Text>
-                  </View>
+            {isPerk || isLeave ? (
+              <>
+                <SectionTitle icon="file" title="Request Information" />
+                <View style={styles.detailsList}>
+                  {isPerk ? (
+                    <>
+                      <DetailRow icon="file" label="Transaction Type" value={formatRequestType(item)} />
+                      <DetailRow icon="file" label="Approval Code" value={item.perk_approval_code || 'N/A'} />
+                      <DetailRow icon="calendar" label="Transaction Date" value={formatSheetDate(item.date_from)} />
+                      <DetailRow icon="file" label="Benefit" value={item.perk_benefit || 'N/A'} />
+                    </>
+                  ) : (
+                    <>
+                      <DetailRow icon="file" label="Transaction Type" value={formatRequestType(item)} />
+                      <DetailRow icon="file" label="Leave Type" value={item.leave_type || 'N/A'} />
+                      <DetailRow icon="calendar" label="Leave Category" value={item.leave_category || 'N/A'} />
+                    </>
+                  )}
                 </View>
-              ) : null}
-            </View>
+              </>
+            ) : (
+              <EsarfRequestInfoPanel
+                timeSchedule={item.time_schedule}
+                dayOff={item.day_off}
+                payrollClass={item.payroll_class}
+              />
             )}
 
-          {!isPerk ? (
-          <View style={styles.reasonBlock}>
-            <View style={styles.panelTitleRow}>
-              <FileText size={15} color={colors.muted} strokeWidth={2.2} />
-              <Text style={styles.panelTitle}>Reason / Details</Text>
-            </View>
-              <Text style={styles.reasonText}>{item.reason || 'No reason provided.'}</Text>
-              {rejectedReason ? (
-                <View style={styles.rejectedReasonBox}>
-                  <Text style={styles.rejectedReasonLabel}>Rejected reason</Text>
-                  <Text style={styles.rejectedReasonText}>{rejectedReason}</Text>
+            {isPerk ? (
+              <View style={styles.rangePanel}>
+                <View style={styles.panelTitleRow}>
+                  <FileText size={15} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.panelTitle}>Approved Slip</Text>
                 </View>
-              ) : null}
-            </View>
-          ) : null}
+                <View style={styles.slipItemsBox}>
+                  <Text style={styles.slipItemsLabel}>Items</Text>
+                  <Text style={styles.slipItemsText}>{item.reason || 'No items listed.'}</Text>
+                </View>
+                <View style={styles.slipTotals}>
+                  <AmountLine label="Subtotal" value={`PHP ${formatMoney(item.perk_amount)}`} />
+                  <AmountLine label="Discount 15%" value={`PHP ${formatMoney(item.perk_discount_amount)}`} />
+                  <View style={styles.slipTotalDivider} />
+                  <AmountLine label="Total" value={`PHP ${formatMoney(item.perk_final_amount)}`} strong />
+                </View>
+              </View>
+            ) : isLeave ? (
+              <>
+                <View style={styles.rangePanel}>
+                  <View style={styles.panelTitleRow}>
+                    <CalendarDays size={15} color={colors.muted} strokeWidth={2.2} />
+                    <Text style={styles.panelTitle}>Date Range</Text>
+                  </View>
+                  <View style={styles.rangeGrid}>
+                    <DetailItem label="Date From" value={formatSheetDate(item.start_date)} />
+                    <DetailItem label="Date To" value={formatSheetDate(item.end_date)} />
+                    <DetailItem label="Total Days" value={`${item.total_days ?? 0}d`} />
+                  </View>
+                </View>
 
-          <View style={styles.timelineHeader}>
-            <Users size={15} color={colors.muted} strokeWidth={2.2} />
-            <Text style={styles.panelTitle}>{isPerk ? 'Approval Verification' : 'Approval Timeline'}</Text>
-          </View>
-          <View style={styles.timelineBlock}>
-              {timelineRows.map((step, index) => (
-                <TimelineItem
-                  key={`${item.request_id}-${step.title}-${index}`}
-                  title={step.title}
-                  subtitle={step.subtitle}
-                  date={step.date}
-                  time={step.time}
-                  tone={step.tone}
-                  isLast={index === timelineRows.length - 1}
-                />
-              ))}
-          </View>
+                <View style={styles.reasonBlock}>
+                  <View style={styles.panelTitleRow}>
+                    <FileText size={15} color={colors.muted} strokeWidth={2.2} />
+                    <Text style={styles.panelTitle}>Reason / Details</Text>
+                  </View>
+                  <Text style={styles.reasonText}>{item.reason || 'No reason provided.'}</Text>
+                  {rejectedReason ? (
+                    <View style={styles.rejectedReasonBox}>
+                      <Text style={styles.rejectedReasonLabel}>Rejected reason</Text>
+                      <Text style={styles.rejectedReasonText}>{rejectedReason}</Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                <View style={styles.timelineHeader}>
+                  <Users size={15} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.panelTitle}>Approval Timeline</Text>
+                </View>
+                <View style={styles.timelineBlock}>
+                  {timelineRows.map((step, index) => (
+                    <TimelineItem
+                      key={`${item.request_id}-${step.title}-${index}`}
+                      title={step.title}
+                      subtitle={step.subtitle}
+                      date={step.date}
+                      time={step.time}
+                      tone={step.tone}
+                      isLast={index === timelineRows.length - 1}
+                    />
+                  ))}
+                </View>
+              </>
+            ) : (
+              /* ESARF entry cards matching exact image design */
+              <View style={{ marginTop: 0 }}>
+                {parseEsarfEntries(item).map((entry) => (
+                  <EsarfCardView key={entry.index} entry={entry} timelineRows={timelineRows} />
+                ))}
+                {rejectedReason ? (
+                  <View style={styles.rejectedReasonBox}>
+                    <Text style={styles.rejectedReasonLabel}>Rejected reason</Text>
+                    <Text style={styles.rejectedReasonText}>{rejectedReason}</Text>
+                  </View>
+                ) : null}
+              </View>
+            )}
           </ScrollView>
           <View style={styles.sheetFooter}>
             <Pressable style={styles.sheetCloseButton} onPress={onClose}>
@@ -716,6 +728,15 @@ function timelineDotStyle(tone: 'warning' | 'success' | 'danger' | 'muted') {
 }
 
 
+function isPartialApproval(item: MyRequest): boolean {
+  if (!item || item.request_type_code === 'leave' || isPerkRequest(item)) return false;
+  const entries = parseEsarfEntries(item);
+  if (entries.length <= 1) return false;
+  const hasRejected = entries.some((e) => e.isRejected);
+  const hasApproved = entries.some((e) => !e.isRejected);
+  return hasRejected && hasApproved;
+}
+
 function normalizeStatus(status: string, item?: MyRequest): StatusFilter {
   if (item && isAutoApprovedBirthdayGrant(item)) {
     return 'approved';
@@ -727,6 +748,11 @@ function normalizeStatus(status: string, item?: MyRequest): StatusFilter {
 }
 
 function statusLabel(item: MyRequest) {
+  if (isPartialApproval(item)) {
+    const entries = parseEsarfEntries(item);
+    const approvedCount = entries.filter((e) => !e.isRejected).length;
+    return `${approvedCount}/${entries.length} APPROVED`;
+  }
   const statusKey = normalizeStatus(item.status, item);
   if (isPerkRequest(item) && statusKey === 'approved') return 'APPROVED';
   if (statusKey === 'approved') return 'APPROVED';
@@ -734,39 +760,39 @@ function statusLabel(item: MyRequest) {
   return 'PENDING';
 }
 
-function statusPillStyle(status: StatusFilter) {
+function renderStatusPillContent(item: MyRequest) {
+  if (isPartialApproval(item)) {
+    const entries = parseEsarfEntries(item);
+    const approvedCount = entries.filter((e) => !e.isRejected).length;
+    return (
+      <Text>
+        <Text style={{ color: '#dc2626', fontWeight: '900' }}>{approvedCount}/{entries.length}</Text>
+        <Text style={{ color: '#15803d' }}> APPROVED</Text>
+      </Text>
+    );
+  }
+  return statusLabel(item);
+}
+
+function statusPillStyle(status: StatusFilter | 'partial', item?: MyRequest) {
+  if (item && isPartialApproval(item)) {
+    return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
+  }
   if (status === 'approved') return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
   if (status === 'rejected') return { backgroundColor: colors.background, color: colors.semantic.danger };
   return { backgroundColor: '#fef3c7', borderColor: '#fde68a', borderWidth: 1, color: '#92400e' };
 }
 
 function formatRequestCode(item: MyRequest, sequence?: number) {
-  const type = item.request_type_code === 'leave'
-    ? 'LEAVE'
-    : item.request_type_code === 'use_offset'
-      ? 'OFFSET'
-      : isPerkRequest(item)
-        ? 'PERK'
-        : 'ESARF';
-  return `${type}-${shortRequestId(item.request_id)}-${sequence ?? 1}`;
+  return formatUnifiedRequestCode(item, sequence ?? 1);
 }
 
 function formatRequestDocumentCode(item: MyRequest, sequence: number) {
-  const type = item.request_type_code === 'leave'
-    ? 'LEAVE'
-    : item.request_type_code === 'use_offset'
-      ? 'OFFSET'
-      : isPerkRequest(item)
-        ? 'PERK'
-        : 'ESARF';
-  const year = item.submitted_at ? new Date(item.submitted_at).getFullYear() : new Date().getFullYear();
-  return `${type}-${year}-${String(sequence).padStart(3, '0')}`;
+  return formatUnifiedRequestCode(item, sequence);
 }
 
 function requestSheetTitle(item: MyRequest) {
-  if (isPerkRequest(item)) return 'Perk Request';
-  if (item.request_type_code === 'leave') return 'Leave Request';
-  return 'ESARF Request';
+  return formatUnifiedRequestType(item);
 }
 
 function shortRequestId(requestId: string) {
@@ -777,14 +803,7 @@ function shortRequestId(requestId: string) {
 
 function formatRequestType(item: MyRequest) {
   if (isAutoApprovedBirthdayGrant(item)) return 'Birthday Leave Grant';
-  if (item.transaction_type) return item.transaction_type;
-  if (item.request_type_code === 'discount') return 'Employee Discount (Cash)';
-  if (item.request_type_code === 'charge') return 'Employee Charge (Credit)';
-  if (item.request_type_code === 'overtime') return 'Overtime (OT)';
-  if (item.request_type_code === 'offset_earn') return 'Offset';
-  if (item.request_type_code === 'use_offset') return 'Use Offset';
-  if (item.request_type_code === 'leave') return item.leave_type ? `${item.leave_type} Leave` : 'Leave';
-  return item.request_type_name;
+  return formatUnifiedRequestType(item);
 }
 
 function requestCategory(item: MyRequest): CategoryFilter {
@@ -1250,7 +1269,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: spacing.sm,
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
     paddingBottom: spacing.xs,
     backgroundColor: colors.surface,
@@ -1304,7 +1323,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.background,
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
   esarfDividerText: {
@@ -1320,7 +1339,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: spacing.sm,
     padding: spacing.sm,
-    marginHorizontal: spacing.lg,
+    marginHorizontal: spacing.md,
     marginBottom: spacing.xs,
     borderWidth: 1,
     borderColor: colors.border,
@@ -1877,21 +1896,21 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   cardMeta: {
-    width: 116,
+    width: 130,
     flexShrink: 0,
     alignItems: 'flex-end',
     gap: 3,
   },
   statusPill: {
-    maxWidth: 116,
-    fontSize: 13,
+    maxWidth: 130,
+    fontSize: 12,
     lineHeight: 16,
     fontWeight: fontWeights.bold,
     paddingHorizontal: 9,
     paddingVertical: 5,
     borderRadius: 999,
     overflow: 'hidden',
-    textTransform: 'capitalize',
+    textTransform: 'uppercase',
   },
   metaLine: {
     flexDirection: 'row',
