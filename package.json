@@ -44,5 +44,9 @@
     "supabase": "^2.100.1",
     "typescript": "~5.9.2"
   },
+  "overrides": {
+    "react-native": "$react-native",
+    "@react-native/virtualized-lists": "0.81.5"
+  },
   "private": true
 }
