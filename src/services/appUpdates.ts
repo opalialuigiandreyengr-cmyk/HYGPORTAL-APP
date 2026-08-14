@@ -109,23 +109,25 @@ export async function downloadAppUpdate(): Promise<AppUpdateState> {
     const localUri = FileSystem.cacheDirectory + filename;
 
     // Remove any existing downloaded file
-    const fileInfo = await FileSystem.getInfoAsync(localUri);
-    if (fileInfo.exists) {
+    const existingInfo = await FileSystem.getInfoAsync(localUri);
+    if (existingInfo.exists) {
       await FileSystem.deleteAsync(localUri, { idempotent: true });
     }
 
     const { uri } = await FileSystem.downloadAsync(apkUrl, localUri);
 
+    // Validate that the downloaded file is a real binary APK (not an HTML 404 error page)
     const downloadedInfo = await FileSystem.getInfoAsync(uri);
-    if (!downloadedInfo.exists || (downloadedInfo.size ?? 0) < 500000) {
-      throw new Error('Downloaded update binary is invalid or incomplete. Please check back shortly.');
+    if (!downloadedInfo.exists || (downloadedInfo.size && downloadedInfo.size < 500000)) {
+      await FileSystem.deleteAsync(uri, { idempotent: true });
+      throw new Error(`The APK binary for v${data.version} is not yet available for direct download. Please obtain the latest APK from your administrator.`);
     }
 
     return {
       status: 'ready',
       message: `v${data.version} downloaded. Install the update now?`,
       checkedAt: new Date().toISOString(),
-      currentUpdateId: uri, // Store local URI path here to pass it during install
+      currentUpdateId: uri,
       runtimeVersion: data.version,
     };
   } catch (error) {
