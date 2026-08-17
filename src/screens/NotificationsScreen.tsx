@@ -24,6 +24,7 @@ export function NotificationsScreen({
   onCountChange,
   onAssistant,
   onNotifications,
+  onOpenProfile,
   onBackHome,
   onOpenApprovalRequest,
 }: {
@@ -32,6 +33,7 @@ export function NotificationsScreen({
   onCountChange?: (count: number) => void;
   onAssistant?: () => void;
   onNotifications?: () => void;
+  onOpenProfile?: () => void;
   onBackHome?: () => void;
   onOpenApprovalRequest?: (requestId?: string | null) => void;
 }) {
@@ -43,13 +45,18 @@ export function NotificationsScreen({
   const [selectedGift, setSelectedGift] = useState<AppNotification | null>(null);
 
   const refresh = useCallback(async () => {
-    const loaded = await loadAppNotifications();
-    setItems(loaded);
-    onCountChange?.(unreadCount(loaded));
+    try {
+      const data = await loadAppNotifications();
+      setItems(data);
+      onCountChange?.(unreadCount(data));
+      setErrorMessage(null);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to load notifications');
+    }
   }, [onCountChange]);
 
   useEffect(() => {
-    refresh();
+    void refresh();
   }, [refresh]);
 
   const [currentPage, setCurrentPage] = useState(1);
@@ -124,6 +131,7 @@ export function NotificationsScreen({
         notificationCount={notificationCount}
         onMessages={onAssistant}
         onNotifications={onNotifications}
+        onOpenProfile={onOpenProfile}
         onBackHome={onBackHome}
       />
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>

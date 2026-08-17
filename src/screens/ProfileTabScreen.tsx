@@ -48,6 +48,7 @@ type Props = {
   notificationCount?: number;
   onAssistant?: () => void;
   onNotifications?: () => void;
+  onOpenProfile?: () => void;
   onOpenSettings?: () => void;
   onOpenMyTeam?: () => void;
 };
@@ -119,17 +120,17 @@ const PROFILE_SECTION_TABS: {
   icon: typeof UserRound;
   color: string;
 }[] = [
-  { key: 'personal', label: 'Personal', icon: UserRound, color: '#ca8a04' },
-  { key: 'contact', label: 'Contact', icon: Contact, color: '#0891b2' },
-  { key: 'employment', label: 'Employment', icon: Building2, color: '#c2410c' },
-  { key: 'governmentBank', label: 'Government and Bank', icon: Landmark, color: '#64748b' },
-  { key: 'education', label: 'Education', icon: GraduationCap, color: '#92400e' },
-  { key: 'family', label: 'Family', icon: UsersRound, color: '#c2410c' },
-  { key: 'spouse', label: 'Spouse', icon: Heart, color: '#e11d48' },
-  { key: 'children', label: 'Children', icon: Baby, color: '#f97316' },
+  { key: 'personal', label: 'Personal Information', icon: User, color: colors.primary },
+  { key: 'contact', label: 'Contact Details', icon: Contact, color: '#2563eb' },
+  { key: 'employment', label: 'Employment Info', icon: Briefcase, color: '#059669' },
+  { key: 'governmentBank', label: 'Government & Bank', icon: Landmark, color: '#7c3aed' },
+  { key: 'education', label: 'Education Attainment', icon: GraduationCap, color: '#d97706' },
+  { key: 'family', label: 'Family & Parents', icon: Heart, color: '#dc2626' },
+  { key: 'spouse', label: 'Spouse Information', icon: UsersRound, color: '#0284c7' },
+  { key: 'children', label: 'Children Information', icon: Baby, color: '#4f46e5' },
 ];
 
-export function ProfileTabScreen({ email, username, isLoading, result, onToast, onSignOut, onProfileUpdated, notificationCount = 0, onAssistant, onNotifications, onOpenSettings, onOpenMyTeam }: Props) {
+export function ProfileTabScreen({ email, username, isLoading, result, onToast, onSignOut, onProfileUpdated, notificationCount = 0, onAssistant, onNotifications, onOpenProfile, onOpenSettings, onOpenMyTeam }: Props) {
   const resultProfile = result?.status === 'linked' ? result.profile : null;
   const [localProfile, setLocalProfile] = useState<EmployeeProfileSummary | null>(resultProfile);
   const profile = localProfile;
@@ -455,7 +456,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
     return (
       <View style={styles.root}>
         <StatusBar style="dark" />
-        <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onSignOut={onSignOut} />
+        <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onSignOut={onSignOut} />
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#eab308" />
           <Text style={styles.loadingText}>Loading profile...</Text>
@@ -471,7 +472,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
       style={styles.root}
     >
       <StatusBar style="dark" />
-      <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onSignOut={onSignOut} />
+      <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onSignOut={onSignOut} />
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}

@@ -33,6 +33,7 @@ type Props = {
   notificationCount?: number;
   onAssistant?: () => void;
   onNotifications?: () => void;
+  onOpenProfile?: () => void;
   onOpenSettings?: () => void;
   onOpenMyTeam?: () => void;
   onToast?: (toast: AppToastMessage) => void;
@@ -46,6 +47,7 @@ export function ApprovalsScreen({
   notificationCount = 0,
   onAssistant,
   onNotifications,
+  onOpenProfile,
   onOpenSettings,
   onOpenMyTeam,
   onToast,
@@ -238,7 +240,7 @@ export function ApprovalsScreen({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} />
+      <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} />
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <View style={styles.filterPanel}>
           <View style={styles.searchRow}>

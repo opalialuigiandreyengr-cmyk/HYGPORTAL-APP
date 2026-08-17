@@ -235,6 +235,32 @@ export default function App() {
   useEffect(() => {
     registerPwaInstallSupport();
     void initLocalCache();
+
+    if (Platform.OS === 'android') {
+      void checkForAppUpdate().then((updateState) => {
+        if (updateState.status === 'available') {
+          Alert.alert(
+            'App Update Required',
+            `A new version (v${updateState.runtimeVersion}) of HYG Portal is available!\n\nWould you like to download and install the update now?`,
+            [
+              { text: 'Later', style: 'cancel' },
+              {
+                text: 'Update Now',
+                onPress: async () => {
+                  setAppToast({ tone: 'warning', title: 'Update', message: 'Downloading update...' });
+                  const downloadState = await downloadAppUpdate();
+                  if (downloadState.status === 'ready' && downloadState.currentUpdateId) {
+                    await restartToApplyAppUpdate(downloadState.currentUpdateId);
+                  } else {
+                    Alert.alert('Update Failed', downloadState.message);
+                  }
+                },
+              },
+            ]
+          );
+        }
+      });
+    }
   }, []);
 
   useEffect(() => {
@@ -994,6 +1020,7 @@ export default function App() {
           notificationCount={notificationUnreadCount}
           onAssistant={openAssistant}
           onNotifications={openNotifications}
+          onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
         />
@@ -1005,6 +1032,7 @@ export default function App() {
           notificationCount={notificationUnreadCount}
           onAssistant={openAssistant}
           onNotifications={openNotifications}
+          onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
           onToast={setAppToast}
@@ -1020,6 +1048,7 @@ export default function App() {
           notificationCount={notificationUnreadCount}
           onAssistant={openAssistant}
           onNotifications={openNotifications}
+          onOpenProfile={() => setActiveTab('profile')}
           onBackHome={() => setActiveTab('home')}
           onCountChange={setNotificationUnreadCount}
           onOpenApprovalRequest={openApprovalFromNotification}
@@ -1057,6 +1086,7 @@ export default function App() {
           notificationCount={notificationUnreadCount}
           onAssistant={openAssistant}
           onNotifications={openNotifications}
+          onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
         />
