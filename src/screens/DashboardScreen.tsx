@@ -21,7 +21,8 @@ import type { DashboardSummary } from '../services/dashboard';
 import { loadPerkUsage, type PerkUsage } from '../services/perks';
 import { loadMyRequests, type MyRequest } from '../services/requests';
 import { addAppNotification } from '../services/notificationCenter';
-import { ensureBirthdayLeaveGrant } from '../services/birthdayLeave';
+import { ensureBirthdayLeaveGrant, isAutoApprovedBirthdayGrant } from '../services/birthdayLeave';
+import { formatUnifiedRequestType } from '../components/EsarfDetailsView';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { formatDateInput } from '../utils/dateTime';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
@@ -616,7 +617,10 @@ function formatPeso(value: number) {
 }
 
 function formatActivityType(request: MyRequest) {
-  return request.request_type_name || request.request_type_code.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+  if (isAutoApprovedBirthdayGrant(request)) {
+    return 'Birthday Leave Grant';
+  }
+  return formatUnifiedRequestType(request);
 }
 
 function formatActivityDate(value: string | null) {

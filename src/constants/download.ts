@@ -2,8 +2,8 @@ import { Linking, Platform } from 'react-native';
 
 export const APK_DOWNLOAD_FILENAME = 'hygportal.apk';
 export const APK_DOWNLOAD_URL = 'https://hygportal.vercel.app/hygportal.apk';
-const PWA_SERVICE_WORKER_VERSION = '20260616-v1.5.8';
-export const PWA_VERSION = '1.5.9';
+const PWA_SERVICE_WORKER_VERSION = '20260820-v1.5.6';
+export const PWA_VERSION = '1.5.6';
 
 type InstallPlatform = 'android' | 'ios' | 'other';
 

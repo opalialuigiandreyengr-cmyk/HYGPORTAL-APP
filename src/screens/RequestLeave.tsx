@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
 import {
   CalendarDays,
   Check,
@@ -31,6 +32,7 @@ import { platformAlert } from '../utils/platformAlert';
 import type { AssistantDraft } from '../services/assistant';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { calculateLeaveDays, dateStringToDate, formatDateInput } from '../utils/dateTime';
+import { updateMyPendingRequest, type MyRequest } from '../services/requests';
 import { getDisabledLeaveTypes, getLeaveBreakdown } from '../utils/requestCalculations';
 
 type ValidationKey = 'dateFrom' | 'dateTo' | 'leaveType' | 'leaveCategory' | 'leaveDays' | 'split' | 'reason';
@@ -42,6 +44,7 @@ type RequestLeaveProps = {
   photoUrl?: string | null;
   leaveCreditRemaining?: number;
   initialDraft?: Extract<AssistantDraft, { intent: 'draft_leave_request' }> | null;
+  editingRequest?: MyRequest | null;
   notificationCount?: number;
   onAssistant?: () => void;
   onNotifications?: () => void;
@@ -58,6 +61,7 @@ const RequestLeave = ({
   photoUrl,
   leaveCreditRemaining = 7,
   initialDraft,
+  editingRequest,
   notificationCount = 0,
   onAssistant,
   onNotifications,
@@ -65,13 +69,45 @@ const RequestLeave = ({
   onToast,
   onSubmitted,
 }: RequestLeaveProps) => {
-  const [dateFrom, setDateFrom] = useState(initialDraft?.fields.startDate ?? today);
-  const [dateTo, setDateTo] = useState(initialDraft?.fields.endDate ?? initialDraft?.fields.startDate ?? today);
-  const [leaveType, setLeaveType] = useState(initialDraft?.fields.leaveType ?? 'With Pay');
-  const [leaveCategory, setLeaveCategory] = useState(initialDraft?.fields.leaveCategory ?? 'Vacation Leave');
-  const [paidLeaveDays, setPaidLeaveDays] = useState('1');
-  const [unpaidLeaveDays, setUnpaidLeaveDays] = useState('0');
-  const [reason, setReason] = useState(initialDraft?.fields.reason ?? '');
+  const [dateFrom, setDateFrom] = useState(
+    editingRequest?.start_date || editingRequest?.date_from || initialDraft?.fields.startDate || today,
+  );
+  const [dateTo, setDateTo] = useState(
+    editingRequest?.end_date || editingRequest?.date_to || editingRequest?.start_date || initialDraft?.fields.endDate || today,
+  );
+  const [leaveType, setLeaveType] = useState(editingRequest?.leave_type || initialDraft?.fields.leaveType || 'With Pay');
+  const [leaveCategory, setLeaveCategory] = useState(editingRequest?.leave_category || initialDraft?.fields.leaveCategory || 'Vacation Leave');
+  const [paidLeaveDays, setPaidLeaveDays] = useState(
+    editingRequest?.paid_days !== null && editingRequest?.paid_days !== undefined
+      ? String(editingRequest.paid_days)
+      : '1',
+  );
+  const [unpaidLeaveDays, setUnpaidLeaveDays] = useState(
+    editingRequest?.unpaid_days !== null && editingRequest?.unpaid_days !== undefined
+      ? String(editingRequest.unpaid_days)
+      : '0',
+  );
+  const [reason, setReason] = useState(editingRequest?.reason || initialDraft?.fields.reason || '');
+
+  useEffect(() => {
+    if (editingRequest) {
+      setDateFrom(editingRequest.start_date || editingRequest.date_from || today);
+      setDateTo(editingRequest.end_date || editingRequest.date_to || editingRequest.start_date || today);
+      setLeaveType(editingRequest.leave_type || 'With Pay');
+      setLeaveCategory(editingRequest.leave_category || 'Vacation Leave');
+      setPaidLeaveDays(
+        editingRequest.paid_days !== null && editingRequest.paid_days !== undefined
+          ? String(editingRequest.paid_days)
+          : '1',
+      );
+      setUnpaidLeaveDays(
+        editingRequest.unpaid_days !== null && editingRequest.unpaid_days !== undefined
+          ? String(editingRequest.unpaid_days)
+          : '0',
+      );
+      setReason(editingRequest.reason || '');
+    }
+  }, [editingRequest]);
   const [activePicker, setActivePicker] = useState<'date_from' | 'date_to' | null>(null);
   const [activeSelect, setActiveSelect] = useState<'leave_type' | 'leave_category' | null>(null);
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
@@ -242,6 +278,34 @@ const RequestLeave = ({
     setSubmitStatus('Submitting leave request...');
 
     try {
+      if (editingRequest) {
+        const targetReqId = editingRequest.request_id || (editingRequest as any).id;
+        if (!targetReqId) {
+          throw new Error('Request ID is missing.');
+        }
+
+        await updateMyPendingRequest({
+          requestId: targetReqId,
+          leaveType: leaveType.trim(),
+          leaveCategory: leaveCategory.trim(),
+          startDate: dateFrom,
+          endDate: dateTo,
+          totalDays: totalLeaveDays,
+          paidDays: leaveBreakdown.paidDays,
+          unpaidDays: leaveBreakdown.unpaidDays,
+          reason: reason.trim(),
+        });
+
+        setSubmitStatus('Leave request updated successfully.');
+        onToast?.({
+          tone: 'success',
+          title: 'Leave updated',
+          message: 'Your leave request was updated successfully.',
+        });
+        await onSubmitted?.();
+        return;
+      }
+
       const { data, error } = await supabase.rpc('submit_leave_request', {
         p_leave_type: leaveType.trim(),
         p_leave_category: leaveCategory.trim(),
@@ -463,29 +527,14 @@ const RequestLeave = ({
       </ScrollView>
       </KeyboardAvoidingView>
 
-      {activePicker && Platform.OS === 'ios' ? (
-        <Modal transparent animationType="fade" visible onRequestClose={() => setActivePicker(null)}>
-          <View style={styles.modalBackdrop}>
-            <View style={styles.iosPickerPanel}>
-              <DateTimePicker
-                value={tempPickerDate}
-                mode="date"
-                display="spinner"
-                onChange={handlePickerChange}
-              />
-              <View style={styles.iosPickerActions}>
-                <Pressable style={styles.iosPickerCancel} onPress={() => setActivePicker(null)}>
-                  <Text style={styles.cancelText}>Cancel</Text>
-                </Pressable>
-                <Pressable style={styles.iosPickerDone} onPress={confirmIosPicker}>
-                  <Text style={styles.submitText}>Done</Text>
-                </Pressable>
-              </View>
-            </View>
-          </View>
-        </Modal>
-      ) : activePicker ? (
-        <DateTimePicker value={valueForPicker(activePicker)} mode="date" display="default" onChange={handlePickerChange} />
+      {activePicker ? (
+        <UniversalDateTimePicker
+          value={valueForPicker(activePicker)}
+          mode="date"
+          display="default"
+          onChange={handlePickerChange}
+          onClose={() => setActivePicker(null)}
+        />
       ) : null}
 
       {selectSheet ? (

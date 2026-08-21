@@ -74,6 +74,7 @@ import {
 } from './src/services/notificationCenter';
 import { loadEmployeeProfile } from './src/services/profile';
 import { resolveLoginEmail } from './src/services/registerAccount';
+import { type MyRequest } from './src/services/requests';
 import {
   deleteMyTeamSchedule,
   loadMyTeamEmployees,
@@ -187,6 +188,8 @@ export default function App() {
   const [activeRequestType, setActiveRequestType] = useState<RequestTypeCode | null>(null);
   const [activeQuickRequestScreen, setActiveQuickRequestScreen] = useState<QuickRequestScreen | null>(null);
   const [assistantDraft, setAssistantDraft] = useState<AssistantDraft | null>(null);
+  const [editingRequest, setEditingRequest] = useState<MyRequest | null>(null);
+  const [requestsRefreshKey, setRequestsRefreshKey] = useState(0);
   const [activeTab, setActiveTab] = useState<PortalTab>('home');
   const [biometricEnabled, setBiometricEnabledState] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
@@ -702,11 +705,23 @@ export default function App() {
   function closeQuickRequest() {
     setActiveQuickRequestScreen(null);
     setAssistantDraft(null);
+    setEditingRequest(null);
   }
 
   function openQuickRequest(screen: QuickRequestScreen) {
     setAssistantDraft(null);
+    setEditingRequest(null);
     setActiveQuickRequestScreen(screen);
+  }
+
+  function openEditRequest(request: MyRequest) {
+    setEditingRequest(request);
+    setAssistantDraft(null);
+    if (request.request_type_code === 'leave') {
+      setActiveQuickRequestScreen('request_leave');
+    } else {
+      setActiveQuickRequestScreen('apply_esarf');
+    }
   }
 
   function openAssistant() {
@@ -1023,6 +1038,8 @@ export default function App() {
           onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
+          onEditRequest={openEditRequest}
+          refreshTrigger={requestsRefreshKey}
         />
       );
     } else if (activeTab === 'approvals' && canUseApprovals) {
@@ -1364,6 +1381,7 @@ export default function App() {
             profileDepartmentName={profileResult?.status === 'linked' ? profileResult.profile.departmentName : null}
             profileStoreName={profileResult?.status === 'linked' ? profileResult.profile.storeName : null}
             initialDraft={assistantDraft?.intent === 'draft_esarf_request' ? assistantDraft : null}
+            editingRequest={editingRequest}
             notificationCount={notificationUnreadCount}
             onAssistant={openAssistant}
             onNotifications={openNotifications}
@@ -1372,6 +1390,7 @@ export default function App() {
             onSubmitted={async () => {
               closeQuickRequest();
               setActiveTab('requests');
+              setRequestsRefreshKey((k) => k + 1);
               await refreshDashboard();
             }}
           />
@@ -1384,6 +1403,7 @@ export default function App() {
             photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
             leaveCreditRemaining={dashboardSummary.leave_credit_remaining}
             initialDraft={assistantDraft?.intent === 'draft_leave_request' ? assistantDraft : null}
+            editingRequest={editingRequest}
             notificationCount={notificationUnreadCount}
             onAssistant={openAssistant}
             onNotifications={openNotifications}
@@ -1392,6 +1412,7 @@ export default function App() {
             onSubmitted={async () => {
               closeQuickRequest();
               setActiveTab('requests');
+              setRequestsRefreshKey((k) => k + 1);
               await refreshDashboard();
             }}
           />

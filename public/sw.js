@@ -1,5 +1,5 @@
-// Version: 20260708-v1.5.2
-const CACHE_NAME = 'hygportal-assets-20260708-v1.5.2';
+// Version: 20260820-v1.5.6
+const CACHE_NAME = 'hygportal-assets-20260820-v1.5.6';
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
@@ -41,7 +41,7 @@ const SHOULD_CACHE = (url) => {
   if (!url.startsWith(self.location.origin)) return false;
   if (url.includes('/supabase.co/') || url.includes('/rest/v1/') || url.includes('/auth/v1/')) return false;
   if (url.includes('hot-update') || url.includes('socket.io') || url.includes('webpack')) return false;
-  
+
   const path = new URL(url).pathname;
   return (
     path === '/' ||

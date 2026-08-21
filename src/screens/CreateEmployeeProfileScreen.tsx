@@ -1,6 +1,7 @@
 import { createElement, type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
 import * as ImagePicker from 'expo-image-picker';
 import { BriefcaseBusiness, CalendarDays, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Send, UserRound, X } from 'lucide-react-native';
 
@@ -1009,41 +1010,14 @@ function DatePickerModal({
     return null;
   }
 
-  if (Platform.OS !== 'ios') {
-    return (
-      <DateTimePicker
-        value={value}
-        mode="date"
-        display="spinner"
-        onChange={onChange}
-      />
-    );
-  }
-
   return (
-    <Modal transparent animationType="fade" visible={visible} onRequestClose={onCancel}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.optionSheet}>
-          <View style={styles.iosPickerFrame}>
-            <DateTimePicker
-              value={value}
-              mode="date"
-              display="spinner"
-              onChange={onChange}
-              style={styles.iosWheelPicker}
-            />
-          </View>
-          <View style={styles.dateActions}>
-            <Pressable style={styles.dateCancel} onPress={onCancel}>
-              <Text style={styles.dateCancelText}>Cancel</Text>
-            </Pressable>
-            <Pressable style={styles.dateDone} onPress={onDone}>
-              <Text style={styles.dateDoneText}>Done</Text>
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    </Modal>
+    <UniversalDateTimePicker
+      value={value}
+      mode="date"
+      display="default"
+      onChange={onChange}
+      onClose={onDone || onCancel}
+    />
   );
 }
 

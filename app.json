@@ -2,7 +2,7 @@
   "expo": {
     "name": "HYG Portal",
     "slug": "hyg-portal",
-    "version": "1.5.5",
+    "version": "1.5.6",
     "orientation": "portrait",
     "icon": "./assets/hygapplogo.png",
     "userInterfaceStyle": "light",

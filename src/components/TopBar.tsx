@@ -3,6 +3,7 @@ import { Animated, Easing, Image, Linking, Modal, Platform, Pressable, StyleShee
 import { Bell, ChartNoAxesColumnIncreasing, Check, ChevronLeft, ChevronRight, ExternalLink, Info, LogOut, Menu, MessageCircle, RefreshCw, Settings, ShieldCheck, Sparkles, UsersRound, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { NATIVE_APP_VERSION } from '../services/appUpdates';
 import { colors, fontWeights } from '../theme';
 import { getInstallCopy, isPwaInstalled, openPlatformInstall } from '../constants/download';
 import { Avatar } from './Avatar';
@@ -251,7 +252,7 @@ export function TopBar({
             <SidebarRow
               icon={<Info size={20} color={colors.primary} strokeWidth={2.6} />}
               label="About"
-              value="HYG Portal Mobile v1.5.1"
+              value={`HYG Portal Mobile v${NATIVE_APP_VERSION}`}
             />
             <Pressable
               style={({ pressed }) => [

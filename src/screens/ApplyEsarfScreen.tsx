@@ -13,6 +13,9 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
+import { DateRangePickerModal } from '../components/DateRangePickerModal';
+import { ScrollableTimePickerModal } from '../components/ScrollableTimePickerModal';
 import {
   CalendarDays,
   Check,
@@ -21,7 +24,6 @@ import {
   ListChecks,
   Plus,
   Repeat,
-  SquarePen,
   Trash2,
   X,
 } from 'lucide-react-native';
@@ -32,6 +34,8 @@ import { dayOffOptions, payrollClassOptions, scheduleOptions } from '../constant
 import { supabase } from '../lib/supabase';
 import type { AssistantDraft } from '../services/assistant';
 import { loadMyFlexibleSchedule } from '../services/team';
+import { updateMyPendingRequest, type MyRequest } from '../services/requests';
+import { parseEsarfEntries } from '../components/EsarfDetailsView';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { platformAlert } from '../utils/platformAlert';
 import type { RequestTypeCode } from '../types/domain';
@@ -70,6 +74,15 @@ const transactionOptions = [
   { key: 'offset', label: 'Offset', shortLabel: 'Offset', requestType: 'offset_earn' },
   { key: 'use_offset', label: 'Use Offset', shortLabel: 'Use Offset', requestType: 'use_offset' },
 ] satisfies { key: string; label: string; shortLabel: string; requestType: RequestTypeCode }[];
+
+const INLINE_TIME_OPTIONS = [
+  '06:00', '06:30', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30',
+  '10:00', '10:30', '11:00', '11:30', '12:00', '12:30', '13:00', '13:30',
+  '14:00', '14:30', '15:00', '15:30', '16:00', '16:30', '17:00', '17:30',
+  '18:00', '18:30', '19:00', '19:30', '20:00', '20:30', '21:00', '21:30',
+  '22:00', '22:30', '23:00', '23:30', '00:00', '00:30', '01:00', '01:30',
+  '02:00', '02:30', '03:00', '03:30', '04:00', '04:30', '05:00', '05:30',
+];
 
 const exclusiveTransactionGroups = [
   ['ut', 'ot'],
@@ -115,6 +128,7 @@ export function ApplyEsarfScreen({
   profileDepartmentName,
   profileStoreName,
   initialDraft,
+  editingRequest,
   onAssistant,
   onBack,
   onSubmitted,
@@ -132,6 +146,7 @@ export function ApplyEsarfScreen({
   profileDepartmentName?: string | null;
   profileStoreName?: string | null;
   initialDraft?: Extract<AssistantDraft, { intent: 'draft_esarf_request' }> | null;
+  editingRequest?: MyRequest | null;
   onAssistant?: () => void;
   onBack: () => void;
   onSubmitted?: () => void | Promise<void>;
@@ -145,32 +160,63 @@ export function ApplyEsarfScreen({
     : '';
   const fixedSchedule = normalizeSchedule(profileSchedule);
   const fixedDayOff = normalizeDayOff(profileDayOff);
-  const initialSchedule = initialDraft?.fields.schedule ? normalizeSchedule(initialDraft.fields.schedule) : fixedSchedule;
-  const initialDayOff = initialDraft?.fields.dayOff ? normalizeDayOff(initialDraft.fields.dayOff) : fixedDayOff;
-  const initialPayrollClass = initialDraft?.fields.payrollClass ?? profilePayrollClass ?? 'Select payroll class';
+  const initialSchedule = editingRequest?.time_schedule
+    ? normalizeSchedule(editingRequest.time_schedule)
+    : initialDraft?.fields.schedule
+    ? normalizeSchedule(initialDraft.fields.schedule)
+    : fixedSchedule;
+  const initialDayOff = editingRequest?.day_off
+    ? normalizeDayOff(editingRequest.day_off)
+    : initialDraft?.fields.dayOff
+    ? normalizeDayOff(initialDraft.fields.dayOff)
+    : fixedDayOff;
+  const initialPayrollClass = editingRequest?.payroll_class ?? initialDraft?.fields.payrollClass ?? profilePayrollClass ?? 'Select payroll class';
   const initialTransactions = initialDraft?.fields.transactions ?? [];
-  const initialDateFrom = initialDraft?.fields.dateFrom ?? '';
-  const initialDateTo = initialDraft?.fields.dateTo ?? initialDateFrom;
-  const initialTimeFrom = initialDraft?.fields.timeFrom ?? '';
-  const initialTimeTo = initialDraft?.fields.timeTo ?? '';
-  const initialReason = initialDraft?.fields.reason ?? '';
+  const initialDateFrom = editingRequest?.date_from ?? initialDraft?.fields.dateFrom ?? '';
+  const initialDateTo = editingRequest?.date_to ?? initialDraft?.fields.dateTo ?? initialDateFrom;
+  const initialTimeFrom = editingRequest?.time_from ?? initialDraft?.fields.timeFrom ?? '';
+  const initialTimeTo = editingRequest?.time_to ?? initialDraft?.fields.timeTo ?? '';
+  const initialReason = editingRequest?.reason ?? initialDraft?.fields.reason ?? '';
   const [schedule, setSchedule] = useState(initialSchedule);
   const [dayOff, setDayOff] = useState(initialDayOff);
   const [payrollClass, setPayrollClass] = useState(initialPayrollClass);
-  const [isUserCustomSchedule, setIsUserCustomSchedule] = useState(false);
-  const [isUserCustomDayOff, setIsUserCustomDayOff] = useState(false);
+  const [isUserCustomSchedule, setIsUserCustomSchedule] = useState(Boolean(editingRequest?.time_schedule));
+  const [isUserCustomDayOff, setIsUserCustomDayOff] = useState(Boolean(editingRequest?.day_off));
 
-  const [entries, setEntries] = useState<EsarfEntry[]>([
-    {
-      id: '1',
-      transaction: initialTransactions[0] ?? '',
-      dateFrom: initialDateFrom,
-      dateTo: initialDateTo,
-      timeFrom: initialTimeFrom,
-      timeTo: initialTimeTo,
-      reason: initialReason,
-    },
-  ]);
+  const [entries, setEntries] = useState<EsarfEntry[]>(() => {
+    if (editingRequest) {
+      const parsed = parseEsarfEntries(editingRequest);
+      if (parsed.length > 0) {
+        return parsed.map((p, idx) => {
+          const key = parseTransactionStringToKeys(p.transactionLabel || editingRequest.transaction_type, editingRequest.request_type_code);
+          return {
+            id: String(idx + 1),
+            transaction: key,
+            dateFrom: editingRequest.date_from || '',
+            dateTo: editingRequest.date_to || editingRequest.date_from || '',
+            timeFrom: editingRequest.time_from || '',
+            timeTo: editingRequest.time_to || '',
+            reason: p.reason || editingRequest.reason || '',
+          };
+        });
+      }
+    }
+    const defaultKey = parseTransactionStringToKeys(
+      editingRequest?.transaction_type,
+      editingRequest?.request_type_code,
+    );
+    return [
+      {
+        id: '1',
+        transaction: defaultKey || initialTransactions[0] || '',
+        dateFrom: initialDateFrom,
+        dateTo: initialDateTo,
+        timeFrom: initialTimeFrom,
+        timeTo: initialTimeTo,
+        reason: initialReason,
+      },
+    ];
+  });
 
   const [activeEntryPicker, setActiveEntryPicker] = useState<{
     index: number;
@@ -178,6 +224,7 @@ export function ApplyEsarfScreen({
   } | null>(null);
   const [activeTransactionSelectIndex, setActiveTransactionSelectIndex] = useState<number | null>(null);
   const [activeDateChoiceIndex, setActiveDateChoiceIndex] = useState<number | null>(null);
+  const [activeScrollableTimePicker, setActiveScrollableTimePicker] = useState<{ index: number; field: 'time_from' | 'time_to' } | null>(null);
 
   const [activeSelect, setActiveSelect] = useState<'schedule' | 'day_off' | 'payroll_class' | null>(null);
   const [isCustomScheduleOpen, setIsCustomScheduleOpen] = useState(false);
@@ -195,6 +242,44 @@ export function ApplyEsarfScreen({
   const sectionY = useRef<Record<SectionKey, number>>({ request: 0, transactions: 0, datetime: 0 });
 
   const primaryDateFrom = entries[0]?.dateFrom || '';
+
+  useEffect(() => {
+    if (editingRequest) {
+      setSchedule(editingRequest.time_schedule ? normalizeSchedule(editingRequest.time_schedule) : fixedSchedule);
+      setDayOff(editingRequest.day_off ? normalizeDayOff(editingRequest.day_off) : fixedDayOff);
+      setPayrollClass(editingRequest.payroll_class ?? profilePayrollClass ?? 'Select payroll class');
+      setIsUserCustomSchedule(Boolean(editingRequest.time_schedule));
+      setIsUserCustomDayOff(Boolean(editingRequest.day_off));
+
+      const parsed = parseEsarfEntries(editingRequest);
+      if (parsed.length > 0) {
+        setEntries(
+          parsed.map((p, idx) => ({
+            id: String(idx + 1),
+            transaction: parseTransactionStringToKeys(p.transactionLabel || editingRequest.transaction_type, editingRequest.request_type_code),
+            dateFrom: editingRequest.date_from || '',
+            dateTo: editingRequest.date_to || editingRequest.date_from || '',
+            timeFrom: editingRequest.time_from || '',
+            timeTo: editingRequest.time_to || '',
+            reason: p.reason || editingRequest.reason || '',
+          })),
+        );
+      } else {
+        const defaultKey = parseTransactionStringToKeys(editingRequest.transaction_type, editingRequest.request_type_code);
+        setEntries([
+          {
+            id: '1',
+            transaction: defaultKey || '',
+            dateFrom: editingRequest.date_from || '',
+            dateTo: editingRequest.date_to || editingRequest.date_from || '',
+            timeFrom: editingRequest.time_from || '',
+            timeTo: editingRequest.time_to || '',
+            reason: editingRequest.reason || '',
+          },
+        ]);
+      }
+    }
+  }, [editingRequest]);
 
   useEffect(() => {
     let active = true;
@@ -333,13 +418,29 @@ export function ApplyEsarfScreen({
     if (kind === 'date_from') {
       const val = formatDateInput(selectedDate);
       const currentTo = entries[index]?.dateTo;
-      updateEntry(index, { dateFrom: val, dateTo: currentTo || val });
+      const nextTo = currentTo && dateStringToDate(currentTo).getTime() >= dateStringToDate(val).getTime() ? currentTo : val;
+      updateEntry(index, { dateFrom: val, dateTo: nextTo });
+      setValidationErrors((current) => ({
+        ...current,
+        [`entry_${index}_dateFrom`]: undefined,
+        [`entry_${index}_dateTo`]: undefined,
+      }));
     } else if (kind === 'date_to') {
-      updateEntry(index, { dateTo: formatDateInput(selectedDate) });
+      const val = formatDateInput(selectedDate);
+      const currentFrom = entries[index]?.dateFrom;
+      const nextFrom = currentFrom && dateStringToDate(currentFrom).getTime() <= dateStringToDate(val).getTime() ? currentFrom : val;
+      updateEntry(index, { dateFrom: nextFrom, dateTo: val });
+      setValidationErrors((current) => ({
+        ...current,
+        [`entry_${index}_dateFrom`]: undefined,
+        [`entry_${index}_dateTo`]: undefined,
+      }));
     } else if (kind === 'time_from') {
       updateEntry(index, { timeFrom: formatTimeInput(selectedDate) });
+      setValidationErrors((current) => ({ ...current, [`entry_${index}_timeFrom`]: undefined }));
     } else if (kind === 'time_to') {
       updateEntry(index, { timeTo: formatTimeInput(selectedDate) });
+      setValidationErrors((current) => ({ ...current, [`entry_${index}_timeTo`]: undefined }));
     }
   }
 
@@ -514,6 +615,9 @@ export function ApplyEsarfScreen({
       }
       if (!entry.dateFrom) errors[`entry_${i}_dateFrom`] = `Request #${num}: Date From is required.`;
       if (!entry.dateTo) errors[`entry_${i}_dateTo`] = `Request #${num}: Date To is required.`;
+      if (entry.dateFrom && entry.dateTo && dateStringToDate(entry.dateTo).getTime() < dateStringToDate(entry.dateFrom).getTime()) {
+        errors[`entry_${i}_dateTo`] = `Request #${num}: Date To cannot be earlier than Date From.`;
+      }
       if (!entry.timeFrom) errors[`entry_${i}_timeFrom`] = `Request #${num}: Time From is required.`;
       if (!entry.timeTo) errors[`entry_${i}_timeTo`] = `Request #${num}: Time To is required.`;
       const hours = getEntryTotalHours(entry);
@@ -563,10 +667,15 @@ export function ApplyEsarfScreen({
 
       const totalHoursSum = entries.reduce((sum, e) => sum + getEntryTotalHours(e), 0);
 
+      const allDatesFrom = entries.map((e) => e.dateFrom).filter(Boolean);
+      const allDatesTo = entries.map((e) => e.dateTo || e.dateFrom).filter(Boolean);
+      const sortedFrom = [...allDatesFrom].sort();
+      const sortedTo = [...allDatesTo].sort();
+
       const firstEntry = entries[0];
       const lastEntry = entries[entries.length - 1];
-      const overallDateFrom = firstEntry.dateFrom;
-      const overallDateTo = lastEntry.dateTo || lastEntry.dateFrom || firstEntry.dateFrom;
+      const overallDateFrom = sortedFrom[0] || firstEntry.dateFrom;
+      const overallDateTo = sortedTo[sortedTo.length - 1] || lastEntry.dateTo || lastEntry.dateFrom || firstEntry.dateFrom;
       const overallTimeFrom = firstEntry.timeFrom;
       const overallTimeTo = lastEntry.timeTo || firstEntry.timeTo;
 
@@ -586,6 +695,36 @@ export function ApplyEsarfScreen({
             return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr} (${hrs.toFixed(2)} hrs): ${e.reason.trim()}`;
           })
           .join('\n');
+      }
+
+      if (editingRequest) {
+        const targetReqId = editingRequest.request_id || (editingRequest as any).id;
+        if (!targetReqId) {
+          throw new Error('Request ID is missing.');
+        }
+
+        await updateMyPendingRequest({
+          requestId: targetReqId,
+          dateFrom: overallDateFrom,
+          dateTo: overallDateTo,
+          timeFrom: overallTimeFrom,
+          timeTo: overallTimeTo,
+          totalHours: totalHoursSum,
+          timeSchedule: schedule,
+          dayOff: dayOff,
+          payrollClass: payrollClass,
+          transactionType: combinedTransactionType,
+          reason: combinedReason,
+        });
+
+        setSubmitStatus(`Updated ESARF request with ${entries.length} entry(ies).`);
+        onToast?.({
+          tone: 'success',
+          title: 'ESARF updated',
+          message: `ESARF request with ${entries.length} entry(ies) has been updated.`,
+        });
+        await onSubmitted?.();
+        return;
       }
 
       const { error } = await supabase.rpc('submit_time_request', {
@@ -693,13 +832,6 @@ export function ApplyEsarfScreen({
                   accessibilityLabel="Set custom base schedule"
                 >
                   <Clock3 size={18} color={colors.primary} strokeWidth={2.2} />
-                </Pressable>
-                <Pressable
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={styles.scheduleIconButton}
-                  onPress={() => setActiveSelect('schedule')}
-                >
-                  <SquarePen size={18} color="#64748b" strokeWidth={2} />
                 </Pressable>
               </View>
             </View>
@@ -905,7 +1037,7 @@ export function ApplyEsarfScreen({
                           styles.underlineBox,
                           validationErrors[`entry_${actualIndex}_timeFrom`] ? styles.inputError : null,
                         ]}
-                        onPress={() => openEntryPicker(actualIndex, 'time_from')}
+                        onPress={() => setActiveScrollableTimePicker({ index: actualIndex, field: 'time_from' })}
                       >
                         <Text
                           style={[
@@ -930,7 +1062,7 @@ export function ApplyEsarfScreen({
                           styles.underlineBox,
                           validationErrors[`entry_${actualIndex}_timeTo`] ? styles.inputError : null,
                         ]}
-                        onPress={() => openEntryPicker(actualIndex, 'time_to')}
+                        onPress={() => setActiveScrollableTimePicker({ index: actualIndex, field: 'time_to' })}
                       >
                         <Text
                           style={[
@@ -963,6 +1095,7 @@ export function ApplyEsarfScreen({
                       }}
                       placeholder="Enter reason"
                       placeholderTextColor="#94a3b8"
+                      underlineColorAndroid="transparent"
                       style={[
                         styles.underlineTextInput,
                         validationErrors[`entry_${actualIndex}_reason`] ? styles.inputError : null,
@@ -992,35 +1125,14 @@ export function ApplyEsarfScreen({
         </View>
         {submitStatus ? <Text style={styles.submitStatus}>{submitStatus}</Text> : null}
 
-        {activeEntryPicker && Platform.OS === 'ios' ? (
-          <Modal transparent animationType="fade" visible onRequestClose={() => setActiveEntryPicker(null)}>
-            <View style={styles.modalBackdrop}>
-              <View style={styles.iosPickerPanel}>
-                <DateTimePicker
-                  value={pickerValue()}
-                  mode={activeEntryPicker.kind.startsWith('date') ? 'date' : 'time'}
-                  display="spinner"
-                  is24Hour={false}
-                  onChange={handlePickerChange}
-                />
-                <View style={styles.iosPickerActions}>
-                  <Pressable style={styles.iosPickerCancel} onPress={() => setActiveEntryPicker(null)}>
-                    <Text style={styles.cancelText}>Cancel</Text>
-                  </Pressable>
-                  <Pressable style={styles.iosPickerDone} onPress={confirmIosPicker}>
-                    <Text style={styles.submitText}>Done</Text>
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-          </Modal>
-        ) : activeEntryPicker ? (
-          <DateTimePicker
+        {activeEntryPicker ? (
+          <UniversalDateTimePicker
             value={pickerValue()}
             mode={activeEntryPicker.kind.startsWith('date') ? 'date' : 'time'}
             display="default"
             is24Hour={false}
             onChange={handlePickerChange}
+            onClose={() => setActiveEntryPicker(null)}
           />
         ) : null}
 
@@ -1144,41 +1256,10 @@ export function ApplyEsarfScreen({
                       Selecting {customTimePickerKind === 'start' ? 'Shift Start Time' : 'Shift End Time'}:
                     </Text>
 
-                    {Platform.OS === 'web' ? (
-                      <View style={styles.webTimePickerRow}>
-                        <WebNativeTimePicker
-                          value={customTimePickerKind === 'start' ? customStartTime : customEndTime}
-                          onChange={(newVal) => {
-                            if (customTimePickerKind === 'start') {
-                              setCustomStartTime(newVal);
-                            } else {
-                              setCustomEndTime(newVal);
-                            }
-                          }}
-                        />
-                      </View>
-                    ) : (
-                      <DateTimePicker
-                        value={timeStringToDate(customTimePickerKind === 'start' ? customStartTime : customEndTime)}
-                        mode="time"
-                        display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                        is24Hour={false}
-                        onChange={(event, date) => {
-                          if (date) {
-                            const formatted = formatTimeInput(date);
-                            if (customTimePickerKind === 'start') {
-                              setCustomStartTime(formatted);
-                            } else {
-                              setCustomEndTime(formatted);
-                            }
-                          }
-                        }}
-                      />
-                    )}
-
                     <ScrollView
                       horizontal
                       showsHorizontalScrollIndicator={false}
+                      style={styles.timePresetsScrollView}
                       contentContainerStyle={styles.timePresetsScroll}
                     >
                       {(customTimePickerKind === 'start'
@@ -1293,44 +1374,39 @@ export function ApplyEsarfScreen({
         ) : null}
 
         {activeDateChoiceIndex !== null ? (
-          <Modal transparent animationType="fade" visible onRequestClose={() => setActiveDateChoiceIndex(null)}>
-            <View style={styles.modalBackdrop}>
-              <Pressable style={styles.modalDismissArea} onPress={() => setActiveDateChoiceIndex(null)} />
-              <View style={styles.optionSheet}>
-                <View style={styles.sheetHandle} />
-                <Text style={styles.sheetTitle}>Select Date</Text>
-                <Pressable
-                  style={styles.optionRow}
-                  onPress={() => {
-                    const idx = activeDateChoiceIndex;
-                    setActiveDateChoiceIndex(null);
-                    openEntryPicker(idx, 'date_from');
-                  }}
-                >
-                  <Text style={styles.optionText}>
-                    Date From ({entries[activeDateChoiceIndex]?.dateFrom ? formatDateDisplay(entries[activeDateChoiceIndex].dateFrom) : 'mm/dd/yyyy'})
-                  </Text>
-                  <CalendarDays size={18} color={colors.primary} />
-                </Pressable>
-                <Pressable
-                  style={styles.optionRow}
-                  onPress={() => {
-                    const idx = activeDateChoiceIndex;
-                    setActiveDateChoiceIndex(null);
-                    openEntryPicker(idx, 'date_to');
-                  }}
-                >
-                  <Text style={styles.optionText}>
-                    Date To ({entries[activeDateChoiceIndex]?.dateTo ? formatDateDisplay(entries[activeDateChoiceIndex].dateTo) : 'mm/dd/yyyy'})
-                  </Text>
-                  <CalendarDays size={18} color={colors.primary} />
-                </Pressable>
-                <Pressable style={styles.sheetCancelButton} onPress={() => setActiveDateChoiceIndex(null)}>
-                  <Text style={styles.cancelText}>Cancel</Text>
-                </Pressable>
-              </View>
-            </View>
-          </Modal>
+          <DateRangePickerModal
+            visible
+            initialStartDate={entries[activeDateChoiceIndex]?.dateFrom || ''}
+            initialEndDate={entries[activeDateChoiceIndex]?.dateTo || ''}
+            onApply={(startYMD, endYMD) => {
+              const idx = activeDateChoiceIndex;
+              updateEntry(idx, { dateFrom: startYMD, dateTo: endYMD });
+              setActiveDateChoiceIndex(null);
+            }}
+            onClose={() => setActiveDateChoiceIndex(null)}
+          />
+        ) : null}
+
+        {activeScrollableTimePicker !== null ? (
+          <ScrollableTimePickerModal
+            visible
+            title={activeScrollableTimePicker.field === 'time_from' ? 'Set Time From' : 'Set Time To'}
+            initialTime={
+              activeScrollableTimePicker.field === 'time_from'
+                ? entries[activeScrollableTimePicker.index]?.timeFrom || '09:00'
+                : entries[activeScrollableTimePicker.index]?.timeTo || '18:00'
+            }
+            onConfirm={(time24) => {
+              const idx = activeScrollableTimePicker.index;
+              if (activeScrollableTimePicker.field === 'time_from') {
+                updateEntry(idx, { timeFrom: time24 });
+              } else {
+                updateEntry(idx, { timeTo: time24 });
+              }
+              setActiveScrollableTimePicker(null);
+            }}
+            onCancel={() => setActiveScrollableTimePicker(null)}
+          />
         ) : null}
 
         <Modal
@@ -1439,6 +1515,45 @@ function parseEntryTransactions(transactionStr?: string | null): string[] {
   return transactionStr.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+function parseTransactionStringToKeys(rawStr?: string | null, requestTypeCode?: string | null): string {
+  if (!rawStr || !rawStr.trim()) {
+    if (requestTypeCode === 'offset_earn') return 'offset';
+    if (requestTypeCode === 'use_offset') return 'use_offset';
+    if (requestTypeCode === 'overtime') return 'ot';
+    return '';
+  }
+
+  const parts = rawStr.split(/[,/]+/).map((s) => s.trim()).filter(Boolean);
+  const matchedKeys: string[] = [];
+
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    if (lower === 'use_offset' || lower === 'use offset' || lower.includes('use offset')) {
+      if (!matchedKeys.includes('use_offset')) matchedKeys.push('use_offset');
+    } else if (lower.includes('offset')) {
+      if (!matchedKeys.includes('offset')) matchedKeys.push('offset');
+    } else if (lower.includes('undertime') || lower === 'ut' || lower.includes('(ut)')) {
+      if (!matchedKeys.includes('ut')) matchedKeys.push('ut');
+    } else if (lower.includes('overtime') || lower === 'ot' || lower.includes('(ot)')) {
+      if (!matchedKeys.includes('ot')) matchedKeys.push('ot');
+    } else if (lower.includes('failure') || lower.includes('punch') || lower === 'fio' || lower.includes('(fio)')) {
+      if (!matchedKeys.includes('fio')) matchedKeys.push('fio');
+    } else if (lower.includes('official') || lower.includes('business') || lower === 'ob' || lower.includes('(ob)')) {
+      if (!matchedKeys.includes('ob')) matchedKeys.push('ob');
+    }
+  }
+
+  if (matchedKeys.length > 0) {
+    return matchedKeys.join(',');
+  }
+
+  if (requestTypeCode === 'offset_earn') return 'offset';
+  if (requestTypeCode === 'use_offset') return 'use_offset';
+  if (requestTypeCode === 'overtime') return 'ot';
+
+  return rawStr;
+}
+
 export function formatEsarfDateRange(dateFromStr?: string | null, dateToStr?: string | null): string {
   if (!dateFromStr) return 'mm/dd-dd/yyyy';
 
@@ -1448,31 +1563,29 @@ export function formatEsarfDateRange(dateFromStr?: string | null, dateToStr?: st
   const [y1, m1, d1] = fromParts;
   const m1Str = String(m1).padStart(2, '0');
   const d1Str = String(d1).padStart(2, '0');
+  const y1Short = String(y1).slice(-2);
 
   const actualDateTo = dateToStr || dateFromStr;
   const toParts = actualDateTo.split('-').map(Number);
 
   if (toParts.length !== 3 || toParts.some(Number.isNaN)) {
-    return `${m1Str}/${d1Str}/${y1}`;
+    return `${m1Str}/${d1Str}-${d1Str}/${y1Short}`;
   }
 
   const [y2, m2, d2] = toParts;
   const m2Str = String(m2).padStart(2, '0');
   const d2Str = String(d2).padStart(2, '0');
-
-  if (dateFromStr === actualDateTo) {
-    return `${m1Str}/${d1Str}/${y1}`;
-  }
+  const y2Short = String(y2).slice(-2);
 
   if (y1 === y2 && m1 === m2) {
-    return `${m1Str}/${d1Str}-${d2Str}/${y1}`;
+    return `${m1Str}/${d1Str}-${d2Str}/${y1Short}`;
   }
 
   if (y1 === y2) {
-    return `${m1Str}/${d1Str}-${m2Str}/${d2Str}/${y1}`;
+    return `${m1Str}/${d1Str}-${m2Str}/${d2Str}/${y1Short}`;
   }
 
-  return `${m1Str}/${d1Str}/${y1} - ${m2Str}/${d2Str}/${y2}`;
+  return `${m1Str}/${d1Str}/${y1Short}-${m2Str}/${d2Str}/${y2Short}`;
 }
 
 function getConflictingTransactions(key: string) {
@@ -2048,6 +2161,7 @@ const styles = StyleSheet.create({
     color: '#0f172a',
     fontSize: 14,
     fontWeight: fontWeights.bold,
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none', outlineWidth: 0 } as any) : {}),
   },
   sectionInvalid: {
     borderColor: 'rgba(220, 38, 38, 0.42)',
@@ -2712,24 +2826,37 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    padding: 12,
+    paddingVertical: 12,
     marginBottom: spacing.md,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  inlineTimePickerHeaderRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    marginBottom: 6,
+    width: '100%',
   },
   inlineTimePickerHeader: {
     fontSize: 12,
     fontWeight: fontWeights.bold,
     color: '#475569',
+    paddingHorizontal: 14,
     marginBottom: 8,
-    alignSelf: 'flex-start',
   },
   webTimePickerRow: {
     marginBottom: 10,
     alignItems: 'center',
   },
+  timePresetsScrollView: {
+    width: '100%',
+  },
   timePresetsScroll: {
     flexDirection: 'row',
-    gap: 6,
+    gap: 8,
+    paddingHorizontal: 14,
     paddingVertical: 4,
   },
   presetTimePill: {

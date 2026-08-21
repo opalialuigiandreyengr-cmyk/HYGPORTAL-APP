@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { CalendarDays, Clock3, Eye, FileText, Funnel, RefreshCcw, Search, Users, X } from 'lucide-react-native';
+import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
+import { CalendarDays, Clock3, Eye, FileText, Funnel, Pencil, RefreshCcw, Search, Users, X } from 'lucide-react-native';
 
 import { colors, fontWeights, spacing, radius } from '../theme';
 import { Avatar } from '../components/Avatar';
@@ -44,9 +45,11 @@ type Props = {
   onOpenProfile?: () => void;
   onOpenSettings?: () => void;
   onOpenMyTeam?: () => void;
+  onEditRequest?: (request: MyRequest) => void;
+  refreshTrigger?: number;
 };
 
-export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssistant, onNotifications, onOpenProfile, onOpenSettings, onOpenMyTeam }: Props) {
+export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssistant, onNotifications, onOpenProfile, onOpenSettings, onOpenMyTeam, onEditRequest, refreshTrigger }: Props) {
   const [items, setItems] = useState<MyRequest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
@@ -88,7 +91,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
     return () => {
       active = false;
     };
-  }, []);
+  }, [refreshTrigger]);
 
   const counts = useMemo(() => {
     const categoryItems = activeCategory === 'all'
@@ -301,6 +304,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
             profile={profile}
             sequence={sequence}
             onView={() => setSelectedRequest({ item, sequence })}
+            onEdit={onEditRequest ? () => onEditRequest(item) : undefined}
           />
           );
         })}
@@ -331,33 +335,13 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
         ) : null}
       </ScrollView>
 
-      {activeDatePicker && Platform.OS === 'ios' ? (
-        <Modal transparent animationType="fade" visible onRequestClose={() => setActiveDatePicker(null)}>
-          <View style={styles.modalBackdrop}>
-            <View style={styles.iosPickerPanel}>
-              <DateTimePicker
-                value={tempPickerDate}
-                mode="date"
-                display="spinner"
-                onChange={handleDatePickerChange}
-              />
-              <View style={styles.iosPickerActions}>
-                <Pressable style={styles.iosPickerCancel} onPress={() => setActiveDatePicker(null)}>
-                  <Text style={styles.iosPickerCancelText}>Cancel</Text>
-                </Pressable>
-                <Pressable style={styles.iosPickerDone} onPress={confirmIosDatePicker}>
-                  <Text style={styles.iosPickerDoneText}>Done</Text>
-                </Pressable>
-              </View>
-            </View>
-          </View>
-        </Modal>
-      ) : activeDatePicker ? (
-        <DateTimePicker
+      {activeDatePicker ? (
+        <UniversalDateTimePicker
           value={dateValueForPicker(activeDatePicker)}
           mode="date"
           display="default"
           onChange={handleDatePickerChange}
+          onClose={() => setActiveDatePicker(null)}
         />
       ) : null}
 
@@ -365,6 +349,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
         request={selectedRequest}
         profile={profile}
         onClose={() => setSelectedRequest(null)}
+        onEdit={onEditRequest}
       />
     </View>
   );
@@ -375,11 +360,13 @@ function RequestCard({
   profile,
   sequence,
   onView,
+  onEdit,
 }: {
   item: MyRequest;
   profile: EmployeeProfileSummary | null;
   sequence: number;
   onView: () => void;
+  onEdit?: () => void;
 }) {
   const statusKey = normalizeStatus(item.status, item);
   const requestDate = getRequestDate(item);
@@ -428,6 +415,12 @@ function RequestCard({
             <View style={styles.typePill}>
               <Text style={styles.typePillText}>{formatRequestType(item)}</Text>
             </View>
+            {statusKey === 'pending' && onEdit ? (
+              <Pressable style={styles.editButton} onPress={onEdit}>
+                <Pencil size={14} color="#92400e" strokeWidth={2.3} />
+                <Text style={styles.editText}>Edit</Text>
+              </Pressable>
+            ) : null}
             <Pressable style={styles.viewButton} onPress={onView}>
               <Eye size={15} color={colors.text} strokeWidth={2.3} />
               <Text style={styles.viewText}>View</Text>
@@ -443,10 +436,12 @@ function RequestDetailsSheet({
   request,
   profile,
   onClose,
+  onEdit,
 }: {
   request: { item: MyRequest; sequence: number } | null;
   profile: EmployeeProfileSummary | null;
   onClose: () => void;
+  onEdit?: (request: MyRequest) => void;
 }) {
   if (!request) return null;
 
@@ -626,6 +621,23 @@ function RequestDetailsSheet({
             )}
           </ScrollView>
           <View style={styles.sheetFooter}>
+            {itemStatusKey === 'pending' && onEdit ? (
+              <Pressable
+                style={styles.sheetEditButton}
+                onPress={() => {
+                  const itemToEdit = item;
+                  onClose();
+                  if (onEdit) {
+                    setTimeout(() => {
+                      onEdit(itemToEdit);
+                    }, 50);
+                  }
+                }}
+              >
+                <Pencil size={15} color="#92400e" strokeWidth={2.4} />
+                <Text style={styles.sheetEditText}>Edit Request</Text>
+              </Pressable>
+            ) : null}
             <Pressable style={styles.sheetCloseButton} onPress={onClose}>
               <Text style={styles.sheetCloseText}>Close</Text>
             </Pressable>
@@ -1689,6 +1701,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.border,
     backgroundColor: colors.surface,
+    gap: spacing.sm,
   },
   sheetCloseButton: {
     minHeight: 42,
@@ -1964,5 +1977,37 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: fontWeights.bold,
     color: colors.text,
+  },
+  editButton: {
+    minHeight: 26,
+    borderRadius: radius.sm,
+    backgroundColor: '#fef3c7',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    paddingHorizontal: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  editText: {
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
+  },
+  sheetEditButton: {
+    minHeight: 44,
+    borderRadius: 22,
+    backgroundColor: '#fef3c7',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
+  },
+  sheetEditText: {
+    fontSize: 15,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
   },
 });

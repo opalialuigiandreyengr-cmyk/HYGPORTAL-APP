@@ -101,7 +101,7 @@ export function formatUnifiedRequestType(
     return uniqueTokens.join(' / ');
   }
 
-  if (item.request_type_code === 'overtime') return 'Overtime (OT)';
+  if (item.request_type_code === 'overtime') return 'OT';
   if (item.request_type_code === 'offset_earn') return 'Offset';
   if (item.request_type_code === 'use_offset') return 'Use Offset';
   return item.request_type_name || 'ESARF Request';

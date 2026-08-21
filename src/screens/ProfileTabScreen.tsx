@@ -3,6 +3,7 @@ import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, Sc
 import { StatusBar } from 'expo-status-bar';
 import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
 import { Picker } from '@react-native-picker/picker';
 import {
   Baby,
@@ -264,14 +265,16 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
       return;
     }
 
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      onToast?.({
-        tone: 'warning',
-        title: 'Permission needed',
-        message: 'Allow gallery access to choose a profile photo.',
-      });
-      return;
+    if (Platform.OS !== 'web') {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        onToast?.({
+          tone: 'warning',
+          title: 'Permission needed',
+          message: 'Allow gallery access to choose a profile photo.',
+        });
+        return;
+      }
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -1076,34 +1079,14 @@ function DatePickerModal({
     return null;
   }
 
-  if (Platform.OS !== 'ios') {
-    return <DateTimePicker value={value} mode="date" display="spinner" onChange={onChange} />;
-  }
-
   return (
-    <Modal transparent animationType="fade" visible={visible} onRequestClose={onCancel}>
-      <View style={styles.sheetBackdrop}>
-        <View style={styles.optionSheet}>
-          <View style={styles.sheetHeader}>
-            <Text style={styles.sheetTitle}>Birth Date</Text>
-            <Pressable style={styles.sheetClose} onPress={onCancel}>
-              <X size={18} color={colors.text} strokeWidth={2.6} />
-            </Pressable>
-          </View>
-          <View style={styles.iosPickerFrame}>
-            <DateTimePicker value={value} mode="date" display="spinner" onChange={onChange} style={styles.iosWheelPicker} />
-          </View>
-          <View style={styles.sheetActions}>
-            <Pressable style={styles.sheetCancel} onPress={onCancel}>
-              <Text style={styles.sheetCancelText}>Cancel</Text>
-            </Pressable>
-            <Pressable style={styles.sheetDone} onPress={onDone}>
-              <Text style={styles.sheetDoneText}>Done</Text>
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    </Modal>
+    <UniversalDateTimePicker
+      value={value}
+      mode="date"
+      display="default"
+      onChange={onChange}
+      onClose={onDone || onCancel}
+    />
   );
 }
 

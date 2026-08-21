@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
 import { BadgePercent, CalendarDays, Check, ChevronDown, Plus, ShoppingCart, X } from 'lucide-react-native';
 
 import { TopBar } from '../components/TopBar';
@@ -562,24 +563,14 @@ export function ApplyDiscountScreen({
       </ScrollView>
       </KeyboardAvoidingView>
 
-      {activePicker && Platform.OS === 'ios' ? (
-        <Modal transparent animationType="fade" visible onRequestClose={() => setActivePicker(false)}>
-          <View style={styles.modalBackdrop}>
-            <View style={styles.iosPickerPanel}>
-              <DateTimePicker value={tempPickerDate} mode="date" display="spinner" onChange={handleDateChange} />
-              <View style={styles.iosPickerActions}>
-                <Pressable style={styles.iosPickerCancel} onPress={() => setActivePicker(false)}>
-                  <Text style={styles.cancelText}>Cancel</Text>
-                </Pressable>
-                <Pressable style={styles.iosPickerDone} onPress={confirmIosDate}>
-                  <Text style={styles.doneText}>Done</Text>
-                </Pressable>
-              </View>
-            </View>
-          </View>
-        </Modal>
-      ) : activePicker ? (
-        <DateTimePicker value={dateStringToDate(transactionDate)} mode="date" display="default" onChange={handleDateChange} />
+      {activePicker ? (
+        <UniversalDateTimePicker
+          value={dateStringToDate(transactionDate)}
+          mode="date"
+          display="default"
+          onChange={handleDateChange}
+          onClose={() => setActivePicker(false)}
+        />
       ) : null}
 
       {activeProduct ? (

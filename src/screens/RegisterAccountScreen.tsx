@@ -2,6 +2,7 @@ import { StatusBar } from 'expo-status-bar';
 import { createElement, useState, type CSSProperties } from 'react';
 import { ActivityIndicator, Image, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
 import { CalendarDays, CheckCircle2, ChevronLeft, Eye, EyeOff, LockKeyhole, Mail, UserRound } from 'lucide-react-native';
 
 import { AppScreen, Card } from '../components/ui';
@@ -427,26 +428,14 @@ function DatePickerModal({
     return null;
   }
 
-  if (Platform.OS !== 'ios') {
-    return <DateTimePicker value={value} mode="date" display="default" onChange={onChange} />;
-  }
-
   return (
-    <Modal transparent animationType="fade" visible={visible} onRequestClose={onCancel}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.optionSheet}>
-          <DateTimePicker value={value} mode="date" display="spinner" onChange={onChange} style={styles.iosWheelPicker} />
-          <View style={styles.dateActions}>
-            <Pressable style={styles.dateCancel} onPress={onCancel}>
-              <Text style={styles.dateCancelText}>Cancel</Text>
-            </Pressable>
-            <Pressable style={styles.dateDone} onPress={onDone}>
-              <Text style={styles.dateDoneText}>Done</Text>
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    </Modal>
+    <UniversalDateTimePicker
+      value={value}
+      mode="date"
+      display="default"
+      onChange={onChange}
+      onClose={onDone || onCancel}
+    />
   );
 }
 
