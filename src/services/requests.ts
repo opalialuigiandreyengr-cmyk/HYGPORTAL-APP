@@ -114,10 +114,20 @@ export type UpdatePendingRequestParams = {
   reason?: string | null;
 };
 
+import { checkApproverActiveViewing } from './requestViewerLock';
+
 export async function updateMyPendingRequest(params: UpdatePendingRequestParams) {
   const targetId = params.requestId;
   if (!targetId) {
     throw new Error('Missing Request ID.');
+  }
+
+  // Active Viewing Lock Pre-check
+  const lockInfo = await checkApproverActiveViewing(targetId);
+  if (lockInfo.isLocked) {
+    throw new Error(
+      `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Editing is temporarily disabled while they are viewing it to prevent data conflicts. Please try again in a few moments.`,
+    );
   }
 
   let rpcSuccess = false;

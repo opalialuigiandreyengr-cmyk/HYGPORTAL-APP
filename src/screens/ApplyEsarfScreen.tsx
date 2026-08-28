@@ -35,6 +35,8 @@ import { supabase } from '../lib/supabase';
 import type { AssistantDraft } from '../services/assistant';
 import { loadMyFlexibleSchedule } from '../services/team';
 import { updateMyPendingRequest, type MyRequest } from '../services/requests';
+import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
+import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { parseEsarfEntries } from '../components/EsarfDetailsView';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { platformAlert } from '../utils/platformAlert';
@@ -154,6 +156,7 @@ export function ApplyEsarfScreen({
   notificationCount?: number;
   onNotifications?: () => void;
 }) {
+  const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const isOperationsDepartment = normalizeDepartmentName(profileDepartmentName).includes('operation');
   const operationsScopeLabel = isOperationsDepartment
     ? formatOperationsScopeLabel(profileDepartmentName, profileStoreName)
@@ -701,6 +704,15 @@ export function ApplyEsarfScreen({
         const targetReqId = editingRequest.request_id || (editingRequest as any).id;
         if (!targetReqId) {
           throw new Error('Request ID is missing.');
+        }
+
+        const lockInfo = await checkApproverActiveViewing(targetReqId);
+        if (lockInfo.isLocked) {
+          const msg = `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Editing is temporarily disabled while they are viewing it to prevent data conflicts.`;
+          setActiveLockInfo(lockInfo);
+          setSubmitStatus(msg);
+          setIsSubmitting(false);
+          return;
         }
 
         await updateMyPendingRequest({
@@ -1452,6 +1464,12 @@ export function ApplyEsarfScreen({
 
       </ScrollView>
       </KeyboardAvoidingView>
+      <ActiveReviewLockModal
+        visible={Boolean(activeLockInfo)}
+        approverName={activeLockInfo?.approverName}
+        approverPosition={activeLockInfo?.approverPosition}
+        onClose={() => setActiveLockInfo(null)}
+      />
     </View>
   );
 }

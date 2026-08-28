@@ -108,7 +108,7 @@ export function TopBar({
         <View style={[styles.downloadBanner, { paddingTop: insets.top + 7 }]}>
           <View style={styles.downloadBrand}>
             <View style={styles.downloadLogoFrame}>
-              <TopBarLogo />
+              <TopBarLogo style={styles.downloadLogo} />
             </View>
             <View style={styles.downloadTextBlock}>
               <Text style={styles.downloadTitle} numberOfLines={1}>HYG Portal System</Text>
@@ -346,9 +346,9 @@ function SidebarRow({
   );
 }
 
-const TopBarLogo = memo(function TopBarLogo() {
+const TopBarLogo = memo(function TopBarLogo({ style }: { style?: any }) {
   return (
-    <Image source={hygHorizontalLogo} style={styles.logo} resizeMode="contain" fadeDuration={0} />
+    <Image source={hygHorizontalLogo} style={[styles.logo, style]} resizeMode="contain" fadeDuration={0} />
   );
 });
 
@@ -376,12 +376,13 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   downloadLogoFrame: {
-    width: 32,
     height: 32,
-    borderRadius: 8,
-    backgroundColor: colors.brand.gold,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  downloadLogo: {
+    width: 56,
+    height: 30,
   },
   downloadTextBlock: {
     flex: 1,
@@ -487,8 +488,8 @@ const styles = StyleSheet.create({
     transform: [{ scale: 0.98 }],
   },
   logo: {
-    width: 156,
-    height: 42,
+    width: 140,
+    height: 36,
     maxWidth: '100%',
   },
   right: {

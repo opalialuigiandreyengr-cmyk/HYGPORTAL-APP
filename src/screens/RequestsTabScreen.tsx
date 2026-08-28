@@ -9,6 +9,8 @@ import { colors, fontWeights, spacing, radius } from '../theme';
 import { Avatar } from '../components/Avatar';
 import { TopBar } from '../components/TopBar';
 import { loadMyRequests, loadMyRequestsCached, type MyRequest } from '../services/requests';
+import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
+import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { isAutoApprovedBirthdayGrant } from '../services/birthdayLeave';
 import {
   EsarfCardView,
@@ -62,7 +64,21 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
   const [activeDatePicker, setActiveDatePicker] = useState<'from' | 'to' | null>(null);
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
   const [selectedRequest, setSelectedRequest] = useState<{ item: MyRequest; sequence: number } | null>(null);
+  const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
+
+  async function handleEditRequest(item: MyRequest) {
+    if (!onEditRequest) return;
+    const lockInfo = await checkApproverActiveViewing(item.request_id);
+    if (lockInfo.isLocked) {
+      if (selectedRequest) {
+        setSelectedRequest(null);
+      }
+      setActiveLockInfo(lockInfo);
+      return;
+    }
+    onEditRequest(item);
+  }
 
   async function refresh() {
     setIsLoading(true);
@@ -304,7 +320,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
             profile={profile}
             sequence={sequence}
             onView={() => setSelectedRequest({ item, sequence })}
-            onEdit={onEditRequest ? () => onEditRequest(item) : undefined}
+            onEdit={onEditRequest ? () => void handleEditRequest(item) : undefined}
           />
           );
         })}
@@ -349,7 +365,14 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
         request={selectedRequest}
         profile={profile}
         onClose={() => setSelectedRequest(null)}
-        onEdit={onEditRequest}
+        onEdit={onEditRequest ? (req) => void handleEditRequest(req) : undefined}
+      />
+
+      <ActiveReviewLockModal
+        visible={Boolean(activeLockInfo)}
+        approverName={activeLockInfo?.approverName}
+        approverPosition={activeLockInfo?.approverPosition}
+        onClose={() => setActiveLockInfo(null)}
       />
     </View>
   );

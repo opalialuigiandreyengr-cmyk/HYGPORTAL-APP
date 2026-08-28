@@ -33,6 +33,8 @@ import type { AssistantDraft } from '../services/assistant';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { calculateLeaveDays, dateStringToDate, formatDateInput } from '../utils/dateTime';
 import { updateMyPendingRequest, type MyRequest } from '../services/requests';
+import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
+import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { getDisabledLeaveTypes, getLeaveBreakdown } from '../utils/requestCalculations';
 
 type ValidationKey = 'dateFrom' | 'dateTo' | 'leaveType' | 'leaveCategory' | 'leaveDays' | 'split' | 'reason';
@@ -69,6 +71,7 @@ const RequestLeave = ({
   onToast,
   onSubmitted,
 }: RequestLeaveProps) => {
+  const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const [dateFrom, setDateFrom] = useState(
     editingRequest?.start_date || editingRequest?.date_from || initialDraft?.fields.startDate || today,
   );
@@ -282,6 +285,15 @@ const RequestLeave = ({
         const targetReqId = editingRequest.request_id || (editingRequest as any).id;
         if (!targetReqId) {
           throw new Error('Request ID is missing.');
+        }
+
+        const lockInfo = await checkApproverActiveViewing(targetReqId);
+        if (lockInfo.isLocked) {
+          const msg = `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Editing is temporarily disabled while they are viewing it to prevent data conflicts.`;
+          setActiveLockInfo(lockInfo);
+          setSubmitStatus(msg);
+          setIsSubmitting(false);
+          return;
         }
 
         await updateMyPendingRequest({
@@ -579,7 +591,12 @@ const RequestLeave = ({
         </Modal>
       ) : null}
 
-
+      <ActiveReviewLockModal
+        visible={Boolean(activeLockInfo)}
+        approverName={activeLockInfo?.approverName}
+        approverPosition={activeLockInfo?.approverPosition}
+        onClose={() => setActiveLockInfo(null)}
+      />
     </View>
   );
 };

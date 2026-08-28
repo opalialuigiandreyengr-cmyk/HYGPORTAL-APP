@@ -1,14 +1,37 @@
 import { useEffect, useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { AlertCircle, CalendarDays, Check, Clock3, Eye, FileText, Funnel, RefreshCcw, Search, Users, X } from 'lucide-react-native';
+import {
+  AlertCircle,
+  CalendarDays,
+  Check,
+  CheckCircle2,
+  Clock3,
+  Edit3,
+  Eye,
+  FileText,
+  Funnel,
+  RefreshCcw,
+  Save,
+  Search,
+  Users,
+  X,
+} from 'lucide-react-native';
 
 import { TopBar } from '../components/TopBar';
 import { Avatar } from '../components/Avatar';
 import type { AppToastMessage } from '../components/AppToast';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { platformAlert } from '../utils/platformAlert';
-import { decideApprovalStep, loadPendingApprovals, type PendingApproval } from '../services/approvals';
+import {
+  decideApprovalStep,
+  loadApprovedApprovals,
+  loadPendingApprovals,
+  updateApprovedRequest,
+  type ApprovedApproval,
+  type PendingApproval,
+} from '../services/approvals';
+import { startApproverViewingSession } from '../services/requestViewerLock';
 import { supabase } from '../lib/supabase';
 import {
   EsarfCardView,
@@ -55,22 +78,39 @@ export function ApprovalsScreen({
   autoOpenFirst,
   onClearTargetRequest,
 }: Props) {
+  const [mainTab, setMainTab] = useState<'pending' | 'approved'>('pending');
   const [items, setItems] = useState<PendingApproval[]>([]);
+  const [approvedItems, setApprovedItems] = useState<ApprovedApproval[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
   const [activeCategory, setActiveCategory] = useState<CategoryFilter>('all');
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
   const [selectedApproval, setSelectedApproval] = useState<{ item: PendingApproval; sequence: number } | null>(null);
+  const [selectedApproved, setSelectedApproved] = useState<{ item: ApprovedApproval; sequence: number } | null>(null);
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
 
   async function refresh() {
     setIsLoading(true);
-    setStatus('Loading approvals...');
+    setStatus(mainTab === 'pending' ? 'Loading approvals...' : 'Loading approved requests...');
     try {
-      const approvals = await loadPendingApprovals();
+      const approvals = await loadPendingApprovals().catch((err) => {
+        console.warn('Error loading pending approvals:', err);
+        return [] as PendingApproval[];
+      });
+      const approvedList = await loadApprovedApprovals(profile?.employeeNo, profile?.fullName).catch((err) => {
+        console.warn('Error loading approved approvals:', err);
+        return [] as ApprovedApproval[];
+      });
+
       setItems(approvals);
-      setStatus(approvals.length ? '' : 'No pending approvals.');
+      setApprovedItems(approvedList);
+
+      if (mainTab === 'pending') {
+        setStatus(approvals.length ? '' : 'No pending approvals.');
+      } else {
+        setStatus(approvedList.length ? '' : 'No approved requests found.');
+      }
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Unable to load approvals.');
     } finally {
@@ -78,12 +118,13 @@ export function ApprovalsScreen({
     }
   }
 
+
   useEffect(() => {
     refresh();
   }, []);
 
   useEffect(() => {
-    if (items.length > 0 && (targetRequestId || autoOpenFirst)) {
+    if (items.length > 0 && (targetRequestId || autoOpenFirst) && mainTab === 'pending') {
       if (targetRequestId) {
         const matchIdx = items.findIndex(
           (i) => i.request_id === targetRequestId || i.step_id === targetRequestId,
@@ -92,22 +133,36 @@ export function ApprovalsScreen({
           setSelectedApproval({ item: items[matchIdx], sequence: matchIdx + 1 });
           onClearTargetRequest?.();
           return;
-        } else {
-          onToast?.({
-            tone: 'warning',
-            title: 'Request Processed',
-            message: 'This approval request has already been processed or is no longer pending.',
-          });
-          onClearTargetRequest?.();
-          return;
         }
       }
       if (autoOpenFirst) {
         setSelectedApproval({ item: items[0], sequence: 1 });
         onClearTargetRequest?.();
+        return;
       }
     }
-  }, [items, targetRequestId, autoOpenFirst, onClearTargetRequest]);
+
+    if (approvedItems.length > 0 && targetRequestId) {
+      const approvedIdx = approvedItems.findIndex(
+        (i) => i.request_id === targetRequestId || i.step_id === targetRequestId,
+      );
+      if (approvedIdx >= 0) {
+        setMainTab('approved');
+        setSelectedApproved({ item: approvedItems[approvedIdx], sequence: approvedIdx + 1 });
+        onClearTargetRequest?.();
+        return;
+      }
+    }
+
+    if (targetRequestId && items.length > 0 && approvedItems.length > 0) {
+      onToast?.({
+        tone: 'warning',
+        title: 'Request Processed',
+        message: 'This approval request has already been processed or is no longer available.',
+      });
+      onClearTargetRequest?.();
+    }
+  }, [items, approvedItems, targetRequestId, autoOpenFirst, mainTab, onClearTargetRequest]);
 
   const categoryCounts = useMemo(() => {
     return items.reduce(
@@ -121,6 +176,21 @@ export function ApprovalsScreen({
       { all: 0, esarf: 0, leave: 0 },
     );
   }, [items]);
+
+  const approvedCategoryCounts = useMemo(() => {
+    return approvedItems.reduce(
+      (totals, item) => {
+        if (isVisibleApproval(item)) {
+          totals.all += 1;
+          totals[approvalCategory(item)] += 1;
+        }
+        return totals;
+      },
+      { all: 0, esarf: 0, leave: 0 },
+    );
+  }, [approvedItems]);
+
+  const activeCategoryCounts = mainTab === 'pending' ? categoryCounts : approvedCategoryCounts;
 
   const filteredItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -151,16 +221,49 @@ export function ApprovalsScreen({
         return timeB - timeA;
       });
   }, [activeCategory, items, query]);
-  const pageCount = Math.max(1, Math.ceil(filteredItems.length / pageSize));
+
+  const filteredApprovedItems = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+
+    return approvedItems
+      .filter((item) => {
+        if (!isVisibleApproval(item)) return false;
+        if (activeCategory !== 'all' && approvalCategory(item) !== activeCategory) return false;
+        if (!normalizedQuery) return true;
+
+        const haystack = [
+          item.request_id,
+          formatApprovalType(item),
+          item.request_type_name,
+          item.request_type_code,
+          item.requester_name,
+          item.requester_employee_no,
+          item.reason,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(normalizedQuery);
+      })
+      .sort((a, b) => {
+        const timeA = a.approved_at || a.submitted_at ? new Date(a.approved_at || a.submitted_at).getTime() : 0;
+        const timeB = b.approved_at || b.submitted_at ? new Date(b.approved_at || b.submitted_at).getTime() : 0;
+        return timeB - timeA;
+      });
+  }, [activeCategory, approvedItems, query]);
+
+  const currentFilteredItems = mainTab === 'pending' ? filteredItems : filteredApprovedItems;
+  const pageCount = Math.max(1, Math.ceil(currentFilteredItems.length / pageSize));
   const currentPage = Math.min(page, pageCount);
+
   const paginatedItems = useMemo(() => {
     const start = (currentPage - 1) * pageSize;
-    return filteredItems.slice(start, start + pageSize);
-  }, [currentPage, filteredItems]);
+    return currentFilteredItems.slice(start, start + pageSize);
+  }, [currentPage, currentFilteredItems]);
 
   useEffect(() => {
     setPage(1);
-  }, [activeCategory, query]);
+  }, [activeCategory, query, mainTab]);
 
   async function approve(item: PendingApproval, rejectedIndices: number[] = []) {
     setStatus('Approving request...');
@@ -241,7 +344,41 @@ export function ApprovalsScreen({
     <View style={styles.root}>
       <StatusBar style="dark" />
       <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} />
+      
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        {/* Main Tab Switcher: Pending vs Approved */}
+        <View style={styles.mainTabContainer}>
+          <Pressable
+            style={[styles.mainTabButton, mainTab === 'pending' ? styles.mainTabButtonPendingActive : null]}
+            onPress={() => setMainTab('pending')}
+          >
+            <Clock3 size={15} color={mainTab === 'pending' ? colors.primary : colors.muted} strokeWidth={2.4} />
+            <Text style={[styles.mainTabText, mainTab === 'pending' ? styles.mainTabTextPendingActive : null]}>
+              Pending Approvals
+            </Text>
+            <View style={[styles.mainTabBadge, mainTab === 'pending' ? styles.mainTabBadgePendingActive : null]}>
+              <Text style={[styles.mainTabBadgeText, mainTab === 'pending' ? styles.mainTabBadgeTextPendingActive : null]}>
+                {items.length}
+              </Text>
+            </View>
+          </Pressable>
+
+          <Pressable
+            style={[styles.mainTabButton, mainTab === 'approved' ? styles.mainTabButtonApprovedActive : null]}
+            onPress={() => setMainTab('approved')}
+          >
+            <CheckCircle2 size={15} color={mainTab === 'approved' ? '#15803d' : colors.muted} strokeWidth={2.4} />
+            <Text style={[styles.mainTabText, mainTab === 'approved' ? styles.mainTabTextApprovedActive : null]}>
+              Approved Requests
+            </Text>
+            <View style={[styles.mainTabBadge, mainTab === 'approved' ? styles.mainTabBadgeApprovedActive : null]}>
+              <Text style={[styles.mainTabBadgeText, mainTab === 'approved' ? styles.mainTabBadgeTextApprovedActive : null]}>
+                {approvedItems.length}
+              </Text>
+            </View>
+          </Pressable>
+        </View>
+
         <View style={styles.filterPanel}>
           <View style={styles.searchRow}>
             <View style={styles.searchBox}>
@@ -249,7 +386,7 @@ export function ApprovalsScreen({
               <TextInput
                 value={query}
                 onChangeText={setQuery}
-                placeholder="Search approvals..."
+                placeholder={mainTab === 'pending' ? 'Search pending approvals...' : 'Search approved requests...'}
                 placeholderTextColor={colors.muted}
                 style={styles.searchInput}
                 returnKeyType="search"
@@ -280,7 +417,7 @@ export function ApprovalsScreen({
                     </Text>
                     <View style={[styles.categoryCountBadge, active ? styles.categoryCountBadgeActive : null]}>
                       <Text style={[styles.categoryCountText, active ? styles.categoryCountTextActive : null]}>
-                        {categoryCounts[tab.key]}
+                        {activeCategoryCounts[tab.key]}
                       </Text>
                     </View>
                   </View>
@@ -292,20 +429,33 @@ export function ApprovalsScreen({
 
         {status ? <Text style={styles.status}>{status}</Text> : null}
 
-        {paginatedItems.map((item, index) => {
-          const sequence = (currentPage - 1) * pageSize + index + 1;
-          return (
-            <ApprovalCard
-              key={item.step_id}
-              item={item}
-              profile={profile}
-              sequence={sequence}
-              onView={() => setSelectedApproval({ item, sequence })}
-            />
-          );
-        })}
+        {mainTab === 'pending'
+          ? (paginatedItems as PendingApproval[]).map((item, index) => {
+              const sequence = (currentPage - 1) * pageSize + index + 1;
+              return (
+                <ApprovalCard
+                  key={item.step_id}
+                  item={item}
+                  profile={profile}
+                  sequence={sequence}
+                  onView={() => setSelectedApproval({ item, sequence })}
+                />
+              );
+            })
+          : (paginatedItems as ApprovedApproval[]).map((item, index) => {
+              const sequence = (currentPage - 1) * pageSize + index + 1;
+              return (
+                <ApprovedCard
+                  key={item.step_id || item.request_id}
+                  item={item}
+                  profile={profile}
+                  sequence={sequence}
+                  onView={() => setSelectedApproved({ item, sequence })}
+                />
+              );
+            })}
 
-        {filteredItems.length > pageSize ? (
+        {currentFilteredItems.length > pageSize ? (
           <View style={styles.paginationBar}>
             <Pressable
               disabled={currentPage <= 1}
@@ -317,7 +467,7 @@ export function ApprovalsScreen({
             <View style={styles.paginationCenter}>
               <Text style={styles.paginationText}>Page {currentPage} of {pageCount}</Text>
               <Text style={styles.paginationMeta}>
-                {((currentPage - 1) * pageSize) + 1}-{Math.min(currentPage * pageSize, filteredItems.length)} of {filteredItems.length}
+                {((currentPage - 1) * pageSize) + 1}-{Math.min(currentPage * pageSize, currentFilteredItems.length)} of {currentFilteredItems.length}
               </Text>
             </View>
             <Pressable
@@ -331,12 +481,20 @@ export function ApprovalsScreen({
         ) : null}
       </ScrollView>
 
+      {/* Pending Approval Modal */}
       <ApprovalDetailsSheet
         approval={selectedApproval}
         profile={profile}
         onClose={() => setSelectedApproval(null)}
         onApprove={confirmApprove}
         onPerformReject={performReject}
+      />
+
+      {/* Approved Request View Modal */}
+      <ApprovedDetailsSheet
+        approval={selectedApproved}
+        profile={profile}
+        onClose={() => setSelectedApproved(null)}
       />
     </View>
   );
@@ -410,6 +568,74 @@ function ApprovalCard({
   );
 }
 
+function ApprovedCard({
+  item,
+  profile,
+  sequence,
+  onView,
+}: {
+  item: ApprovedApproval;
+  profile: EmployeeProfileSummary | null;
+  sequence: number;
+  onView: () => void;
+}) {
+  const displayName = item.requester_name || formatEmployeeDisplayName(profile);
+  const department = profile?.departmentName || profile?.storeName || 'Department';
+  const requestDate = item.request_type_code === 'leave' ? item.start_date : item.date_from;
+
+  return (
+    <View style={styles.cardOuter}>
+      <View style={[styles.cardAccent, { backgroundColor: '#16a34a' }]} />
+      <View style={styles.card}>
+        <View style={styles.avatar}>
+          <Avatar name={displayName} photoUrl={item.requester_photo_url ?? null} size={35} textSize={13} />
+        </View>
+
+        <View style={styles.cardContent}>
+          <View style={styles.cardTopRow}>
+            <View style={styles.cardTitleBlock}>
+              <Text style={styles.cardCode} numberOfLines={1}>
+                {formatApprovalCode(item, sequence)}
+              </Text>
+              <Text style={styles.cardName} numberOfLines={1}>
+                {displayName}
+              </Text>
+              <Text style={styles.cardDept}>{department}</Text>
+            </View>
+            <View style={styles.cardMeta}>
+              <Text style={[styles.statusPill, styles.statusApproved]} numberOfLines={1}>
+                APPROVED
+              </Text>
+              <View style={styles.metaLine}>
+                <CalendarDays size={14} color={colors.muted} strokeWidth={2.2} />
+                <Text style={styles.metaText} numberOfLines={1}>
+                  {formatCompactDate(requestDate)}
+                </Text>
+              </View>
+              <View style={styles.metaLine}>
+                <Clock3 size={14} color={colors.muted} strokeWidth={2.2} />
+                <Text style={styles.metaText} numberOfLines={1}>
+                  {formatCompactTime(item.approved_at || item.submitted_at || item.time_from)}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.cardBottomRow}>
+            <View style={styles.typePill}>
+              <Text style={styles.typePillText}>{formatApprovalType(item)}</Text>
+            </View>
+            <Pressable style={styles.viewApprovedButton} onPress={onView}>
+              <Eye size={15} color="#15803d" strokeWidth={2.3} />
+              <Text style={styles.viewApprovedText}>View</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 function ApprovalDetailsSheet({
   approval,
   profile,
@@ -453,6 +679,17 @@ function ApprovalDetailsSheet({
     setRejectError('');
     setIsSubmittingReject(false);
   }, [approval]);
+
+  useEffect(() => {
+    if (item && item.request_id) {
+      const approverName = profile?.fullName || 'Manager / Approver';
+      const approverPosition = profile?.positionName || profile?.departmentName || 'Approver';
+      const stopSession = startApproverViewingSession(item.request_id, approverName, approverPosition);
+      return () => {
+        stopSession();
+      };
+    }
+  }, [item, profile]);
 
   const effectiveRejectedIndices = useMemo(() => {
     const unselected = esarfEntries
@@ -740,6 +977,148 @@ function ApprovalDetailsSheet({
   );
 }
 
+function ApprovedDetailsSheet({
+  approval,
+  profile,
+  onClose,
+}: {
+  approval: { item: ApprovedApproval; sequence: number } | null;
+  profile: EmployeeProfileSummary | null;
+  onClose: () => void;
+}) {
+  const item = approval?.item ?? null;
+  const sequence = approval?.sequence ?? 0;
+  const isLeave = item?.request_type_code === 'leave';
+
+  const esarfEntries = useMemo(() => {
+    return item && !isLeave ? parseEsarfEntries(item) : [];
+  }, [item, isLeave]);
+
+  if (!approval || !item) return null;
+
+  const displayName = item.requester_name || formatEmployeeDisplayName(profile);
+  const department = profile?.departmentName || profile?.storeName || 'Department';
+
+  return (
+    <Modal transparent animationType="slide" visible onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        style={styles.sheetBackdrop}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}
+      >
+        <Pressable style={styles.sheetDismissArea} onPress={onClose} />
+        <View style={styles.detailsSheet}>
+          <ScrollView contentContainerStyle={styles.sheetScroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <View style={styles.requestSummaryHeader}>
+              <View style={styles.requestSummaryText}>
+                <Text style={styles.sheetTitle}>{formatApprovalType(item)}</Text>
+                <View style={styles.sheetCodeRow}>
+                  <Text style={styles.sheetCode}>{formatApprovalCode(item, sequence)}</Text>
+                  <Text style={[styles.sheetStatusPill, styles.statusApproved]}>APPROVED</Text>
+                </View>
+              </View>
+              <Pressable style={styles.sheetIconClose} onPress={onClose}>
+                <X size={18} color={colors.text} strokeWidth={2.4} />
+              </Pressable>
+            </View>
+
+            <View style={styles.sheetHeader}>
+              <View style={styles.sheetProfileRow}>
+                <Avatar name={displayName} photoUrl={item.requester_photo_url ?? null} size={34} textSize={13} />
+                <View style={styles.sheetProfileText}>
+                  <Text style={styles.sheetName} numberOfLines={1}>{displayName}</Text>
+                  <Text style={styles.sheetDept} numberOfLines={1}>{department}</Text>
+                </View>
+              </View>
+              <View style={styles.submittedBlock}>
+                <Text style={styles.submittedLabel}>Approved on</Text>
+                <Text style={styles.submittedDate}>{formatSheetDate(item.approved_at || item.submitted_at)}</Text>
+                <Text style={styles.submittedTime}>{formatCompactTime(item.approved_at || item.submitted_at)}</Text>
+              </View>
+            </View>
+
+            {isLeave ? (
+              <>
+                <View style={styles.sectionTitleRow}>
+                  <FileText size={15} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.sectionTitle}>Request Information</Text>
+                </View>
+                <View style={styles.detailsList}>
+                  <DetailRow label="Transaction Type" value={formatApprovalType(item)} />
+                  <DetailRow label="Leave Type" value={item.leave_type || 'N/A'} />
+                  <DetailRow label="Leave Category" value={item.leave_category || 'N/A'} />
+                  <DetailRow label="Total Days" value={`${item.total_days ?? 0}d`} />
+                  <DetailRow label="Paid / Unpaid" value={`${item.paid_days ?? 0}d / ${item.unpaid_days ?? 0}d`} />
+                </View>
+              </>
+            ) : (
+              <EsarfRequestInfoPanel
+                timeSchedule={item.time_schedule}
+                dayOff={item.day_off}
+                payrollClass={item.payroll_class}
+              />
+            )}
+
+            {isLeave ? (
+              <>
+                <View style={styles.rangePanel}>
+                  <View style={styles.panelTitleRow}>
+                    <CalendarDays size={15} color={colors.muted} strokeWidth={2.2} />
+                    <Text style={styles.panelTitle}>Date Range</Text>
+                  </View>
+                  <View style={styles.rangeGrid}>
+                    <DetailItem label="Date From" value={formatSheetDate(item.start_date)} />
+                    <DetailItem label="Date To" value={formatSheetDate(item.end_date)} />
+                    <DetailItem label="Total Days" value={`${item.total_days ?? 0}d`} />
+                  </View>
+                </View>
+
+                <View style={styles.reasonBlock}>
+                  <View style={styles.panelTitleRow}>
+                    <FileText size={15} color={colors.muted} strokeWidth={2.2} />
+                    <Text style={styles.panelTitle}>Reason / Details</Text>
+                  </View>
+                  <Text style={styles.sheetReasonText}>{item.reason || 'No reason provided.'}</Text>
+                </View>
+              </>
+            ) : (
+              <View style={{ marginTop: 0 }}>
+                {esarfEntries.map((entry) => (
+                  <EsarfCardView
+                    key={entry.index}
+                    entry={entry}
+                    hideCheckbox
+                    isSelected={!entry.isRejected}
+                    isRejected={entry.isRejected}
+                    hideTimeline
+                  />
+                ))}
+              </View>
+            )}
+
+            {item.remarks ? (
+              <View style={styles.reasonBlock}>
+                <View style={styles.panelTitleRow}>
+                  <CheckCircle2 size={15} color="#16a34a" strokeWidth={2.2} />
+                  <Text style={styles.panelTitle}>Approver Remarks</Text>
+                </View>
+                <Text style={styles.sheetReasonText}>{item.remarks}</Text>
+              </View>
+            ) : null}
+          </ScrollView>
+
+          {/* Action Footer */}
+          <View style={styles.approvedSheetFooter}>
+            <Pressable style={styles.closeSheetBtn} onPress={onClose}>
+              <Text style={styles.closeSheetText}>Close</Text>
+            </Pressable>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.detailRow}>
@@ -803,24 +1182,24 @@ function timelineDotStyle(tone: 'warning' | 'success' | 'muted') {
   return { borderColor: colors.border, backgroundColor: colors.border };
 }
 
-function isVisibleApproval(item: PendingApproval) {
+function isVisibleApproval(item: PendingApproval | ApprovedApproval) {
   return approvalCategory(item) === 'esarf' || approvalCategory(item) === 'leave';
 }
 
-function approvalCategory(item: PendingApproval): CategoryFilter {
+function approvalCategory(item: PendingApproval | ApprovedApproval): CategoryFilter {
   if (item.request_type_code === 'leave') return 'leave';
   return 'esarf';
 }
 
-function formatApprovalCode(item: PendingApproval, sequence: number) {
+function formatApprovalCode(item: PendingApproval | ApprovedApproval, sequence: number) {
   return formatUnifiedRequestCode(item, sequence);
 }
 
-function formatApprovalType(item: PendingApproval) {
+function formatApprovalType(item: PendingApproval | ApprovedApproval) {
   return formatUnifiedRequestType(item);
 }
 
-function approvalTimeline(item: PendingApproval) {
+function approvalTimeline(item: PendingApproval | ApprovedApproval) {
   const isLeave = item.request_type_code === 'leave';
   const fallback = isLeave ? [1] : [1, 2];
   const summary = (item.approval_summary ?? [])
@@ -924,6 +1303,70 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingTop: spacing.sm,
     paddingBottom: 90,
+  },
+  mainTabContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: spacing.sm,
+  },
+  mainTabButton: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+  },
+  mainTabButtonPendingActive: {
+    borderColor: colors.primary,
+    backgroundColor: '#eff6ff',
+  },
+  mainTabButtonApprovedActive: {
+    borderColor: '#16a34a',
+    backgroundColor: '#f0fdf4',
+  },
+  mainTabText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: colors.muted,
+  },
+  mainTabTextPendingActive: {
+    color: colors.primary,
+  },
+  mainTabTextApprovedActive: {
+    color: '#15803d',
+  },
+  mainTabBadge: {
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: colors.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  mainTabBadgePendingActive: {
+    backgroundColor: colors.primary,
+  },
+  mainTabBadgeApprovedActive: {
+    backgroundColor: '#16a34a',
+  },
+  mainTabBadgeText: {
+    fontSize: 11,
+    fontWeight: fontWeights.heavy,
+    color: colors.muted,
+  },
+  mainTabBadgeTextPendingActive: {
+    color: colors.surface,
+  },
+  mainTabBadgeTextApprovedActive: {
+    color: colors.surface,
   },
   filterPanel: {
     backgroundColor: colors.surface,
@@ -1199,6 +1642,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     color: '#92400e',
   },
+  statusApproved: {
+    backgroundColor: '#dcfce7',
+    borderColor: '#86efac',
+    borderWidth: 1,
+    color: '#15803d',
+  },
   metaLine: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1251,21 +1700,21 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.bold,
     color: colors.text,
   },
-  rejectButton: {
+  viewApprovedButton: {
     minHeight: 26,
     borderRadius: radius.sm,
-    backgroundColor: '#fef2f2',
+    backgroundColor: '#f0fdf4',
     borderWidth: 1,
-    borderColor: '#fecaca',
+    borderColor: '#86efac',
     paddingHorizontal: spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
   },
-  rejectText: {
-    fontSize: 15,
+  viewApprovedText: {
+    fontSize: 14,
     fontWeight: fontWeights.bold,
-    color: '#b91c1c',
+    color: '#15803d',
   },
   sheetBackdrop: {
     flex: 1,
@@ -1573,136 +2022,6 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.medium,
     color: colors.muted,
   },
-  sheetFooter: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.xs,
-    paddingBottom: spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  approveActionButton: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: radius.md,
-    backgroundColor: '#16a34a',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 6,
-  },
-  approveActionText: {
-    fontSize: 14,
-    fontWeight: fontWeights.bold,
-    color: colors.surface,
-  },
-  rejectActionButton: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: radius.md,
-    backgroundColor: '#fef2f2',
-    borderWidth: 1,
-    borderColor: '#fecaca',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 6,
-  },
-  rejectSheet: {
-    maxHeight: '90%',
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  rejectSheetContent: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.md,
-  },
-  rejectHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: spacing.sm,
-    marginBottom: spacing.md,
-  },
-  rejectHelper: {
-    marginTop: spacing.xs,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: fontWeights.medium,
-    color: colors.muted,
-  },
-  rejectLabel: {
-    fontSize: 13,
-    lineHeight: 17,
-    fontWeight: fontWeights.bold,
-    color: colors.text,
-    marginBottom: spacing.xs,
-  },
-  rejectInput: {
-    minHeight: 104,
-    maxHeight: 150,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.background,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.sm,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: fontWeights.medium,
-    color: colors.text,
-  },
-  rejectError: {
-    marginTop: spacing.xs,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: fontWeights.medium,
-    color: '#b91c1c',
-  },
-  rejectFooter: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    marginTop: spacing.md,
-  },
-  cancelActionButton: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cancelActionText: {
-    fontSize: 14,
-    fontWeight: fontWeights.bold,
-    color: colors.text,
-  },
-  rejectSubmitButton: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: radius.md,
-    backgroundColor: '#b91c1c',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 6,
-  },
-  rejectSubmitText: {
-    fontSize: 14,
-    fontWeight: fontWeights.bold,
-    color: colors.surface,
-  },
-  actionButtonDisabled: {
-    opacity: 0.55,
-  },
   actionPillsRow: {
     marginHorizontal: spacing.md,
     flexDirection: 'row',
@@ -1726,22 +2045,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: fontWeights.bold,
     color: '#15803d',
-  },
-  rejectAllBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#fca5a5',
-    backgroundColor: '#fef2f2',
-  },
-  rejectAllBtnText: {
-    fontSize: 13,
-    fontWeight: fontWeights.bold,
-    color: '#dc2626',
   },
   approverFooter: {
     flexDirection: 'row',
@@ -1784,6 +2087,101 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: fontWeights.heavy,
     color: '#ffffff',
+  },
+  approvedSheetFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: spacing.md,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 24 : 16,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
+  },
+  closeSheetBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeSheetText: {
+    fontSize: 15,
+    fontWeight: fontWeights.bold,
+    color: '#475569',
+  },
+  editApprovedBtn: {
+    flex: 1.2,
+    height: 46,
+    borderRadius: 10,
+    backgroundColor: '#10b981',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  editApprovedText: {
+    fontSize: 15,
+    fontWeight: fontWeights.heavy,
+    color: '#ffffff',
+  },
+  cancelActionBtn: {
+    flex: 1,
+    height: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelActionText: {
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+    color: '#475569',
+  },
+  saveApprovedBtn: {
+    flex: 1.2,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: '#16a34a',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  saveApprovedText: {
+    fontSize: 14,
+    fontWeight: fontWeights.heavy,
+    color: '#ffffff',
+  },
+  editInputGroup: {
+    marginBottom: 10,
+  },
+  editLabel: {
+    fontSize: 12,
+    fontWeight: fontWeights.bold,
+    color: colors.text,
+    marginBottom: 4,
+  },
+  editInput: {
+    minHeight: 38,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    paddingHorizontal: 10,
+    fontSize: 14,
+    color: colors.text,
+  },
+  editRow: {
+    flexDirection: 'row',
+    gap: 8,
   },
   inlineRejectPanel: {
     paddingHorizontal: spacing.md,
