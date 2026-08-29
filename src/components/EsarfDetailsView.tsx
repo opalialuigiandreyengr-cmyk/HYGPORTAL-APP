@@ -184,6 +184,9 @@ export function parseEsarfEntries(item: {
     const m = parts[1];
     const ampm = h >= 12 ? 'PM' : 'AM';
     h = h % 12 || 12;
+    if (parts.length >= 3 && parts[2]) {
+      return `${String(h).padStart(2, '0')}:${m}:${parts[2]} ${ampm}`;
+    }
     return `${String(h).padStart(2, '0')}:${m} ${ampm}`;
   };
 

@@ -1,5 +1,6 @@
 import React, { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
+  BackHandler,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -17,6 +18,7 @@ import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
 import { DateRangePickerModal } from '../components/DateRangePickerModal';
 import { ScrollableTimePickerModal } from '../components/ScrollableTimePickerModal';
 import {
+  AlertTriangle,
   CalendarDays,
   Check,
   ChevronDown,
@@ -24,6 +26,7 @@ import {
   ListChecks,
   Plus,
   Repeat,
+  RotateCcw,
   Trash2,
   X,
 } from 'lucide-react-native';
@@ -40,6 +43,7 @@ import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { parseEsarfEntries } from '../components/EsarfDetailsView';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { platformAlert } from '../utils/platformAlert';
+import { withTimeout } from '../utils/withTimeout';
 import type { RequestTypeCode } from '../types/domain';
 import { calculateRequestHours, parse12HourToken, parseDayOffList } from '../utils/requestCalculations';
 import { dateStringToDate, formatDateInput, formatTimeDisplay, formatTimeInput, timeStringToDate } from '../utils/dateTime';
@@ -238,6 +242,7 @@ export function ApplyEsarfScreen({
   const [showSubmissionNotes, setShowSubmissionNotes] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatus, setSubmitStatus] = useState('');
+  const [submissionErrorModal, setSubmissionErrorModal] = useState<string | null>(null);
   const [validationErrors, setValidationErrors] = useState<Partial<Record<string, string>>>({});
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
   const scrollRef = useRef<ScrollView | null>(null);
@@ -587,17 +592,34 @@ export function ApplyEsarfScreen({
   function confirmDiscard(action: () => void) {
     closeTransientPanels();
 
-    if (isSubmitting) return;
-    if (!hasUnsavedChanges) {
-      action();
-      return;
-    }
-
-    platformAlert('Discard request?', 'Your ESARF draft has unsaved changes.', [
-      { text: 'Keep editing', style: 'cancel' },
-      { text: 'Discard', style: 'destructive', onPress: action },
-    ]);
+    platformAlert(
+      isSubmitting ? 'Cancel submission?' : 'Discard ESARF request?',
+      isSubmitting
+        ? 'Submission is currently in progress. Are you sure you want to cancel?'
+        : 'Are you sure you want to cancel and leave this page? Any unsaved changes will be lost.',
+      [
+        { text: 'Keep editing', style: 'cancel' },
+        {
+          text: isSubmitting ? 'Cancel Request' : 'Discard',
+          style: 'destructive',
+          onPress: () => {
+            setIsSubmitting(false);
+            action();
+          },
+        },
+      ],
+    );
   }
+
+  useEffect(() => {
+    const onBackPress = () => {
+      confirmDiscard(onBack);
+      return true;
+    };
+
+    const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => subscription.remove();
+  }, [onBack, isSubmitting]);
 
   function validateForm() {
     const errors: Partial<Record<string, string>> = {};
@@ -624,30 +646,37 @@ export function ApplyEsarfScreen({
       if (!entry.timeFrom) errors[`entry_${i}_timeFrom`] = `Request #${num}: Time From is required.`;
       if (!entry.timeTo) errors[`entry_${i}_timeTo`] = `Request #${num}: Time To is required.`;
       const hours = getEntryTotalHours(entry);
-      if (transKeys.includes('use_offset') && hours > offsetBalance) {
-        errors[`entry_${i}_totalHours`] = `Request #${num}: Use Offset cannot exceed available offset balance.`;
+      if (transKeys.includes('use_offset')) {
+        if ((offsetBalance ?? 0) <= 0) {
+          errors[`entry_${i}_offsetBalance`] = `Request #${num}: You have no available offset balance (0.00 hrs).`;
+        } else if (entry.timeFrom && entry.timeTo && hours > (offsetBalance ?? 0)) {
+          errors[`entry_${i}_offsetBalance`] = `Request #${num}: Selected duration (${hours.toFixed(2)} hrs) exceeds available offset balance (${(offsetBalance ?? 0).toFixed(2)} hrs).`;
+        } else if (entry.timeFrom && entry.timeTo && hours <= 0) {
+          errors[`entry_${i}_offsetBalance`] = `Request #${num}: Time From and Time To must result in a valid duration.`;
+        }
       }
       if (!entry.reason.trim()) errors[`entry_${i}_reason`] = `Request #${num}: Reason is required.`;
     });
 
+    const totalUseOffsetHours = entries
+      .filter((e) => parseEntryTransactions(e.transaction).includes('use_offset'))
+      .reduce((sum, e) => sum + getEntryTotalHours(e), 0);
+    if (totalUseOffsetHours > (offsetBalance ?? 0)) {
+      errors.total_use_offset = `Total Use Offset duration (${totalUseOffsetHours.toFixed(2)} hrs) exceeds your available offset balance (${(offsetBalance ?? 0).toFixed(2)} hrs).`;
+    }
+
     return errors;
   }
 
-  async function submit() {
-    if (isSubmitting) return;
-
-    const nextErrors = validateForm();
-    setValidationErrors(nextErrors);
-
-    const message = Object.values(nextErrors).find((msg): msg is string => Boolean(msg));
-    if (message) {
-      setSubmitStatus(message);
-      onToast?.({ tone: 'error', title: 'ESARF error', message });
-      return;
-    }
-
+  async function executeSubmit() {
     setIsSubmitting(true);
     setSubmitStatus(`Submitting ${entries.length} request(s)...`);
+
+    const warningTimer = setTimeout(() => {
+      setSubmitStatus((current) =>
+        current ? `${current} (connection taking longer than expected... please wait)` : 'Submitting... (connection taking longer than expected...)',
+      );
+    }, 12000);
 
     try {
       const allTransKeys = entries.flatMap((e) => parseEntryTransactions(e.transaction));
@@ -706,7 +735,11 @@ export function ApplyEsarfScreen({
           throw new Error('Request ID is missing.');
         }
 
-        const lockInfo = await checkApproverActiveViewing(targetReqId);
+        const lockInfo = await withTimeout(
+          checkApproverActiveViewing(targetReqId),
+          10000,
+          'Checking approver status timed out. Please try again.',
+        );
         if (lockInfo.isLocked) {
           const msg = `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Editing is temporarily disabled while they are viewing it to prevent data conflicts.`;
           setActiveLockInfo(lockInfo);
@@ -715,19 +748,23 @@ export function ApplyEsarfScreen({
           return;
         }
 
-        await updateMyPendingRequest({
-          requestId: targetReqId,
-          dateFrom: overallDateFrom,
-          dateTo: overallDateTo,
-          timeFrom: overallTimeFrom,
-          timeTo: overallTimeTo,
-          totalHours: totalHoursSum,
-          timeSchedule: schedule,
-          dayOff: dayOff,
-          payrollClass: payrollClass,
-          transactionType: combinedTransactionType,
-          reason: combinedReason,
-        });
+        await withTimeout(
+          updateMyPendingRequest({
+            requestId: targetReqId,
+            dateFrom: overallDateFrom,
+            dateTo: overallDateTo,
+            timeFrom: overallTimeFrom,
+            timeTo: overallTimeTo,
+            totalHours: totalHoursSum,
+            timeSchedule: schedule,
+            dayOff: dayOff,
+            payrollClass: payrollClass,
+            transactionType: combinedTransactionType,
+            reason: combinedReason,
+          }),
+          25000,
+          'Updating ESARF request timed out. Please check your network connection.',
+        );
 
         setSubmitStatus(`Updated ESARF request with ${entries.length} entry(ies).`);
         onToast?.({
@@ -739,22 +776,28 @@ export function ApplyEsarfScreen({
         return;
       }
 
-      const { error } = await supabase.rpc('submit_time_request', {
-        p_request_type_code: primaryRequestType,
-        p_date_from: overallDateFrom,
-        p_date_to: overallDateTo,
-        p_time_from: overallTimeFrom,
-        p_time_to: overallTimeTo,
-        p_total_hours: totalHoursSum,
-        p_reason: combinedReason,
-        p_time_schedule: schedule,
-        p_day_off: dayOff,
-        p_payroll_class: payrollClass,
-        p_transaction_type: combinedTransactionType,
-      });
+      const res = await withTimeout<{ data: any; error: any }>(
+        Promise.resolve(
+          supabase.rpc('submit_time_request', {
+            p_request_type_code: primaryRequestType,
+            p_date_from: overallDateFrom,
+            p_date_to: overallDateTo,
+            p_time_from: overallTimeFrom,
+            p_time_to: overallTimeTo,
+            p_total_hours: totalHoursSum,
+            p_reason: combinedReason,
+            p_time_schedule: schedule,
+            p_day_off: dayOff,
+            p_payroll_class: payrollClass,
+            p_transaction_type: combinedTransactionType,
+          }),
+        ),
+        25000,
+        'ESARF submission timed out. Please check your network connection and try again.',
+      );
 
-      if (error) {
-        throw new Error(error.message);
+      if (res?.error) {
+        throw new Error(res.error.message);
       }
 
       setSubmitStatus(`Submitted ESARF request with ${entries.length} entry(ies).`);
@@ -767,10 +810,43 @@ export function ApplyEsarfScreen({
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to submit ESARF.';
       setSubmitStatus(message);
+      setSubmissionErrorModal(message);
       onToast?.({ tone: 'error', title: 'ESARF failed', message });
     } finally {
+      clearTimeout(warningTimer);
       setIsSubmitting(false);
     }
+  }
+
+  function submit() {
+    if (isSubmitting) return;
+
+    const nextErrors = validateForm();
+    setValidationErrors(nextErrors);
+
+    const message = Object.values(nextErrors).find((msg): msg is string => Boolean(msg));
+    if (message) {
+      setSubmitStatus(message);
+      onToast?.({ tone: 'error', title: 'ESARF error', message });
+      return;
+    }
+
+    const isEdit = Boolean(editingRequest);
+    const actionText = isEdit ? 'Update' : 'Submit';
+    const confirmTitle = isEdit ? 'Confirm ESARF Update' : 'Confirm ESARF Submission';
+    const confirmMsg = isEdit
+      ? 'Are you sure you want to update this ESARF request?'
+      : `Are you sure you want to submit this ESARF request with ${entries.length} entry(ies)?`;
+
+    platformAlert(confirmTitle, confirmMsg, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: actionText,
+        onPress: () => {
+          executeSubmit();
+        },
+      },
+    ]);
   }
 
   return (
@@ -953,149 +1029,213 @@ export function ApplyEsarfScreen({
           {entries.map((entry, index) => {
             const actualIndex = index;
             const badgeNumber = actualIndex + 1;
-              const entryTransKeys = parseEntryTransactions(entry.transaction);
-              const selectedOptions = transactionOptions.filter((t) => entryTransKeys.includes(t.key));
-              const transactionLabelText = selectedOptions.length
-                ? selectedOptions.map((t) => t.shortLabel || t.label).join(', ')
-                : 'Select transaction';
-              const dateDisplayText = formatEsarfDateRange(entry.dateFrom, entry.dateTo);
-              const hours = getEntryTotalHours(entry);
+            const entryTransKeys = parseEntryTransactions(entry.transaction);
+            const isUseOffset = entryTransKeys.includes('use_offset');
+            const selectedOptions = transactionOptions.filter((t) => entryTransKeys.includes(t.key));
+            const transactionLabelText = selectedOptions.length
+              ? selectedOptions.map((t) => t.shortLabel || t.label).join(', ')
+              : 'Select transaction';
+            const dateDisplayText = formatEsarfDateRange(entry.dateFrom, entry.dateTo);
+            const hours = getEntryTotalHours(entry);
 
-              return (
-                <View key={entry.id} style={styles.entryCard}>
-                  <View style={styles.entryCardHeader}>
-                    <View style={styles.entryBadge}>
-                      <Text style={styles.entryBadgeText}>{badgeNumber}</Text>
-                    </View>
-                    <Text style={styles.entryCardTitle}>ESARF Request Information</Text>
-                    {entries.length > 1 ? (
-                      <Pressable
-                        style={styles.deleteEntryButton}
-                        onPress={() => removeEntry(actualIndex)}
-                        hitSlop={6}
+            return (
+              <View key={entry.id} style={styles.entryCard}>
+                <View style={styles.entryCardHeader}>
+                  <View style={styles.entryBadge}>
+                    <Text style={styles.entryBadgeText}>{badgeNumber}</Text>
+                  </View>
+                  <Text style={styles.entryCardTitle}>ESARF Request Information</Text>
+                  {entries.length > 1 ? (
+                    <Pressable
+                      style={styles.deleteEntryButton}
+                      onPress={() => removeEntry(actualIndex)}
+                      hitSlop={6}
+                    >
+                      <Trash2 size={16} color="#ef4444" strokeWidth={2.2} />
+                    </Pressable>
+                  ) : null}
+                </View>
+
+                {/* Row 1: Transaction Type & Date From-To */}
+                <View style={styles.underlineRow}>
+                  <View style={styles.underlineField}>
+                    <Pressable
+                      style={[
+                        styles.underlineBox,
+                        validationErrors[`entry_${actualIndex}_transaction`] ? styles.inputError : null,
+                      ]}
+                      onPress={() => setActiveTransactionSelectIndex(actualIndex)}
+                    >
+                      <Text
+                        style={[
+                          styles.underlineText,
+                          !selectedOptions.length ? styles.underlineTextPlaceholder : null,
+                        ]}
+                        numberOfLines={1}
                       >
-                        <Trash2 size={16} color="#ef4444" strokeWidth={2.2} />
-                      </Pressable>
+                        {transactionLabelText}
+                      </Text>
+                      <ChevronDown size={16} color="#64748b" strokeWidth={2.4} />
+                    </Pressable>
+                    <Text style={styles.underlineLabel}>Transaction Type</Text>
+                    {validationErrors[`entry_${actualIndex}_transaction`] ? (
+                      <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_transaction`]}</Text>
                     ) : null}
                   </View>
 
-                  {/* Row 1: Transaction Type & Date From-To */}
-                  <View style={styles.underlineRow}>
-                    <View style={styles.underlineField}>
-                      <Pressable
+                  <View style={styles.underlineField}>
+                    <Pressable
+                      style={[
+                        styles.underlineBox,
+                        validationErrors[`entry_${actualIndex}_dateFrom`] ? styles.inputError : null,
+                      ]}
+                      onPress={() => setActiveDateChoiceIndex(actualIndex)}
+                    >
+                      <Text
                         style={[
-                          styles.underlineBox,
-                          validationErrors[`entry_${actualIndex}_transaction`] ? styles.inputError : null,
+                          styles.underlineText,
+                          !entry.dateFrom ? styles.underlineTextPlaceholder : null,
                         ]}
-                        onPress={() => setActiveTransactionSelectIndex(actualIndex)}
+                        numberOfLines={1}
                       >
-                        <Text
-                          style={[
-                            styles.underlineText,
-                            !selectedOptions.length ? styles.underlineTextPlaceholder : null,
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {transactionLabelText}
-                        </Text>
-                        <ChevronDown size={16} color="#64748b" strokeWidth={2.4} />
-                      </Pressable>
-                      <Text style={styles.underlineLabel}>Transaction Type</Text>
-                      {validationErrors[`entry_${actualIndex}_transaction`] ? (
-                        <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_transaction`]}</Text>
-                      ) : null}
-                    </View>
+                        {dateDisplayText}
+                      </Text>
+                      <CalendarDays size={16} color="#64748b" strokeWidth={2} />
+                    </Pressable>
+                    <Text style={styles.underlineLabel}>Date From-To</Text>
+                    {validationErrors[`entry_${actualIndex}_dateFrom`] ? (
+                      <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_dateFrom`]}</Text>
+                    ) : null}
+                  </View>
+                </View>
 
-                    <View style={styles.underlineField}>
-                      <Pressable
+                {/* Row 2: Total No of Hours / Offset Balance, Time From, Time To */}
+                <View style={styles.underlineRow}>
+                  <View style={styles.underlineField}>
+                    <View
+                      style={[
+                        styles.underlineBox,
+                        isUseOffset && ((offsetBalance ?? 0) <= 0 || (hours > 0 && hours > (offsetBalance ?? 0)))
+                          ? styles.inputError
+                          : null,
+                      ]}
+                    >
+                      <Text
                         style={[
-                          styles.underlineBox,
-                          validationErrors[`entry_${actualIndex}_dateFrom`] ? styles.inputError : null,
+                          styles.underlineText,
+                          isUseOffset && ((offsetBalance ?? 0) <= 0 || (hours > 0 && hours > (offsetBalance ?? 0)))
+                            ? { color: '#ef4444', fontWeight: '800' }
+                            : null,
                         ]}
-                        onPress={() => setActiveDateChoiceIndex(actualIndex)}
                       >
-                        <Text
-                          style={[
-                            styles.underlineText,
-                            !entry.dateFrom ? styles.underlineTextPlaceholder : null,
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {dateDisplayText}
-                        </Text>
-                        <CalendarDays size={16} color="#64748b" strokeWidth={2} />
-                      </Pressable>
-                      <Text style={styles.underlineLabel}>Date From-To</Text>
-                      {validationErrors[`entry_${actualIndex}_dateFrom`] ? (
-                        <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_dateFrom`]}</Text>
-                      ) : null}
+                        {isUseOffset ? (offsetBalance ?? 0).toFixed(2) : (hours ?? 0).toFixed(2)}
+                      </Text>
                     </View>
+                    <Text
+                      style={[
+                        styles.underlineLabel,
+                        isUseOffset && ((offsetBalance ?? 0) <= 0 || (hours > 0 && hours > (offsetBalance ?? 0)))
+                          ? { color: '#ef4444' }
+                          : null,
+                      ]}
+                    >
+                      {isUseOffset ? 'Offset Balance' : 'Total No of Hours'}
+                    </Text>
                   </View>
 
-                  {/* Row 2: Total No of Hours, Time From, Time To */}
-                  <View style={styles.underlineRow}>
-                    <View style={styles.underlineField}>
-                      <View style={styles.underlineBox}>
-                        <Text style={styles.underlineText}>
-                          {(hours ?? 0).toFixed(2)}
+                  <View style={styles.underlineField}>
+                    <Pressable
+                      style={[
+                        styles.underlineBox,
+                        validationErrors[`entry_${actualIndex}_timeFrom`] ||
+                        (isUseOffset && hours > (offsetBalance ?? 0))
+                          ? styles.inputError
+                          : null,
+                      ]}
+                      onPress={() => setActiveScrollableTimePicker({ index: actualIndex, field: 'time_from' })}
+                    >
+                      <Text
+                        style={[
+                          styles.underlineText,
+                          !entry.timeFrom ? styles.underlineTextPlaceholder : null,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {entry.timeFrom ? formatTimeDisplay(entry.timeFrom) : '--:-- --'}
+                      </Text>
+                      <Clock3 size={16} color="#64748b" strokeWidth={2} />
+                    </Pressable>
+                    <Text style={styles.underlineLabel}>Time From</Text>
+                    {validationErrors[`entry_${actualIndex}_timeFrom`] ? (
+                      <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_timeFrom`]}</Text>
+                    ) : null}
+                  </View>
+
+                  <View style={styles.underlineField}>
+                    <Pressable
+                      style={[
+                        styles.underlineBox,
+                        validationErrors[`entry_${actualIndex}_timeTo`] ||
+                        (isUseOffset && hours > (offsetBalance ?? 0))
+                          ? styles.inputError
+                          : null,
+                      ]}
+                      onPress={() => setActiveScrollableTimePicker({ index: actualIndex, field: 'time_to' })}
+                    >
+                      <Text
+                        style={[
+                          styles.underlineText,
+                          !entry.timeTo ? styles.underlineTextPlaceholder : null,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {entry.timeTo ? formatTimeDisplay(entry.timeTo) : '--:-- --'}
+                      </Text>
+                      <Clock3 size={16} color="#64748b" strokeWidth={2} />
+                    </Pressable>
+                    <Text style={styles.underlineLabel}>Time To</Text>
+                    {validationErrors[`entry_${actualIndex}_timeTo`] ? (
+                      <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_timeTo`]}</Text>
+                    ) : null}
+                  </View>
+                </View>
+
+                {/* Inline Offset Balance Warnings / Info */}
+                {isUseOffset ? (
+                  <View style={styles.offsetFeedbackWrap}>
+                    {(offsetBalance ?? 0) <= 0 ? (
+                      <View style={styles.offsetWarningBadge}>
+                        <AlertTriangle size={13} color="#ef4444" strokeWidth={2.4} />
+                        <Text style={styles.offsetWarningBadgeText}>
+                          No offset balance available (0.00 hrs).
                         </Text>
                       </View>
-                      <Text style={styles.underlineLabel}>Total No of Hours</Text>
-                    </View>
-
-                    <View style={styles.underlineField}>
-                      <Pressable
-                        style={[
-                          styles.underlineBox,
-                          validationErrors[`entry_${actualIndex}_timeFrom`] ? styles.inputError : null,
-                        ]}
-                        onPress={() => setActiveScrollableTimePicker({ index: actualIndex, field: 'time_from' })}
-                      >
-                        <Text
-                          style={[
-                            styles.underlineText,
-                            !entry.timeFrom ? styles.underlineTextPlaceholder : null,
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {entry.timeFrom ? formatTimeDisplay(entry.timeFrom) : '--:-- --'}
+                    ) : entry.timeFrom && entry.timeTo && hours > (offsetBalance ?? 0) ? (
+                      <View style={styles.offsetWarningBadge}>
+                        <AlertTriangle size={13} color="#ef4444" strokeWidth={2.4} />
+                        <Text style={styles.offsetWarningBadgeText}>
+                          Selected duration ({hours.toFixed(2)} hrs) exceeds offset balance by {(hours - (offsetBalance ?? 0)).toFixed(2)} hrs.
                         </Text>
-                        <Clock3 size={16} color="#64748b" strokeWidth={2} />
-                      </Pressable>
-                      <Text style={styles.underlineLabel}>Time From</Text>
-                      {validationErrors[`entry_${actualIndex}_timeFrom`] ? (
-                        <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_timeFrom`]}</Text>
-                      ) : null}
-                    </View>
-
-                    <View style={styles.underlineField}>
-                      <Pressable
-                        style={[
-                          styles.underlineBox,
-                          validationErrors[`entry_${actualIndex}_timeTo`] ? styles.inputError : null,
-                        ]}
-                        onPress={() => setActiveScrollableTimePicker({ index: actualIndex, field: 'time_to' })}
-                      >
-                        <Text
-                          style={[
-                            styles.underlineText,
-                            !entry.timeTo ? styles.underlineTextPlaceholder : null,
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {entry.timeTo ? formatTimeDisplay(entry.timeTo) : '--:-- --'}
+                      </View>
+                    ) : entry.timeFrom && entry.timeTo && hours > 0 ? (
+                      <View style={styles.offsetSuccessBadge}>
+                        <Check size={13} color="#16a34a" strokeWidth={2.4} />
+                        <Text style={styles.offsetSuccessBadgeText}>
+                          Using {hours.toFixed(2)} hrs • {((offsetBalance ?? 0) - hours).toFixed(2)} hrs balance remaining
                         </Text>
-                        <Clock3 size={16} color="#64748b" strokeWidth={2} />
-                      </Pressable>
-                      <Text style={styles.underlineLabel}>Time To</Text>
-                      {validationErrors[`entry_${actualIndex}_timeTo`] ? (
-                        <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_timeTo`]}</Text>
-                      ) : null}
-                    </View>
+                      </View>
+                    ) : null}
+                    {validationErrors[`entry_${actualIndex}_offsetBalance`] ? (
+                      <Text style={styles.fieldError}>
+                        {validationErrors[`entry_${actualIndex}_offsetBalance`]}
+                      </Text>
+                    ) : null}
                   </View>
+                ) : null}
 
-                  {/* Row 3: Reason */}
-                  <View style={styles.underlineFieldFull}>
+                  {/* Row 3: Reason Text Area */}
+                  <View style={styles.reasonFieldWrap}>
+                    <Text style={styles.reasonFieldLabel}>Reason</Text>
                     <TextInput
                       value={entry.reason}
                       onChangeText={(text) => {
@@ -1105,15 +1245,16 @@ export function ApplyEsarfScreen({
                           [`entry_${actualIndex}_reason`]: undefined,
                         }));
                       }}
-                      placeholder="Enter reason"
+                      placeholder="Enter reason for this request..."
                       placeholderTextColor="#94a3b8"
-                      underlineColorAndroid="transparent"
+                      multiline
+                      numberOfLines={3}
+                      textAlignVertical="top"
                       style={[
-                        styles.underlineTextInput,
+                        styles.reasonTextArea,
                         validationErrors[`entry_${actualIndex}_reason`] ? styles.inputError : null,
                       ]}
                     />
-                    <Text style={styles.underlineLabel}>Reason</Text>
                     {validationErrors[`entry_${actualIndex}_reason`] ? (
                       <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_reason`]}</Text>
                     ) : null}
@@ -1124,7 +1265,7 @@ export function ApplyEsarfScreen({
         </View>
 
         <View style={styles.actions}>
-          <Pressable disabled={isSubmitting} style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
+          <Pressable style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
             <Text style={styles.cancelText}>Cancel</Text>
           </Pressable>
           <Pressable
@@ -1135,7 +1276,56 @@ export function ApplyEsarfScreen({
             <Text style={styles.submitText}>{isSubmitting ? 'Submitting...' : 'Submit Request'}</Text>
           </Pressable>
         </View>
-        {submitStatus ? <Text style={styles.submitStatus}>{submitStatus}</Text> : null}
+        {submissionErrorModal ? (
+          <Modal
+            transparent
+            animationType="fade"
+            visible={Boolean(submissionErrorModal)}
+            onRequestClose={() => setSubmissionErrorModal(null)}
+          >
+            <View style={styles.errorModalBackdrop}>
+              <View style={styles.errorModalCard}>
+                <View style={styles.errorModalIconContainer}>
+                  <AlertTriangle size={32} color="#ef4444" strokeWidth={2.4} />
+                </View>
+
+                <Text style={styles.errorModalTitle}>
+                  {submissionErrorModal.toLowerCase().includes('timed out')
+                    ? 'Submission Timed Out'
+                    : 'Submission Failed'}
+                </Text>
+
+                <Text style={styles.errorModalMessage}>{submissionErrorModal}</Text>
+
+                <View style={styles.errorModalActions}>
+                  <Pressable
+                    style={styles.errorModalDismissBtn}
+                    onPress={() => {
+                      setSubmissionErrorModal(null);
+                    }}
+                  >
+                    <Text style={styles.errorModalDismissText}>Close</Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={styles.errorModalReloadBtn}
+                    onPress={() => {
+                      setSubmissionErrorModal(null);
+                      setIsSubmitting(false);
+                      setSubmitStatus('');
+                      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                        window.location.reload();
+                      }
+                    }}
+                  >
+                    <RotateCcw size={15} color="#0f172a" />
+                    <Text style={styles.errorModalReloadText}>Reset / Reload</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </Modal>
+        ) : null}
 
         {activeEntryPicker ? (
           <UniversalDateTimePicker
@@ -1950,13 +2140,20 @@ function formatDateDisplay(value: string) {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
+    width: '100%',
+    maxWidth: '100%',
     backgroundColor: colors.background,
+    overflow: 'hidden',
   },
   keyboardAvoider: {
     flex: 1,
+    width: '100%',
+    maxWidth: '100%',
   },
   scroll: {
     flexGrow: 1,
+    width: '100%',
+    maxWidth: '100%',
     padding: spacing.md,
     paddingBottom: spacing.xl,
   },
@@ -2006,12 +2203,15 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   scheduleCard: {
+    width: '100%',
+    maxWidth: '100%',
     backgroundColor: colors.surface,
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
     padding: spacing.md,
     marginBottom: spacing.md,
+    overflow: 'hidden',
   },
   scheduleCardInvalid: {
     borderColor: colors.semantic.danger,
@@ -2093,12 +2293,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   entryCard: {
+    width: '100%',
+    maxWidth: '100%',
     backgroundColor: colors.surface,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: colors.border,
     padding: spacing.md,
     marginBottom: spacing.md,
+    overflow: 'hidden',
   },
   entryCardHeader: {
     flexDirection: 'row',
@@ -2138,12 +2341,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.md,
     marginBottom: spacing.md,
+    width: '100%',
+    maxWidth: '100%',
   },
   underlineField: {
     flex: 1,
+    minWidth: 0,
   },
   underlineFieldFull: {
     marginBottom: spacing.md,
+    width: '100%',
+    maxWidth: '100%',
   },
   underlineBox: {
     borderBottomWidth: 1.5,
@@ -2170,6 +2378,36 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     fontWeight: fontWeights.heavy,
     marginTop: 4,
+  },
+  reasonFieldWrap: {
+    width: '100%',
+    maxWidth: '100%',
+    marginTop: 2,
+    marginBottom: spacing.xs,
+  },
+  reasonFieldLabel: {
+    color: '#334155',
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: fontWeights.heavy,
+    marginBottom: 4,
+  },
+  reasonTextArea: {
+    width: '100%',
+    maxWidth: '100%',
+    minHeight: 74,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#f8fafc',
+    color: '#0f172a',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    textAlignVertical: 'top',
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none', outlineWidth: 0 } as any) : {}),
   },
   underlineTextInput: {
     borderBottomWidth: 1.5,
@@ -2488,6 +2726,43 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontWeight: fontWeights.bold,
     marginTop: spacing.sm,
+  },
+  submitStatusContainer: {
+    marginTop: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  submitStatusText: {
+    flex: 1,
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: fontWeights.bold,
+  },
+  submitStatusWarning: {
+    color: '#d97706',
+  },
+  submitStatusError: {
+    color: '#dc2626',
+  },
+  reloadFallbackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#f1f5f9',
+    borderColor: '#cbd5e1',
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.sm,
+  },
+  reloadFallbackText: {
+    fontSize: 12,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
   },
   modalBackdrop: {
     flex: 1,
@@ -2944,5 +3219,134 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: spacing.md,
+  },
+  errorModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    zIndex: 9999,
+  },
+  errorModalCard: {
+    width: '100%',
+    maxWidth: 340,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 22,
+    alignItems: 'center',
+    elevation: 20,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  errorModalIconContainer: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fee2e2',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  errorModalTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#0f172a',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  errorModalMessage: {
+    fontSize: 14,
+    color: '#475569',
+    lineHeight: 20,
+    textAlign: 'center',
+    marginBottom: 20,
+    fontWeight: '500',
+  },
+  errorModalActions: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+  },
+  errorModalDismissBtn: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  errorModalDismissText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  errorModalReloadBtn: {
+    flex: 1.3,
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: '#eab308',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
+    shadowColor: '#eab308',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  errorModalReloadText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  offsetFeedbackWrap: {
+    marginTop: -2,
+    marginBottom: 8,
+  },
+  offsetWarningBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    marginTop: 4,
+  },
+  offsetWarningBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#dc2626',
+    flex: 1,
+  },
+  offsetSuccessBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    borderRadius: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    marginTop: 4,
+  },
+  offsetSuccessBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#16a34a',
+    flex: 1,
   },
 });

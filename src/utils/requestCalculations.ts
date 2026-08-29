@@ -112,19 +112,24 @@ function parseDayNumber(value: string) {
 }
 
 function parseTimeToMinutes(value: string) {
-  const [rawHour, rawMinute] = value.split(':').map(Number);
+  const parts = value.split(':').map(Number);
+  const rawHour = parts[0];
+  const rawMinute = parts[1];
+  const rawSecond = parts[2] || 0;
   if (
     Number.isNaN(rawHour) ||
     Number.isNaN(rawMinute) ||
     rawHour < 0 ||
     rawHour > 23 ||
     rawMinute < 0 ||
-    rawMinute > 59
+    rawMinute > 59 ||
+    rawSecond < 0 ||
+    rawSecond > 59
   ) {
     return null;
   }
 
-  return rawHour * 60 + rawMinute;
+  return rawHour * 60 + rawMinute + rawSecond / 60;
 }
 
 export function parse12HourToken(token: string) {

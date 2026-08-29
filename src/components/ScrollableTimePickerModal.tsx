@@ -4,42 +4,54 @@ import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from '
 type ScrollableTimePickerModalProps = {
   visible: boolean;
   title?: string;
-  initialTime?: string; // "HH:mm" (24h format, e.g. "14:50")
+  initialTime?: string; // "HH:mm" or "HH:mm:ss" (24h format, e.g. "14:50:00")
   onConfirm: (time24: string) => void;
   onCancel: () => void;
 };
 
-const HOURS_12 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+const HOURS_12 = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
 const MINUTES = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
-const AMPM_OPTIONS = ['AM', 'PM'];
+const SECONDS = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
 const ITEM_HEIGHT = 44;
+const VISIBLE_COUNT = 3;
+const PADDING_COUNT = 1; // 1 item padding top and bottom
 
-function parse24To12(time24?: string): { hour12: number; minuteStr: string; ampm: 'AM' | 'PM' } {
+function parse24To12(time24?: string): {
+  hourStr: string;
+  minuteStr: string;
+  secondStr: string;
+  ampm: 'AM' | 'PM';
+} {
   if (!time24) {
     const now = new Date();
     let h = now.getHours();
-    const ampm = h >= 12 ? 'PM' : 'AM';
+    const ampm: 'AM' | 'PM' = h >= 12 ? 'PM' : 'AM';
     h = h % 12 || 12;
-    const m = String(now.getMinutes()).padStart(2, '0');
-    return { hour12: h, minuteStr: m, ampm };
+    const hFormatted = String(h).padStart(2, '0');
+    const mFormatted = String(now.getMinutes()).padStart(2, '0');
+    const sFormatted = String(now.getSeconds()).padStart(2, '0');
+    return { hourStr: hFormatted, minuteStr: mFormatted, secondStr: sFormatted, ampm };
   }
 
-  const [hStr, mStr] = time24.split(':');
-  let h = parseInt(hStr || '9', 10);
-  const mNum = Math.min(59, Math.max(0, parseInt(mStr || '0', 10)));
+  const parts = time24.split(':');
+  let h = parseInt(parts[0] || '9', 10);
+  const mNum = Math.min(59, Math.max(0, parseInt(parts[1] || '0', 10)));
+  const sNum = Math.min(59, Math.max(0, parseInt(parts[2] || '0', 10)));
   const ampm: 'AM' | 'PM' = h >= 12 ? 'PM' : 'AM';
   h = h % 12 || 12;
+  const hFormatted = String(h).padStart(2, '0');
   const mFormatted = String(mNum).padStart(2, '0');
+  const sFormatted = String(sNum).padStart(2, '0');
 
-  return { hour12: h, minuteStr: mFormatted, ampm };
+  return { hourStr: hFormatted, minuteStr: mFormatted, secondStr: sFormatted, ampm };
 }
 
-function convert12To24(hour12: number, minuteStr: string, ampm: 'AM' | 'PM'): string {
-  let h = hour12;
+function convert12To24(hourStr: string, minuteStr: string, secondStr: string, ampm: 'AM' | 'PM'): string {
+  let h = parseInt(hourStr, 10);
   if (ampm === 'PM' && h < 12) h += 12;
   if (ampm === 'AM' && h === 12) h = 0;
   const hFormatted = String(h).padStart(2, '0');
-  return `${hFormatted}:${minuteStr}`;
+  return `${hFormatted}:${minuteStr}:${secondStr}`;
 }
 
 type WheelColumnProps<T> = {
@@ -67,7 +79,7 @@ function WheelColumn<T extends string | number>({
         y: targetIdx * ITEM_HEIGHT,
         animated: false,
       });
-    }, 20);
+    }, 25);
     return () => clearTimeout(timer);
   }, [selectedValue, items]);
 
@@ -85,19 +97,32 @@ function WheelColumn<T extends string | number>({
     updateScrollSelection(e.nativeEvent.contentOffset.y);
   };
 
+  const handleMomentumEnd = (e: any) => {
+    const yOffset = e.nativeEvent.contentOffset.y;
+    const index = Math.round(yOffset / ITEM_HEIGHT);
+    const clampedIndex = Math.max(0, Math.min(items.length - 1, index));
+    const targetItem = items[clampedIndex];
+    if (targetItem !== undefined) {
+      setActiveValue(targetItem);
+      onSelect(targetItem);
+    }
+  };
+
   return (
-    <View style={styles.wheelColumnContainer}>
+    <View style={styles.wheelColumnTrack}>
+      <View style={styles.centerHighlightOverlay} pointerEvents="none" />
       <ScrollView
         ref={scrollViewRef}
         showsVerticalScrollIndicator={false}
         snapToInterval={ITEM_HEIGHT}
+        snapToAlignment="center"
         decelerationRate="fast"
         scrollEventThrottle={16}
         onScroll={handleScroll}
-        onMomentumScrollEnd={handleScroll}
-        onScrollEndDrag={handleScroll}
+        onMomentumScrollEnd={handleMomentumEnd}
+        onScrollEndDrag={handleMomentumEnd}
         contentContainerStyle={{
-          paddingVertical: ITEM_HEIGHT,
+          paddingVertical: ITEM_HEIGHT * PADDING_COUNT,
         }}
       >
         {items.map((item, idx) => {
@@ -134,20 +159,22 @@ function WheelColumn<T extends string | number>({
 export function ScrollableTimePickerModal({
   visible,
   title,
-  initialTime = '09:00',
+  initialTime = '09:00:00',
   onConfirm,
   onCancel,
 }: ScrollableTimePickerModalProps) {
   const parsed = useMemo(() => parse24To12(initialTime), [initialTime]);
-  const [selectedHour, setSelectedHour] = useState(parsed.hour12);
+  const [selectedHour, setSelectedHour] = useState(parsed.hourStr);
   const [selectedMinute, setSelectedMinute] = useState(parsed.minuteStr);
+  const [selectedSecond, setSelectedSecond] = useState(parsed.secondStr);
   const [selectedAmPm, setSelectedAmPm] = useState<'AM' | 'PM'>(parsed.ampm);
 
   useEffect(() => {
     if (visible) {
       const p = parse24To12(initialTime);
-      setSelectedHour(p.hour12);
+      setSelectedHour(p.hourStr);
       setSelectedMinute(p.minuteStr);
+      setSelectedSecond(p.secondStr);
       setSelectedAmPm(p.ampm);
     }
   }, [visible, initialTime]);
@@ -155,7 +182,7 @@ export function ScrollableTimePickerModal({
   if (!visible) return null;
 
   const handleConfirm = () => {
-    const time24 = convert12To24(selectedHour, selectedMinute, selectedAmPm);
+    const time24 = convert12To24(selectedHour, selectedMinute, selectedSecond, selectedAmPm);
     onConfirm(time24);
   };
 
@@ -163,24 +190,44 @@ export function ScrollableTimePickerModal({
     <Modal transparent animationType="fade" visible={visible} onRequestClose={onCancel}>
       <View style={styles.backdrop}>
         <View style={styles.card}>
-          {title ? <Text style={styles.headerTitle}>{title}</Text> : null}
+          {/* Modal Header / Title */}
+          {title ? (
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitleText}>{title}</Text>
+            </View>
+          ) : null}
 
-          {/* Wheel Frame re-keyed by initialTime so columns mount pre-scrolled to set time */}
-          <View key={initialTime} style={styles.wheelFrame}>
-            {/* Center Highlight Overlay Box with top/bottom lines */}
-            <View style={styles.centerHighlightOverlay} pointerEvents="none" />
+          {/* Section 1: SELECTED TIME Preview */}
+          <Text style={styles.sectionHeading}>Selected Time</Text>
+          <View style={styles.previewBox}>
+            <View style={styles.previewInner}>
+              <Text style={styles.previewDigits}>{selectedHour}</Text>
+              <Text style={styles.previewColon}>:</Text>
+              <Text style={styles.previewDigits}>{selectedMinute}</Text>
+              <Text style={styles.previewColon}>:</Text>
+              <Text style={styles.previewDigits}>{selectedSecond}</Text>
+              <Text style={styles.previewPeriod}>{selectedAmPm}</Text>
+            </View>
+          </View>
 
+          {/* Section 2: ADJUST HOUR · MINUTE · SECOND */}
+          <Text style={[styles.sectionHeading, { marginTop: 12 }]}>
+            Adjust Hour · Minute · Second
+          </Text>
+          <View style={styles.columnHeaderRow}>
+            <Text style={styles.columnHeaderText}>Hour</Text>
+            <Text style={styles.columnHeaderText}>Min</Text>
+            <Text style={styles.columnHeaderText}>Sec</Text>
+          </View>
+
+          {/* Wheels Frame re-keyed by initialTime so columns mount pre-scrolled */}
+          <View key={initialTime} style={styles.wheelsRow}>
             {/* Hour Wheel */}
             <WheelColumn
               items={HOURS_12}
               selectedValue={selectedHour}
               onSelect={setSelectedHour}
             />
-
-            {/* Separator Colon */}
-            <View style={styles.colonColumn}>
-              <Text style={styles.colonText}>:</Text>
-            </View>
 
             {/* Minute Wheel */}
             <WheelColumn
@@ -189,21 +236,52 @@ export function ScrollableTimePickerModal({
               onSelect={setSelectedMinute}
             />
 
-            {/* AM / PM Wheel */}
+            {/* Second Wheel */}
             <WheelColumn
-              items={AMPM_OPTIONS}
-              selectedValue={selectedAmPm}
-              onSelect={(val) => setSelectedAmPm(val as 'AM' | 'PM')}
+              items={SECONDS}
+              selectedValue={selectedSecond}
+              onSelect={setSelectedSecond}
             />
           </View>
 
-          {/* Action Buttons */}
-          <View style={styles.actionRow}>
-            <Pressable style={styles.btn} onPress={onCancel}>
-              <Text style={styles.btnText}>CANCEL</Text>
+          {/* Section 3: PERIOD */}
+          <Text style={[styles.sectionHeading, { marginTop: 12 }]}>Period</Text>
+          <View style={styles.periodRow}>
+            <Pressable
+              style={[styles.periodBtn, selectedAmPm === 'AM' ? styles.periodBtnActive : null]}
+              onPress={() => setSelectedAmPm('AM')}
+            >
+              <Text
+                style={[
+                  styles.periodBtnText,
+                  selectedAmPm === 'AM' ? styles.periodBtnTextActive : null,
+                ]}
+              >
+                AM
+              </Text>
             </Pressable>
-            <Pressable style={styles.btn} onPress={handleConfirm}>
-              <Text style={styles.btnText}>OK</Text>
+            <Pressable
+              style={[styles.periodBtn, selectedAmPm === 'PM' ? styles.periodBtnActive : null]}
+              onPress={() => setSelectedAmPm('PM')}
+            >
+              <Text
+                style={[
+                  styles.periodBtnText,
+                  selectedAmPm === 'PM' ? styles.periodBtnTextActive : null,
+                ]}
+              >
+                PM
+              </Text>
+            </Pressable>
+          </View>
+
+          {/* Action Buttons: Text Buttons only */}
+          <View style={styles.actionRow}>
+            <Pressable style={styles.textBtn} onPress={onCancel}>
+              <Text style={styles.cancelBtnText}>CANCEL</Text>
+            </Pressable>
+            <Pressable style={styles.textBtn} onPress={handleConfirm}>
+              <Text style={styles.confirmBtnText}>SET TIME</Text>
             </Pressable>
           </View>
         </View>
@@ -215,7 +293,7 @@ export function ScrollableTimePickerModal({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(7, 20, 38, 0.65)',
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
@@ -224,90 +302,176 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 310,
     backgroundColor: '#ffffff',
-    borderRadius: 16,
+    borderRadius: 20,
     padding: 20,
-    elevation: 16,
-    shadowColor: '#000',
+    elevation: 12,
+    shadowColor: '#0f172a',
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.28,
+    shadowOpacity: 0.15,
     shadowRadius: 18,
   },
-  headerTitle: {
+  modalHeader: {
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  modalTitleText: {
     fontSize: 16,
     fontWeight: '700',
     color: '#0f172a',
-    textAlign: 'center',
-    marginBottom: 14,
+    letterSpacing: 0.2,
   },
-  wheelFrame: {
+  sectionHeading: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#64748b',
+    letterSpacing: 0.6,
+    marginBottom: 4,
+    textTransform: 'uppercase',
+  },
+  previewBox: {
+    paddingVertical: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewInner: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    height: ITEM_HEIGHT * 3,
-    position: 'relative',
+  },
+  previewDigits: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#0f172a',
+    letterSpacing: 0.5,
+    minWidth: 38,
+    textAlign: 'center',
+  },
+  previewColon: {
+    fontSize: 26,
+    fontWeight: '700',
+    color: '#334155',
+    marginHorizontal: 3,
+    alignSelf: 'center',
+  },
+  previewPeriod: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0f172a',
+    marginLeft: 8,
+    marginTop: 4,
+  },
+  columnHeaderRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 4,
+  },
+  columnHeaderText: {
+    flex: 1,
+    textAlign: 'center',
+    color: '#64748b',
+    fontSize: 11,
+    fontWeight: '500',
+    letterSpacing: 0.5,
+  },
+  wheelsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    height: ITEM_HEIGHT * VISIBLE_COUNT,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  wheelColumnTrack: {
+    flex: 1,
+    height: ITEM_HEIGHT * VISIBLE_COUNT,
+    backgroundColor: '#f8fafc',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
     overflow: 'hidden',
+    position: 'relative',
   },
   centerHighlightOverlay: {
     position: 'absolute',
-    top: ITEM_HEIGHT,
-    left: 0,
-    right: 0,
+    top: ITEM_HEIGHT * PADDING_COUNT,
+    left: 4,
+    right: 4,
     height: ITEM_HEIGHT,
-    borderTopWidth: 1.5,
-    borderBottomWidth: 1.5,
-    borderColor: '#475569',
-    zIndex: 1,
-  },
-  wheelColumnContainer: {
-    flex: 1,
-    height: ITEM_HEIGHT * 3,
-    alignItems: 'center',
-  },
-  colonColumn: {
-    width: 20,
-    height: ITEM_HEIGHT * 3,
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 2,
-  },
-  colonText: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#334155',
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   wheelItem: {
     height: ITEM_HEIGHT,
     justifyContent: 'center',
     alignItems: 'center',
-    width: 70,
   },
   wheelItemText: {
     textAlign: 'center',
   },
   wheelItemTextSelected: {
-    fontSize: 20,
-    fontWeight: '700',
+    fontSize: 18,
+    fontWeight: '800',
     color: '#0f172a',
   },
   wheelItemTextDimmed: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '500',
-    color: '#cbd5e1',
+    color: '#94a3b8',
+  },
+  periodRow: {
+    backgroundColor: '#f1f5f9',
+    borderRadius: 10,
+    padding: 3,
+    flexDirection: 'row',
+    gap: 4,
+  },
+  periodBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 7,
+  },
+  periodBtnActive: {
+    backgroundColor: '#eab308',
+  },
+  periodBtnText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#64748b',
+  },
+  periodBtnTextActive: {
+    color: '#ffffff',
+    fontWeight: '800',
   },
   actionRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    alignItems: 'center',
     gap: 16,
     marginTop: 20,
   },
-  btn: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+  textBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 8,
   },
-  btnText: {
+  cancelBtnText: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#2563eb',
+    color: '#64748b',
+    letterSpacing: 0.5,
+  },
+  confirmBtnText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#ca8a04',
     letterSpacing: 0.5,
   },
 });
+

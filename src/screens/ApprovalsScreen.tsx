@@ -1087,7 +1087,6 @@ function ApprovedDetailsSheet({
                   <EsarfCardView
                     key={entry.index}
                     entry={entry}
-                    hideCheckbox
                     isSelected={!entry.isRejected}
                     isRejected={entry.isRejected}
                     hideTimeline

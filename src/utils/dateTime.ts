@@ -7,9 +7,14 @@ export function dateStringToDate(value: string) {
 }
 
 export function timeStringToDate(value: string) {
-  const [hour, minute] = value.split(':').map(Number);
+  const [hour, minute, second] = value.split(':').map(Number);
   const date = new Date();
-  date.setHours(Number.isNaN(hour) ? 0 : hour, Number.isNaN(minute) ? 0 : minute, 0, 0);
+  date.setHours(
+    Number.isNaN(hour) ? 0 : hour,
+    Number.isNaN(minute) ? 0 : minute,
+    Number.isNaN(second) ? 0 : second,
+    0,
+  );
   return date;
 }
 
@@ -23,17 +28,26 @@ export function formatDateInput(date: Date) {
 export function formatTimeInput(date: Date) {
   const hour = String(date.getHours()).padStart(2, '0');
   const minute = String(date.getMinutes()).padStart(2, '0');
-  return `${hour}:${minute}`;
+  const second = String(date.getSeconds()).padStart(2, '0');
+  return `${hour}:${minute}:${second}`;
 }
 
 export function formatTimeDisplay(value: string) {
-  const [rawHour, rawMinute] = value.split(':').map(Number);
+  const parts = value.split(':').map(Number);
+  const rawHour = parts[0];
+  const rawMinute = parts[1];
+  const rawSecond = parts.length > 2 ? parts[2] : undefined;
   if (Number.isNaN(rawHour) || Number.isNaN(rawMinute)) {
     return value;
   }
   const period = rawHour >= 12 ? 'PM' : 'AM';
   const hour = rawHour % 12 || 12;
-  return `${hour}:${String(rawMinute).padStart(2, '0')} ${period}`;
+  const minStr = String(rawMinute).padStart(2, '0');
+  if (rawSecond !== undefined && !Number.isNaN(rawSecond)) {
+    const secStr = String(rawSecond).padStart(2, '0');
+    return `${hour}:${minStr}:${secStr} ${period}`;
+  }
+  return `${hour}:${minStr} ${period}`;
 }
 
 export function calculateLeaveDays(dateFrom: string, dateTo: string) {

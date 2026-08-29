@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
+  BackHandler,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -15,11 +16,13 @@ import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
 import {
+  AlertTriangle,
   CalendarDays,
   Check,
   ChevronDown,
   FileText,
   ListChecks,
+  RotateCcw,
   WalletCards,
 } from 'lucide-react-native';
 
@@ -29,6 +32,7 @@ import type { AppToastMessage } from '../components/AppToast';
 import { leaveCategoryOptions, leaveTypeOptions } from '../constants/requestOptions';
 import { supabase } from '../lib/supabase';
 import { platformAlert } from '../utils/platformAlert';
+import { withTimeout } from '../utils/withTimeout';
 import type { AssistantDraft } from '../services/assistant';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { calculateLeaveDays, dateStringToDate, formatDateInput } from '../utils/dateTime';
@@ -116,6 +120,7 @@ const RequestLeave = ({
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatus, setSubmitStatus] = useState('');
+  const [submissionErrorModal, setSubmissionErrorModal] = useState<string | null>(null);
   const [validationErrors, setValidationErrors] = useState<Partial<Record<ValidationKey, string>>>({});
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const scrollRef = useRef<ScrollView | null>(null);
@@ -143,16 +148,38 @@ const RequestLeave = ({
     if (!action) {
       return;
     }
-    if (!hasUnsavedChanges || isSubmitting) {
-      action();
-      return;
-    }
 
-    platformAlert('Discard leave request?', 'Your leave draft has unsaved changes.', [
-      { text: 'Keep editing', style: 'cancel' },
-      { text: 'Discard', style: 'destructive', onPress: action },
-    ]);
+    platformAlert(
+      isSubmitting ? 'Cancel submission?' : 'Discard leave request?',
+      isSubmitting
+        ? 'Submission is currently in progress. Are you sure you want to cancel?'
+        : 'Are you sure you want to cancel and leave this page? Any unsaved changes will be lost.',
+      [
+        { text: 'Keep editing', style: 'cancel' },
+        {
+          text: isSubmitting ? 'Cancel Request' : 'Discard',
+          style: 'destructive',
+          onPress: () => {
+            setIsSubmitting(false);
+            action();
+          },
+        },
+      ],
+    );
   }
+
+  useEffect(() => {
+    const onBackPress = () => {
+      if (onBack) {
+        confirmDiscard(onBack);
+        return true;
+      }
+      return false;
+    };
+
+    const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => subscription.remove();
+  }, [onBack, isSubmitting]);
 
   useEffect(() => {
     const showSubscription = Keyboard.addListener('keyboardDidShow', (event) => {
@@ -250,7 +277,105 @@ const RequestLeave = ({
 
 
 
-  async function submit() {
+  async function executeSubmit() {
+    setIsSubmitting(true);
+    setSubmitStatus('Submitting leave request...');
+
+    const warningTimer = setTimeout(() => {
+      setSubmitStatus((current) =>
+        current ? `${current} (connection taking longer than expected... please wait)` : 'Submitting... (connection taking longer than expected...)',
+      );
+    }, 12000);
+
+    try {
+      if (editingRequest) {
+        const targetReqId = editingRequest.request_id || (editingRequest as any).id;
+        if (!targetReqId) {
+          throw new Error('Request ID is missing.');
+        }
+
+        const lockInfo = await withTimeout(
+          checkApproverActiveViewing(targetReqId),
+          10000,
+          'Checking approver status timed out. Please try again.',
+        );
+        if (lockInfo.isLocked) {
+          const msg = `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Editing is temporarily disabled while they are viewing it to prevent data conflicts.`;
+          setActiveLockInfo(lockInfo);
+          setSubmitStatus(msg);
+          setIsSubmitting(false);
+          return;
+        }
+
+        await withTimeout(
+          updateMyPendingRequest({
+            requestId: targetReqId,
+            leaveType: leaveType.trim(),
+            leaveCategory: leaveCategory.trim(),
+            startDate: dateFrom,
+            endDate: dateTo,
+            totalDays: totalLeaveDays,
+            paidDays: leaveBreakdown.paidDays,
+            unpaidDays: leaveBreakdown.unpaidDays,
+            reason: reason.trim(),
+          }),
+          25000,
+          'Updating leave request timed out. Please check your network connection.',
+        );
+
+        setSubmitStatus('Leave request updated successfully.');
+        onToast?.({
+          tone: 'success',
+          title: 'Leave updated',
+          message: 'Your leave request was updated successfully.',
+        });
+        await onSubmitted?.();
+        return;
+      }
+
+      const res = await withTimeout<{ data: any; error: any }>(
+        Promise.resolve(
+          supabase.rpc('submit_leave_request', {
+            p_leave_type: leaveType.trim(),
+            p_leave_category: leaveCategory.trim(),
+            p_start_date: dateFrom,
+            p_end_date: dateTo,
+            p_paid_days: leaveBreakdown.paidDays,
+            p_unpaid_days: leaveBreakdown.unpaidDays,
+            p_reason: reason.trim(),
+          }),
+        ),
+        25000,
+        'Leave submission timed out. Please check your network connection and try again.',
+      );
+
+      if (res?.error) {
+        throw new Error(res.error.message);
+      }
+
+      setSubmitStatus(`Submitted. Request ID: ${res?.data}`);
+      onToast?.({
+        tone: 'success',
+        title: 'Leave submitted',
+        message: 'Your leave request was sent for approval.',
+      });
+      await onSubmitted?.();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to submit leave request.';
+      setSubmitStatus(`Failed: ${message}`);
+      setSubmissionErrorModal(message);
+      onToast?.({
+        tone: 'error',
+        title: 'Leave failed',
+        message,
+      });
+    } finally {
+      clearTimeout(warningTimer);
+      setIsSubmitting(false);
+    }
+  }
+
+  function submit() {
     if (isSubmitting) {
       return;
     }
@@ -277,79 +402,22 @@ const RequestLeave = ({
       return;
     }
 
-    setIsSubmitting(true);
-    setSubmitStatus('Submitting leave request...');
+    const isEdit = Boolean(editingRequest);
+    const actionText = isEdit ? 'Update' : 'Submit';
+    const confirmTitle = isEdit ? 'Confirm Leave Update' : 'Confirm Leave Submission';
+    const confirmMsg = isEdit
+      ? 'Are you sure you want to update this leave request?'
+      : `Are you sure you want to submit this request for ${totalLeaveDays} day(s) of ${leaveType || 'leave'}?`;
 
-    try {
-      if (editingRequest) {
-        const targetReqId = editingRequest.request_id || (editingRequest as any).id;
-        if (!targetReqId) {
-          throw new Error('Request ID is missing.');
-        }
-
-        const lockInfo = await checkApproverActiveViewing(targetReqId);
-        if (lockInfo.isLocked) {
-          const msg = `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Editing is temporarily disabled while they are viewing it to prevent data conflicts.`;
-          setActiveLockInfo(lockInfo);
-          setSubmitStatus(msg);
-          setIsSubmitting(false);
-          return;
-        }
-
-        await updateMyPendingRequest({
-          requestId: targetReqId,
-          leaveType: leaveType.trim(),
-          leaveCategory: leaveCategory.trim(),
-          startDate: dateFrom,
-          endDate: dateTo,
-          totalDays: totalLeaveDays,
-          paidDays: leaveBreakdown.paidDays,
-          unpaidDays: leaveBreakdown.unpaidDays,
-          reason: reason.trim(),
-        });
-
-        setSubmitStatus('Leave request updated successfully.');
-        onToast?.({
-          tone: 'success',
-          title: 'Leave updated',
-          message: 'Your leave request was updated successfully.',
-        });
-        await onSubmitted?.();
-        return;
-      }
-
-      const { data, error } = await supabase.rpc('submit_leave_request', {
-        p_leave_type: leaveType.trim(),
-        p_leave_category: leaveCategory.trim(),
-        p_start_date: dateFrom,
-        p_end_date: dateTo,
-        p_paid_days: leaveBreakdown.paidDays,
-        p_unpaid_days: leaveBreakdown.unpaidDays,
-        p_reason: reason.trim(),
-      });
-
-      if (error) {
-        throw new Error(error.message);
-      }
-
-      setSubmitStatus(`Submitted. Request ID: ${data}`);
-      onToast?.({
-        tone: 'success',
-        title: 'Leave submitted',
-        message: 'Your leave request was sent for approval.',
-      });
-      await onSubmitted?.();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to submit leave request.';
-      setSubmitStatus(`Failed: ${message}`);
-      onToast?.({
-        tone: 'error',
-        title: 'Leave failed',
-        message,
-      });
-    } finally {
-      setIsSubmitting(false);
-    }
+    platformAlert(confirmTitle, confirmMsg, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: actionText,
+        onPress: () => {
+          executeSubmit();
+        },
+      },
+    ]);
   }
 
   const selectSheet = getSelectSheet(activeSelect, leaveType, leaveCategory, disabledLeaveTypes);
@@ -524,7 +592,7 @@ const RequestLeave = ({
         </Section>
 
         <View style={styles.actions}>
-          <Pressable disabled={isSubmitting} style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
+          <Pressable style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
             <Text style={styles.cancelText}>Cancel</Text>
           </Pressable>
           <Pressable
@@ -535,7 +603,56 @@ const RequestLeave = ({
             <Text style={styles.submitText}>{isSubmitting ? 'Submitting...' : 'Submit Request'}</Text>
           </Pressable>
         </View>
-        {submitStatus ? <Text style={styles.submitStatus}>{submitStatus}</Text> : null}
+        {submissionErrorModal ? (
+          <Modal
+            transparent
+            animationType="fade"
+            visible={Boolean(submissionErrorModal)}
+            onRequestClose={() => setSubmissionErrorModal(null)}
+          >
+            <View style={styles.errorModalBackdrop}>
+              <View style={styles.errorModalCard}>
+                <View style={styles.errorModalIconContainer}>
+                  <AlertTriangle size={32} color="#ef4444" strokeWidth={2.4} />
+                </View>
+
+                <Text style={styles.errorModalTitle}>
+                  {submissionErrorModal.toLowerCase().includes('timed out')
+                    ? 'Submission Timed Out'
+                    : 'Submission Failed'}
+                </Text>
+
+                <Text style={styles.errorModalMessage}>{submissionErrorModal}</Text>
+
+                <View style={styles.errorModalActions}>
+                  <Pressable
+                    style={styles.errorModalDismissBtn}
+                    onPress={() => {
+                      setSubmissionErrorModal(null);
+                    }}
+                  >
+                    <Text style={styles.errorModalDismissText}>Close</Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={styles.errorModalReloadBtn}
+                    onPress={() => {
+                      setSubmissionErrorModal(null);
+                      setIsSubmitting(false);
+                      setSubmitStatus('');
+                      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                        window.location.reload();
+                      }
+                    }}
+                  >
+                    <RotateCcw size={15} color="#0f172a" />
+                    <Text style={styles.errorModalReloadText}>Reset / Reload</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </Modal>
+        ) : null}
       </ScrollView>
       </KeyboardAvoidingView>
 
@@ -790,13 +907,20 @@ function formatDateDisplay(value: string) {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
+    width: '100%',
+    maxWidth: '100%',
     backgroundColor: colors.background,
+    overflow: 'hidden',
   },
   keyboardAvoider: {
     flex: 1,
+    width: '100%',
+    maxWidth: '100%',
   },
   scroll: {
     flexGrow: 1,
+    width: '100%',
+    maxWidth: '100%',
     padding: spacing.md,
     paddingBottom: spacing.xl,
   },
@@ -1089,6 +1213,43 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.bold,
     marginTop: spacing.sm,
   },
+  submitStatusContainer: {
+    marginTop: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  submitStatusText: {
+    flex: 1,
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: fontWeights.bold,
+  },
+  submitStatusWarning: {
+    color: '#d97706',
+  },
+  submitStatusError: {
+    color: '#dc2626',
+  },
+  reloadFallbackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#f1f5f9',
+    borderColor: '#cbd5e1',
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.sm,
+  },
+  reloadFallbackText: {
+    fontSize: 12,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+  },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.35)',
@@ -1235,5 +1396,94 @@ const styles = StyleSheet.create({
     color: colors.surface,
     fontSize: 14,
     fontWeight: fontWeights.heavy,
+  },
+  errorModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    zIndex: 9999,
+  },
+  errorModalCard: {
+    width: '100%',
+    maxWidth: 340,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 22,
+    alignItems: 'center',
+    elevation: 20,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  errorModalIconContainer: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fee2e2',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  errorModalTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#0f172a',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  errorModalMessage: {
+    fontSize: 14,
+    color: '#475569',
+    lineHeight: 20,
+    textAlign: 'center',
+    marginBottom: 20,
+    fontWeight: '500',
+  },
+  errorModalActions: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+  },
+  errorModalDismissBtn: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  errorModalDismissText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  errorModalReloadBtn: {
+    flex: 1.3,
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: '#eab308',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
+    shadowColor: '#eab308',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  errorModalReloadText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#0f172a',
   },
 });

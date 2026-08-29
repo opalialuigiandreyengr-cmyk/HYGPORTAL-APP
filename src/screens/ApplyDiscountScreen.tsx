@@ -757,13 +757,20 @@ function parseInventoryProducts(payload: unknown) {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
+    width: '100%',
+    maxWidth: '100%',
     backgroundColor: colors.background,
+    overflow: 'hidden',
   },
   keyboardAvoider: {
     flex: 1,
+    width: '100%',
+    maxWidth: '100%',
   },
   scroll: {
     flexGrow: 1,
+    width: '100%',
+    maxWidth: '100%',
     padding: spacing.md,
     paddingBottom: 140,
   },

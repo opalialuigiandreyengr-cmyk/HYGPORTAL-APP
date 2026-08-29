@@ -154,7 +154,7 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
     });
 
     const timeoutPromise = new Promise<{ data: any; error: any }>((resolve) =>
-      setTimeout(() => resolve({ data: null, error: new Error('RPC_TIMEOUT') }), 6000),
+      setTimeout(() => resolve({ data: null, error: new Error('RPC_TIMEOUT') }), 2000),
     );
 
     const { error } = await Promise.race([rpcPromise, timeoutPromise]);
@@ -176,6 +176,24 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
 
   // Fallback: update tables directly or via admin_update_request_data RPC
   let fallbackError: string | null = null;
+
+  // Always update main requests table (reason, total_hours, total_days, date_from, date_to)
+  const { error: mainReqErr } = await supabase
+    .from('requests')
+    .update({
+      ...(params.reason ? { reason: params.reason } : {}),
+      ...(params.totalHours !== undefined && params.totalHours !== null ? { total_hours: params.totalHours } : {}),
+      ...(params.totalDays !== undefined && params.totalDays !== null ? { total_days: params.totalDays } : {}),
+      ...(params.dateFrom ? { date_from: params.dateFrom } : {}),
+      ...(params.dateTo ? { date_to: params.dateTo } : {}),
+      ...(params.startDate ? { date_from: params.startDate } : {}),
+      ...(params.endDate ? { date_to: params.endDate } : {}),
+    })
+    .eq('id', targetId);
+
+  if (mainReqErr) {
+    fallbackError = mainReqErr.message;
+  }
 
   // Try updating time_request_details directly for ESARF
   if (params.dateFrom || params.timeFrom || params.transactionType || params.timeSchedule) {

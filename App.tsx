@@ -1510,6 +1510,9 @@ function SlideOverlayContainer({
           transform: [{ translateX: slideAnim }],
           backgroundColor: '#ffffff',
           zIndex: 10,
+          width: '100%',
+          maxWidth: '100%',
+          overflow: 'hidden',
         },
       ]}
     >
@@ -5449,6 +5452,10 @@ const styles = StyleSheet.create({
   },
   appShell: {
     flex: 1,
+    width: '100%',
+    maxWidth: '100%',
+    overflow: 'hidden',
+    backgroundColor: '#ffffff',
   },
   safeArea: {
     flex: 1,
