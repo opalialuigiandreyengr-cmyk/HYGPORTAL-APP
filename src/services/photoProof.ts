@@ -1,6 +1,7 @@
 import { Alert, Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
+import * as FileSystem from 'expo-file-system';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { supabase } from '../lib/supabase';
 
@@ -80,6 +81,89 @@ export async function loadPhotoProofs(): Promise<PhotoProofItem[]> {
   }
 
   return localList.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+}
+
+export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boolean> {
+  try {
+    let base64Photo = item.photoUri;
+
+    // Convert local file:/// URI to base64 string on native mobile devices
+    if (Platform.OS !== 'web' && item.photoUri && !item.photoUri.startsWith('data:')) {
+      try {
+        base64Photo = await FileSystem.readAsStringAsync(item.photoUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+      } catch (readErr) {
+        console.warn('Failed to read photo file as base64:', readErr);
+      }
+    }
+
+    console.log('[PhotoProofSync] Sending photo proof to Supabase Edge Function...', {
+      employee: item.employeeName,
+      store: item.storeName,
+      hasPhoto: Boolean(base64Photo),
+      photoDataLength: base64Photo?.length,
+    });
+
+    const { data: funcData, error: funcError } = await supabase.functions.invoke('upload-photo-proof', {
+      body: {
+        photoBase64: base64Photo,
+        employeeName: item.employeeName || 'Employee',
+        storeName: item.storeName || item.userEmail || undefined,
+        timestamp: item.timestamp,
+        timeDigits: item.timeDigits,
+        timePeriod: item.timePeriod,
+        dateFormatted: item.dateFormatted,
+        dayFormatted: item.dayFormatted,
+        locationText: item.locationText,
+        latitude: item.latitude,
+        longitude: item.longitude,
+      },
+    });
+
+    console.log('[PhotoProofSync] Edge Function response:', { funcData, funcError });
+
+    if (!funcError && funcData?.driveWebViewLink) {
+      item.driveFileId = funcData.driveFileId;
+      item.driveWebViewLink = funcData.driveWebViewLink;
+      item.syncedToCloud = true;
+
+      const current = await loadPhotoProofs();
+      const updated = current.map((p) => (p.id === item.id ? { ...p, ...item } : p));
+      await setCacheJSON(PHOTO_PROOFS_KEY, updated);
+      return true;
+    }
+  } catch (err) {
+    console.warn('Google Drive edge function sync error:', err);
+  }
+
+  // Database insert in photo_proofs table fallback
+  try {
+    const { data: userRes } = await supabase.auth.getUser();
+    const userId = userRes?.user?.id ?? null;
+
+    const { error } = await supabase.from('photo_proofs').insert({
+      employee_id: userId,
+      employee_name: item.employeeName || 'Employee',
+      store_name: item.storeName || item.userEmail || undefined,
+      timestamp: item.timestamp,
+      time_digits: item.timeDigits,
+      time_period: item.timePeriod,
+      date_formatted: item.dateFormatted,
+      day_formatted: item.dayFormatted,
+      location_text: item.locationText,
+      latitude: item.latitude,
+      longitude: item.longitude,
+      drive_file_id: item.driveFileId,
+      drive_web_view_link: item.driveWebViewLink,
+    });
+
+    if (!error) return true;
+  } catch {
+    // Offline
+  }
+
+  return Boolean(item.driveWebViewLink);
 }
 
 const GDRIVE_ROOT_FOLDER_ID = '1fxy0CgT7CfmLvAPOfs648AnSomZyadyR';
