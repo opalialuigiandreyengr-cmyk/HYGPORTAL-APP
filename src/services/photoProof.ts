@@ -2,6 +2,7 @@ import { Alert, Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
+import { supabase } from '../lib/supabase';
 
 export type PhotoProofItem = {
   id: string;
@@ -16,21 +17,132 @@ export type PhotoProofItem = {
   longitude?: number;
   employeeName?: string | null;
   userEmail?: string | null;
+  storeName?: string | null;
+  driveFileId?: string | null;
+  driveWebViewLink?: string | null;
+  syncedToCloud?: boolean;
 };
 
 const PHOTO_PROOFS_KEY = 'hyg_photo_proofs_list';
 
 export async function loadPhotoProofs(): Promise<PhotoProofItem[]> {
+  let localList: PhotoProofItem[] = [];
   try {
     const list = await getCacheJSON<PhotoProofItem[]>(PHOTO_PROOFS_KEY);
-    if (!list || !Array.isArray(list)) {
-      return [];
+    if (list && Array.isArray(list)) {
+      localList = list;
     }
-    return list.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
   } catch (err) {
-    console.error('Failed to load photo proofs:', err);
-    return [];
+    console.error('Failed to load local photo proofs:', err);
   }
+
+  try {
+    const { data, error } = await supabase
+      .from('photo_proofs')
+      .select('*')
+      .order('timestamp', { ascending: false })
+      .limit(50);
+
+    if (!error && data && data.length > 0) {
+      const cloudItems: PhotoProofItem[] = data.map((row: any) => ({
+        id: row.id,
+        photoUri: row.photo_url || row.drive_web_view_link || '',
+        timestamp: row.timestamp,
+        timeDigits: row.time_digits,
+        timePeriod: row.time_period,
+        dateFormatted: row.date_formatted,
+        dayFormatted: row.day_formatted,
+        locationText: row.location_text,
+        latitude: row.latitude,
+        longitude: row.longitude,
+        employeeName: row.employee_name,
+        storeName: row.store_name,
+        driveFileId: row.drive_file_id,
+        driveWebViewLink: row.drive_web_view_link,
+        syncedToCloud: true,
+      }));
+
+      const map = new Map<string, PhotoProofItem>();
+      for (const item of cloudItems) {
+        map.set(item.id, item);
+      }
+      for (const item of localList) {
+        if (!map.has(item.id)) {
+          map.set(item.id, item);
+        }
+      }
+      return Array.from(map.values()).sort(
+        (a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp),
+      );
+    }
+  } catch {
+    // Offline or table pending
+  }
+
+  return localList.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+}
+
+export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boolean> {
+  try {
+    // Call Supabase Edge Function to upload JPEG to Google Drive & insert into DB table
+    const { data: funcData, error: funcError } = await supabase.functions.invoke('upload-photo-proof', {
+      body: {
+        photoBase64: item.photoUri,
+        employeeName: item.employeeName || 'Employee',
+        storeName: item.storeName || item.userEmail || undefined,
+        timestamp: item.timestamp,
+        timeDigits: item.timeDigits,
+        timePeriod: item.timePeriod,
+        dateFormatted: item.dateFormatted,
+        dayFormatted: item.dayFormatted,
+        locationText: item.locationText,
+        latitude: item.latitude,
+        longitude: item.longitude,
+      },
+    });
+
+    if (!funcError && funcData?.driveWebViewLink) {
+      item.driveFileId = funcData.driveFileId;
+      item.driveWebViewLink = funcData.driveWebViewLink;
+      item.syncedToCloud = true;
+
+      // Update local cache item with Google Drive view link
+      const current = await loadPhotoProofs();
+      const updated = current.map((p) => (p.id === item.id ? { ...p, ...item } : p));
+      await setCacheJSON(PHOTO_PROOFS_KEY, updated);
+      return true;
+    }
+  } catch (err) {
+    console.warn('Google Drive sync pending:', err);
+  }
+
+  // Fallback to direct DB insert if Edge Function is pending
+  try {
+    const { data: userRes } = await supabase.auth.getUser();
+    const userId = userRes?.user?.id ?? null;
+
+    const { error } = await supabase.from('photo_proofs').insert({
+      employee_id: userId,
+      employee_name: item.employeeName || 'Employee',
+      store_name: item.storeName || item.userEmail || undefined,
+      timestamp: item.timestamp,
+      time_digits: item.timeDigits,
+      time_period: item.timePeriod,
+      date_formatted: item.dateFormatted,
+      day_formatted: item.dayFormatted,
+      location_text: item.locationText,
+      latitude: item.latitude,
+      longitude: item.longitude,
+      drive_file_id: item.driveFileId,
+      drive_web_view_link: item.driveWebViewLink,
+    });
+
+    if (!error) return true;
+  } catch {
+    // Offline
+  }
+
+  return false;
 }
 
 export async function savePhotoProof(item: PhotoProofItem): Promise<void> {
@@ -38,6 +150,9 @@ export async function savePhotoProof(item: PhotoProofItem): Promise<void> {
     const current = await loadPhotoProofs();
     const updated = [item, ...current.filter((p) => p.id !== item.id)];
     await setCacheJSON(PHOTO_PROOFS_KEY, updated);
+
+    // Sync to Supabase cloud table in background
+    void syncPhotoProofToCloud(item);
   } catch (err) {
     console.error('Failed to save photo proof:', err);
     throw err;

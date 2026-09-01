@@ -259,6 +259,7 @@ export function PhotoProofScreen({
         latitude: coordinates.lat,
         longitude: coordinates.lon,
         employeeName: employeeName || 'Employee',
+        storeName: userStoreName,
       };
 
       await savePhotoProof(newItem);
