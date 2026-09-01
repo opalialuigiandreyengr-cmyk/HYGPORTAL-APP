@@ -91,7 +91,7 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
     if (Platform.OS !== 'web' && item.photoUri && !item.photoUri.startsWith('data:')) {
       try {
         base64Photo = await FileSystem.readAsStringAsync(item.photoUri, {
-          encoding: FileSystem.EncodingType.Base64,
+          encoding: 'base64',
         });
       } catch (readErr) {
         console.warn('Failed to read photo file as base64:', readErr);
