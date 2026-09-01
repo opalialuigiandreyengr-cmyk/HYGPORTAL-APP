@@ -968,6 +968,15 @@ function formatMoney(value: number | null | undefined) {
   return Number(value ?? 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function isUseOffsetRequest(item: MyRequest) {
+  if (item.request_type_code === 'use_offset') return true;
+  const transLower = (item.transaction_type || '').toLowerCase();
+  if (transLower.includes('use offset') || transLower.includes('use_offset')) return true;
+  const reasonLower = (item.reason || '').toLowerCase();
+  if (reasonLower.includes('(use offset)') || reasonLower.includes('(use_offset)')) return true;
+  return false;
+}
+
 function approvalTimeline(item: MyRequest) {
   if (isAutoApprovedBirthdayGrant(item)) {
     return [
@@ -980,9 +989,11 @@ function approvalTimeline(item: MyRequest) {
   }
 
   const isLeave = item.request_type_code === 'leave';
-  const fallback = isLeave ? [1] : [1, 2];
+  const isUseOffset = isUseOffsetRequest(item);
+  const isSingleApprover = isLeave || isUseOffset;
+  const fallback = isSingleApprover ? [1] : [1, 2];
   const summary = (item.approval_summary ?? [])
-    .filter((step) => !isLeave || step.step_order === 1 || step.required_level === 1)
+    .filter((step) => !isSingleApprover || step.step_order === 1 || step.required_level === 1)
     .slice(0, fallback.length);
   const rows: { label: string; status: string; actedAt: string | null }[] = summary.length
     ? summary.map((step) => {

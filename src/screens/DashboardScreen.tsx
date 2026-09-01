@@ -17,6 +17,7 @@ import {
 import { colors, fontWeights, spacing, radius } from '../theme';
 import { TopBar } from '../components/TopBar';
 import { BirthdayGreetingModal } from '../components/BirthdayGreetingModal';
+import { DashboardFab } from '../components/DashboardFab';
 import type { DashboardSummary } from '../services/dashboard';
 import { loadPerkUsage, type PerkUsage } from '../services/perks';
 import { loadMyRequests, type MyRequest } from '../services/requests';
@@ -43,6 +44,9 @@ type Props = {
   onApplyEsarf?: () => void;
   onRequestLeave?: () => void;
   onApplyPerks?: () => void;
+  onPhotoProof?: () => void;
+  onPhotoLog?: () => void;
+  onActivityLog?: () => void;
   onBirthdayGreetingClosed?: () => void;
 };
 
@@ -62,6 +66,9 @@ export function DashboardScreen({
   onApplyEsarf,
   onRequestLeave,
   onApplyPerks,
+  onPhotoProof,
+  onPhotoLog,
+  onActivityLog,
   onBirthdayGreetingClosed,
 }: Props) {
   const [perkUsage, setPerkUsage] = useState<PerkUsage | null>(null);
@@ -258,6 +265,12 @@ export function DashboardScreen({
         visible={showBirthdayModal}
         employeeName={employeeName}
         onClose={handleCloseBirthdayModal}
+      />
+
+      <DashboardFab
+        onPhotoProof={onPhotoProof}
+        onPhotoLog={onPhotoLog}
+        onActivityLog={onActivityLog}
       />
     </View>
   );

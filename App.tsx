@@ -100,11 +100,14 @@ import { CreateEmployeeProfileScreen } from './src/screens/CreateEmployeeProfile
 import { DashboardScreen } from './src/screens/DashboardScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { NotificationsScreen } from './src/screens/NotificationsScreen';
+import { PhotoProofScreen } from './src/screens/PhotoProofScreen';
+import { PhotoLogScreen } from './src/screens/PhotoLogScreen';
 import { ProfileTabScreen } from './src/screens/ProfileTabScreen';
 import { RegisterAccountScreen } from './src/screens/RegisterAccountScreen';
 import { RequestsTabScreen } from './src/screens/RequestsTabScreen';
 import { BottomTabBar } from './src/components/BottomTabBar';
 import { TopBar } from './src/components/TopBar';
+import { requestCameraAndLocationPermissions } from './src/services/photoProof';
 import { hygPortalLogo, preloadHygPortalLogo } from './src/assets/portalLogo';
 import { openApkDownload, registerPwaInstallSupport, PWA_VERSION } from './src/constants/download';
 import type { AssistantDraft } from './src/services/assistant';
@@ -129,7 +132,7 @@ import {
 type PortalTab = 'home' | 'requests' | 'approvals' | 'notifications' | 'perks' | 'profile' | 'settings' | 'rewards' | 'my_team';
 type PublicScreen = 'login' | 'create_profile' | 'register_account';
 type AdminScreen = 'home' | 'authority' | 'departments' | 'routes' | 'approvers' | 'clusters';
-type QuickRequestScreen = 'assistant' | 'apply_esarf' | 'request_leave' | 'apply_discount';
+type QuickRequestScreen = 'assistant' | 'apply_esarf' | 'request_leave' | 'apply_discount' | 'photo_proof' | 'photo_log';
 const SUPER_ADMIN_EMAIL = 'hygportal@gmail.com';
 const hygLogo = hygPortalLogo;
 const hygCoinsImage = require('./assets/hygcoins.png');
@@ -732,6 +735,24 @@ export default function App() {
     setAssistantDraft(null);
     setActiveQuickRequestScreen(null);
     setActiveTab('notifications');
+  }
+
+  async function handleOpenPhotoProof() {
+    try {
+      const { cameraGranted } = await requestCameraAndLocationPermissions();
+      if (!cameraGranted && Platform.OS !== 'web') {
+        Alert.alert(
+          'Permission Needed',
+          'Please allow camera and location access to capture real-time photo proofs.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      openQuickRequest('photo_proof');
+    } catch (err) {
+      console.warn('Permission error:', err);
+      openQuickRequest('photo_proof');
+    }
   }
 
   async function completeLogin(user: User) {
@@ -1337,6 +1358,9 @@ export default function App() {
           onApplyEsarf={() => openQuickRequest('apply_esarf')}
           onRequestLeave={() => openQuickRequest('request_leave')}
           onApplyPerks={() => openQuickRequest('apply_discount')}
+          onPhotoProof={handleOpenPhotoProof}
+          onPhotoLog={() => openQuickRequest('photo_log')}
+          onActivityLog={() => openQuickRequest('photo_log')}
           onBirthdayGreetingClosed={() => void refreshNotificationUnreadCount()}
           notificationCount={notificationUnreadCount}
         />
@@ -1434,6 +1458,23 @@ export default function App() {
               setActiveTab('requests');
               await refreshDashboard();
             }}
+          />
+        </SlideOverlayContainer>
+
+        <SlideOverlayContainer visible={activeQuickRequestScreen === 'photo_proof'}>
+          <PhotoProofScreen
+            onBack={closeQuickRequest}
+            onOpenPhotoLog={() => openQuickRequest('photo_log')}
+            employeeName={profileResult?.status === 'linked' ? profileResult.profile.fullName : (signedInUser.email ?? 'Employee')}
+            userStoreName={profileResult?.status === 'linked' ? (profileResult.profile.storeName || profileResult.profile.departmentName) : undefined}
+          />
+        </SlideOverlayContainer>
+
+        <SlideOverlayContainer visible={activeQuickRequestScreen === 'photo_log'}>
+          <PhotoLogScreen
+            onBack={closeQuickRequest}
+            onTakeNew={handleOpenPhotoProof}
+            employeeName={profileResult?.status === 'linked' ? profileResult.profile.fullName : (signedInUser.email ?? 'Employee')}
           />
         </SlideOverlayContainer>
       </View>,

@@ -234,7 +234,7 @@ export function HorizontalApprovalTimeline({ steps }: { steps: TimelineStep[] })
       </View>
 
       <View style={styles.stepperContainer}>
-        <View style={styles.stepperLineTrack} />
+        {approvalSteps.length > 1 ? <View style={styles.stepperLineTrack} /> : null}
 
         <View style={styles.stepperColumnsRow}>
           {approvalSteps.map((step, idx) => {
@@ -343,12 +343,31 @@ export function EsarfCardView({
 }) {
   const isEntryRejected = isRejected ?? entry.isRejected ?? false;
   const isLocked = isDisabled || entry.isRejected;
+  const isUseOffset =
+    entry.transactionLabel?.toLowerCase().includes('use offset') ||
+    entry.transactionLabel?.toLowerCase().includes('use_offset');
 
   const adjustedTimelineRows = React.useMemo(() => {
     if (!timelineRows) return undefined;
-    if (!isEntryRejected) return timelineRows;
 
-    return timelineRows.map((step) => {
+    let rows = timelineRows;
+    if (isUseOffset) {
+      rows = rows.filter((s) => {
+        const isSub = s.title.toLowerCase() === 'submitted' || s.subtitle.toLowerCase().includes('submitted');
+        if (isSub) return true;
+        return !s.title.toLowerCase().includes('level 2') && !s.subtitle.toLowerCase().includes('l2');
+      });
+      const nonSubmitted = rows.filter((s) => s.title.toLowerCase() !== 'submitted' && !s.subtitle.toLowerCase().includes('submitted'));
+      if (nonSubmitted.length > 1) {
+        const firstApprover = nonSubmitted[0];
+        const submittedStep = rows.find((s) => s.title.toLowerCase() === 'submitted' || s.subtitle.toLowerCase().includes('submitted'));
+        rows = submittedStep ? [submittedStep, firstApprover] : [firstApprover];
+      }
+    }
+
+    if (!isEntryRejected) return rows;
+
+    return rows.map((step) => {
       const isApprovedStep =
         step.tone === 'approved' ||
         step.tone === 'success' ||
@@ -364,7 +383,7 @@ export function EsarfCardView({
       }
       return step;
     });
-  }, [timelineRows, isEntryRejected]);
+  }, [timelineRows, isEntryRejected, isUseOffset]);
 
   return (
     <View style={[styles.entryCard, isEntryRejected && styles.entryCardRejected]}>
@@ -419,13 +438,20 @@ export function EsarfCardView({
 
       <View style={styles.divider} />
 
-      {/* 4 Column Grid */}
+      {/* 2-Row Details Grid */}
       <View style={styles.gridRow}>
         <View style={styles.gridCol}>
           <Text style={styles.gridLabel}>Date From-To</Text>
           <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>{entry.dateStr}</Text>
         </View>
 
+        <View style={styles.gridCol}>
+          <Text style={styles.gridLabel}>Total Hrs.</Text>
+          <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>{entry.totalHours}</Text>
+        </View>
+      </View>
+
+      <View style={styles.gridRow}>
         <View style={styles.gridCol}>
           <Text style={styles.gridLabel}>Time From</Text>
           <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>{entry.timeFromStr}</Text>
@@ -434,11 +460,6 @@ export function EsarfCardView({
         <View style={styles.gridCol}>
           <Text style={styles.gridLabel}>Time To</Text>
           <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>{entry.timeToStr}</Text>
-        </View>
-
-        <View style={styles.gridCol}>
-          <Text style={styles.gridLabel}>Total Hrs.</Text>
-          <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>{entry.totalHours}</Text>
         </View>
       </View>
 
@@ -570,10 +591,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
+    gap: 16,
     marginBottom: 8,
   },
   gridCol: {
     flex: 1,
+    minWidth: 0,
   },
   gridLabel: {
     fontSize: 11,

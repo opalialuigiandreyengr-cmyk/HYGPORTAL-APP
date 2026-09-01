@@ -278,10 +278,10 @@ export function ScrollableTimePickerModal({
           {/* Action Buttons: Text Buttons only */}
           <View style={styles.actionRow}>
             <Pressable style={styles.textBtn} onPress={onCancel}>
-              <Text style={styles.cancelBtnText}>CANCEL</Text>
+              <Text style={styles.cancelBtnText}>Cancel</Text>
             </Pressable>
             <Pressable style={styles.textBtn} onPress={handleConfirm}>
-              <Text style={styles.confirmBtnText}>SET TIME</Text>
+              <Text style={styles.confirmBtnText}>Set Time</Text>
             </Pressable>
           </View>
         </View>
@@ -463,13 +463,13 @@ const styles = StyleSheet.create({
   },
   cancelBtnText: {
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: '500',
     color: '#64748b',
     letterSpacing: 0.5,
   },
   confirmBtnText: {
     fontSize: 14,
-    fontWeight: '800',
+    fontWeight: '500',
     color: '#ca8a04',
     letterSpacing: 0.5,
   },
