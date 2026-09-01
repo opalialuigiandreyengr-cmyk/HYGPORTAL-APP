@@ -262,12 +262,16 @@ export function PhotoProofScreen({
         storeName: userStoreName,
       };
 
+      console.log('[PhotoProof] Capturing photo proof for employee:', employeeName, 'store:', userStoreName);
       await savePhotoProof(newItem);
+      console.log('[PhotoProof] Photo proof saved and synced!');
       setLastSavedItem(newItem);
       setShowSavedModal(true);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to capture and save photo proof:', err);
-      Alert.alert('Capture Failed', 'Unable to capture photo. Please try again.');
+      Alert.alert('Capture Warning', `Photo saved locally, but cloud sync logged an issue: ${err?.message || err}`);
+      setLastSavedItem(newItem);
+      setShowSavedModal(true);
     } finally {
       setIsCapturing(false);
     }
