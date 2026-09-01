@@ -1,7 +1,7 @@
 import { Alert, Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { supabase } from '../lib/supabase';
 
@@ -91,7 +91,7 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
     if (Platform.OS !== 'web' && item.photoUri && !item.photoUri.startsWith('data:')) {
       try {
         base64Photo = await FileSystem.readAsStringAsync(item.photoUri, {
-          encoding: 'base64',
+          encoding: FileSystem.EncodingType?.Base64 || 'base64',
         });
       } catch (readErr) {
         console.warn('Failed to read photo file as base64:', readErr);
