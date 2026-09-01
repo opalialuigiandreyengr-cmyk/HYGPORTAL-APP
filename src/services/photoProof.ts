@@ -1,5 +1,6 @@
-import { Platform } from 'react-native';
+import { Alert, Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 
 export type PhotoProofItem = {
@@ -63,7 +64,10 @@ export async function requestCameraAndLocationPermissions(): Promise<{
 
   // 1. Camera permission
   try {
-    const cameraStatus = await ImagePicker.requestCameraPermissionsAsync();
+    let cameraStatus = await ImagePicker.getCameraPermissionsAsync();
+    if (!cameraStatus.granted && cameraStatus.canAskAgain) {
+      cameraStatus = await ImagePicker.requestCameraPermissionsAsync();
+    }
     cameraGranted = cameraStatus.granted;
   } catch {
     if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.mediaDevices) {
@@ -71,14 +75,33 @@ export async function requestCameraAndLocationPermissions(): Promise<{
     }
   }
 
-  // 2. Location permission
+  // 2. High-Accuracy GPS Location permission & prompt (Expo Go Native + Web)
   try {
-    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+    if (Platform.OS !== 'web') {
+      const locStatus = await Location.requestForegroundPermissionsAsync();
+      locationGranted = locStatus.status === 'granted';
+      if (!locationGranted) {
+        Alert.alert(
+          'Location Permission Needed',
+          'Please allow location access in Expo Go to record accurate GPS address stamps on photo proofs.',
+        );
+      }
+    } else if (typeof navigator !== 'undefined' && navigator.geolocation) {
       locationGranted = await new Promise<boolean>((resolve) => {
         navigator.geolocation.getCurrentPosition(
           () => resolve(true),
-          () => resolve(true),
-          { timeout: 5000, enableHighAccuracy: true, maximumAge: 0 },
+          (err) => {
+            if (err.code === err.PERMISSION_DENIED) {
+              Alert.alert(
+                'Location Access Blocked',
+                'GPS location access is blocked in your browser. Please allow location access for accurate GPS photo proof.',
+              );
+              resolve(false);
+            } else {
+              resolve(true);
+            }
+          },
+          { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 },
         );
       });
     } else {
@@ -98,7 +121,7 @@ export async function reverseGeocodeCoordinates(
   lat: number,
   lon: number,
 ): Promise<string | null> {
-  // 1. Primary: OpenStreetMap Nominatim with full address details
+  // Provider 1: OpenStreetMap Nominatim with full address components
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4500);
@@ -106,7 +129,10 @@ export async function reverseGeocodeCoordinates(
     const res = await fetch(
       `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`,
       {
-        headers: { 'Accept-Language': 'en' },
+        headers: {
+          'Accept-Language': 'en',
+          'User-Agent': 'HYGPortalMobile/1.0',
+        },
         signal: controller.signal,
       },
     );
@@ -114,12 +140,9 @@ export async function reverseGeocodeCoordinates(
 
     if (res.ok) {
       const data = await res.json();
-      if (data.display_name) {
-        return data.display_name;
-      }
-
       const addr = data.address || {};
-      const building = addr.amenity || addr.shop || addr.building || addr.office || addr.tourism || '';
+
+      const building = addr.amenity || addr.shop || addr.building || addr.office || addr.tourism || addr.commercial || '';
       const streetNum = addr.house_number || '';
       const road = addr.road || addr.street || addr.pedestrian || addr.footway || addr.path || '';
       const streetPart = [streetNum, road].filter(Boolean).join(' ');
@@ -152,15 +175,17 @@ export async function reverseGeocodeCoordinates(
       if (province && province !== city) parts.push(province);
       if (postcode) parts.push(postcode);
 
-      if (parts.length > 0) {
+      if (parts.length >= 2) {
         return parts.join(', ');
+      } else if (data.display_name) {
+        return data.display_name;
       }
     }
-  } catch (err) {
+  } catch {
     // fallback
   }
 
-  // 2. Secondary: BigDataCloud Reverse Geocoding Client
+  // Provider 2: BigDataCloud Reverse Geocoding Client (Fast & CORS friendly)
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3500);
@@ -174,10 +199,21 @@ export async function reverseGeocodeCoordinates(
     if (res.ok) {
       const data = await res.json();
       const parts: string[] = [];
-      if (data.locality) parts.push(data.locality);
-      if (data.city && data.city !== data.locality) parts.push(data.city);
-      if (data.principalSubdivision) parts.push(data.principalSubdivision);
-      if (data.postcode) parts.push(data.postcode);
+
+      if (data.localityInfo?.administrative && Array.isArray(data.localityInfo.administrative)) {
+        const adminList = data.localityInfo.administrative;
+        for (let i = adminList.length - 1; i >= 0; i--) {
+          const item = adminList[i];
+          if (item && item.name && item.order >= 4 && !parts.includes(item.name)) {
+            parts.push(item.name);
+          }
+        }
+      }
+
+      if (data.locality && !parts.includes(data.locality)) parts.push(data.locality);
+      if (data.city && !parts.includes(data.city)) parts.push(data.city);
+      if (data.principalSubdivision && !parts.includes(data.principalSubdivision)) parts.push(data.principalSubdivision);
+      if (data.postcode && !parts.includes(data.postcode)) parts.push(data.postcode);
 
       if (parts.length > 0) {
         return parts.join(', ');
@@ -260,46 +296,94 @@ export async function getIpLocation(): Promise<{
 }
 
 /**
- * Retrieves the real full current address based on live device location or IP geo-fallback.
+ * Gets high accuracy GPS coordinates with robust fallback.
+ */
+export async function getAccurateGPSCoordinates(): Promise<{
+  latitude: number;
+  longitude: number;
+  accuracy?: number;
+} | null> {
+  // 1. Native Expo Go / Mobile location detection (Highest Hardware Satellite Accuracy)
+  if (Platform.OS !== 'web') {
+    try {
+      const loc = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Highest,
+      });
+      if (loc?.coords) {
+        return {
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+          accuracy: loc.coords.accuracy,
+        };
+      }
+    } catch {
+      try {
+        const lastLoc = await Location.getLastKnownPositionAsync({
+          maxAge: 30000,
+        });
+        if (lastLoc?.coords) {
+          return {
+            latitude: lastLoc.coords.latitude,
+            longitude: lastLoc.coords.longitude,
+            accuracy: lastLoc.coords.accuracy,
+          };
+        }
+      } catch {
+        // fallback
+      }
+    }
+  }
+
+  // 2. Web Geolocation API (Browser GPS / WiFi triangulation)
+  if (typeof navigator !== 'undefined' && navigator.geolocation) {
+    const highAccuracyPromise = new Promise<{ latitude: number; longitude: number; accuracy?: number } | null>(
+      (resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+          () => resolve(null),
+          { enableHighAccuracy: true, timeout: 7000, maximumAge: 0 },
+        );
+      },
+    );
+
+    const res1 = await highAccuracyPromise;
+    if (res1) return res1;
+  }
+
+  return null;
+}
+
+/**
+ * Retrieves the real full current address based strictly on hardware device GPS.
  */
 export async function getCurrentLocationInfo(defaultHint?: string | null): Promise<{
   locationText: string;
   latitude?: number;
   longitude?: number;
 }> {
-  // 1. Try Browser / Device Geolocation
-  if (typeof navigator !== 'undefined' && navigator.geolocation) {
-    const devicePos = await new Promise<GeolocationPosition | null>((resolve) => {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => resolve(pos),
-        () => {
-          // If high accuracy failed or timed out, try standard accuracy
-          navigator.geolocation.getCurrentPosition(
-            (pos2) => resolve(pos2),
-            () => resolve(null),
-            { enableHighAccuracy: false, timeout: 6000, maximumAge: 0 },
-          );
-        },
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 },
-      );
-    });
+  // 1. Try Pin-Point Hardware Device GPS
+  const coords = await getAccurateGPSCoordinates();
+  if (coords) {
+    const resolvedAddress = await reverseGeocodeCoordinates(coords.latitude, coords.longitude);
+    if (resolvedAddress) {
+      return { locationText: resolvedAddress, latitude: coords.latitude, longitude: coords.longitude };
+    }
+    return {
+      locationText: `Lat: ${coords.latitude.toFixed(5)}, Lon: ${coords.longitude.toFixed(5)}`,
+      latitude: coords.latitude,
+      longitude: coords.longitude,
+    };
+  }
 
-    if (devicePos?.coords) {
-      const { latitude, longitude } = devicePos.coords;
-      const resolvedAddress = await reverseGeocodeCoordinates(latitude, longitude);
-      if (resolvedAddress) {
-        return { locationText: resolvedAddress, latitude, longitude };
-      }
+  // 2. Only use IP Geolocation on Web desktop browsers if hardware GPS is entirely unavailable
+  if (Platform.OS === 'web') {
+    const ipResult = await getIpLocation();
+    if (ipResult) {
+      return ipResult;
     }
   }
 
-  // 2. Fallback to IP Geolocation if device GPS is slow or unavailable
-  const ipResult = await getIpLocation();
-  if (ipResult) {
-    return ipResult;
-  }
-
-  // 3. Fallback to valid clean store hint or standard default
+  // 3. Fallback to store hint or standard default
   const cleanHint = defaultHint?.trim();
   if (cleanHint && cleanHint.toLowerCase() !== 'it' && cleanHint.toLowerCase() !== 'it department' && cleanHint.length > 3) {
     return { locationText: cleanHint };

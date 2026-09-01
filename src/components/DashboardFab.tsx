@@ -64,11 +64,11 @@ export function DashboardFab({ onPhotoProof, onPhotoLog, onActivityLog }: Dashbo
 
   const photoProofTranslateX = animation.interpolate({
     inputRange: [0, 1],
-    outputRange: [0, -58],
+    outputRange: [0, -72],
   });
   const photoProofTranslateY = animation.interpolate({
     inputRange: [0, 1],
-    outputRange: [0, -32],
+    outputRange: [0, -38],
   });
   const photoProofScale = animation.interpolate({
     inputRange: [0, 0.4, 1],
@@ -81,11 +81,11 @@ export function DashboardFab({ onPhotoProof, onPhotoLog, onActivityLog }: Dashbo
 
   const activityLogTranslateX = animation.interpolate({
     inputRange: [0, 1],
-    outputRange: [0, -26],
+    outputRange: [0, -32],
   });
   const activityLogTranslateY = animation.interpolate({
     inputRange: [0, 1],
-    outputRange: [0, -78],
+    outputRange: [0, -92],
   });
   const activityLogScale = animation.interpolate({
     inputRange: [0, 0.4, 1],
@@ -127,10 +127,11 @@ export function DashboardFab({ onPhotoProof, onPhotoLog, onActivityLog }: Dashbo
               pressed ? styles.subButtonPressed : null,
             ]}
             onPress={handlePhotoLogPress}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
             <Svg
-              width={20}
-              height={20}
+              width={24}
+              height={24}
               viewBox="0 0 24 24"
               fill="none"
               stroke="#000000"
@@ -170,8 +171,9 @@ export function DashboardFab({ onPhotoProof, onPhotoLog, onActivityLog }: Dashbo
               pressed ? styles.subButtonPressed : null,
             ]}
             onPress={handlePhotoProofPress}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
-            <Camera size={20} color="#000000" strokeWidth={2.3} />
+            <Camera size={24} color="#000000" strokeWidth={2.4} />
           </Pressable>
         </Animated.View>
 
@@ -182,9 +184,10 @@ export function DashboardFab({ onPhotoProof, onPhotoLog, onActivityLog }: Dashbo
             pressed ? styles.mainButtonPressed : null,
           ]}
           onPress={toggleMenu}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
           <Animated.View style={{ transform: [{ rotate: rotation }] }}>
-            <Plus size={32} color="#ffffff" strokeWidth={3.5} />
+            <Plus size={34} color="#ffffff" strokeWidth={3.5} />
           </Animated.View>
         </Pressable>
       </View>
@@ -202,9 +205,9 @@ const styles = StyleSheet.create({
     zIndex: 99,
   },
   mainButton: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 62,
+    height: 62,
+    borderRadius: 31,
     backgroundColor: '#f5af00',
     alignItems: 'center',
     justifyContent: 'center',
@@ -225,14 +228,14 @@ const styles = StyleSheet.create({
     zIndex: 98,
   },
   subActionButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     backgroundColor: '#ffffff',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.06)',
+    borderColor: 'rgba(0, 0, 0, 0.08)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.2,

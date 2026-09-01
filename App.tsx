@@ -739,20 +739,11 @@ export default function App() {
 
   async function handleOpenPhotoProof() {
     try {
-      const { cameraGranted } = await requestCameraAndLocationPermissions();
-      if (!cameraGranted && Platform.OS !== 'web') {
-        Alert.alert(
-          'Permission Needed',
-          'Please allow camera and location access to capture real-time photo proofs.',
-          [{ text: 'OK' }]
-        );
-        return;
-      }
-      openQuickRequest('photo_proof');
+      void requestCameraAndLocationPermissions();
     } catch (err) {
       console.warn('Permission error:', err);
-      openQuickRequest('photo_proof');
     }
+    openQuickRequest('photo_proof');
   }
 
   async function completeLogin(user: User) {
@@ -1523,6 +1514,7 @@ function SlideOverlayContainer({
   useEffect(() => {
     if (visible) {
       setShouldRender(true);
+      slideAnim.setValue(SCREEN_WIDTH);
       Animated.timing(slideAnim, {
         toValue: 0,
         duration: 350,
@@ -1537,7 +1529,7 @@ function SlideOverlayContainer({
         setShouldRender(false);
       });
     }
-  }, [visible]);
+  }, [visible, slideAnim]);
 
   if (!shouldRender) {
     return null;

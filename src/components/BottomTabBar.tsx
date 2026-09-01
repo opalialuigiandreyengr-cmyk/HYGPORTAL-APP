@@ -95,6 +95,7 @@ export function BottomTabBar({
             ]}
             onPress={onAssistant}
             disabled={!onAssistant}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
             <Bot size={30} color={colors.brand.ink} strokeWidth={2.8} />
           </Pressable>

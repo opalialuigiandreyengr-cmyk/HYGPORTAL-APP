@@ -15,6 +15,8 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { ChevronLeft, Info, RefreshCw, SwitchCamera, X, Check, Eye, Pencil, MapPin } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
+import { CameraView } from 'expo-camera';
 import { fontWeights, radius, spacing } from '../theme';
 import {
   formatProofTimestamp,
@@ -52,9 +54,10 @@ export function PhotoProofScreen({
   // Real-time clock
   const [currentTimestamp, setCurrentTimestamp] = useState(formatProofTimestamp());
 
-  // Web camera video element ref
+  // Web camera video element ref & Native Camera ref
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const nativeCameraRef = useRef<any>(null);
   const [isWebCameraReady, setIsWebCameraReady] = useState(false);
 
   // Shutter flash animation
@@ -74,9 +77,10 @@ export function PhotoProofScreen({
     try {
       const info = await getCurrentLocationInfo(userStoreName);
       setLocationText(info.locationText);
+      setTempAddress(info.locationText);
       setCoordinates({ lat: info.latitude, lon: info.longitude });
-    } catch {
-      // ignore
+    } catch (err) {
+      console.warn('Location detection failed:', err);
     } finally {
       setIsRefreshingLocation(false);
     }
@@ -85,9 +89,35 @@ export function PhotoProofScreen({
   useEffect(() => {
     void refreshLocation();
 
-    // Start watching position for continuous high-accuracy live updates
+    let sub: Location.LocationSubscription | null = null;
     let watchId: number | null = null;
-    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+
+    if (Platform.OS !== 'web') {
+      void (async () => {
+        try {
+          const { status } = await Location.getForegroundPermissionsAsync();
+          if (status === 'granted') {
+            sub = await Location.watchPositionAsync(
+              {
+                accuracy: Location.Accuracy.High,
+                timeInterval: 8000,
+                distanceInterval: 10,
+              },
+              async (loc) => {
+                const { latitude, longitude } = loc.coords;
+                const fullAddr = await reverseGeocodeCoordinates(latitude, longitude);
+                if (fullAddr) {
+                  setLocationText(fullAddr);
+                  setCoordinates({ lat: latitude, lon: longitude });
+                }
+              },
+            );
+          }
+        } catch {
+          // ignore
+        }
+      })();
+    } else if (typeof navigator !== 'undefined' && navigator.geolocation) {
       watchId = navigator.geolocation.watchPosition(
         async (pos) => {
           const { latitude, longitude } = pos.coords;
@@ -103,6 +133,9 @@ export function PhotoProofScreen({
     }
 
     return () => {
+      if (sub) {
+        sub.remove();
+      }
       if (watchId !== null && typeof navigator !== 'undefined' && navigator.geolocation) {
         navigator.geolocation.clearWatch(watchId);
       }
@@ -144,6 +177,7 @@ export function PhotoProofScreen({
     return () => {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
       }
     };
   }, [facingMode, startWebCamera]);
@@ -182,8 +216,17 @@ export function PhotoProofScreen({
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           finalPhotoUri = canvas.toDataURL('image/jpeg', 0.88);
         }
+      } else if (nativeCameraRef.current) {
+        // Capture directly from live embedded CameraView on native mobile
+        const photo = await nativeCameraRef.current.takePictureAsync({
+          quality: 0.88,
+          base64: true,
+        });
+        if (photo?.uri) {
+          finalPhotoUri = photo.uri;
+        }
       } else {
-        // Use Expo ImagePicker Camera for native
+        // Fallback to ImagePicker launchCameraAsync if CameraView not bound
         const result = await ImagePicker.launchCameraAsync({
           mediaTypes: ['images'],
           allowsEditing: false,
@@ -293,15 +336,11 @@ export function PhotoProofScreen({
         ) : capturedPhotoUri ? (
           <Image source={{ uri: capturedPhotoUri }} style={styles.viewfinderMedia} resizeMode="cover" />
         ) : (
-          <View style={styles.nativeCameraPlaceholder}>
-            <Image
-              source={{
-                uri: 'https://images.unsplash.com/photo-1577495508048-b635879837f1?auto=format&fit=crop&w=1200&q=80',
-              }}
-              style={styles.viewfinderMedia}
-              resizeMode="cover"
-            />
-          </View>
+          <CameraView
+            ref={nativeCameraRef}
+            facing={facingMode === 'user' ? 'front' : 'back'}
+            style={styles.viewfinderMedia}
+          />
         )}
 
         {/* Viewfinder Top Controls */}
@@ -382,7 +421,7 @@ export function PhotoProofScreen({
         )}
       </View>
 
-      {/* Edit Address Modal */}
+      {/* Verify GPS Location Modal */}
       <Modal
         visible={showEditAddressModal}
         transparent
@@ -394,7 +433,7 @@ export function PhotoProofScreen({
             <View style={styles.infoModalHeader}>
               <View style={styles.editModalHeaderLeft}>
                 <MapPin size={20} color="#0284c7" strokeWidth={2.4} />
-                <Text style={styles.infoModalTitle}>Verify Location Address</Text>
+                <Text style={styles.infoModalTitle}>Verified GPS Location</Text>
               </View>
               <Pressable onPress={() => setShowEditAddressModal(false)} hitSlop={10}>
                 <X size={22} color="#64748b" strokeWidth={2.4} />
@@ -402,48 +441,28 @@ export function PhotoProofScreen({
             </View>
 
             <Text style={styles.editModalSub}>
-              Confirm or fine-tune your exact street and building address for this photo proof:
+              Verified real-time satellite GPS address recorded for this photo proof:
             </Text>
 
-            <TextInput
-              style={styles.editAddressInput}
-              value={tempAddress}
-              onChangeText={setTempAddress}
-              multiline
-              numberOfLines={3}
-              placeholder="e.g. Building Name, Street Name, Barangay, City, Postal Code"
-              placeholderTextColor="#94a3b8"
-            />
+            <View style={styles.readOnlyAddressBox}>
+              <MapPin size={18} color="#0284c7" strokeWidth={2.2} style={{ marginTop: 2 }} />
+              <Text style={styles.readOnlyAddressText}>{locationText}</Text>
+            </View>
 
             <View style={styles.editModalActions}>
               <Pressable
-                style={styles.editModalRedetectBtn}
-                onPress={async () => {
-                  setIsRefreshingLocation(true);
-                  const info = await getCurrentLocationInfo(userStoreName);
-                  setTempAddress(info.locationText);
-                  setLocationText(info.locationText);
-                  setCoordinates({ lat: info.latitude, lon: info.longitude });
-                  setIsRefreshingLocation(false);
-                }}
+                style={({ pressed }) => [
+                  styles.fullWidthRedetectBtn,
+                  pressed ? styles.fullWidthRedetectPressed : null,
+                  isRefreshingLocation ? styles.fullWidthRedetectDisabled : null,
+                ]}
+                onPress={() => void refreshLocation()}
                 disabled={isRefreshingLocation}
               >
-                <RefreshCw size={14} color="#0f172a" strokeWidth={2.2} />
-                <Text style={styles.editModalRedetectText}>
-                  {isRefreshingLocation ? 'Locating...' : 'Re-detect GPS'}
+                <RefreshCw size={16} color="#ffffff" strokeWidth={2.4} />
+                <Text style={styles.fullWidthRedetectText}>
+                  {isRefreshingLocation ? 'Acquiring GPS Signal...' : 'Re-detect GPS Location'}
                 </Text>
-              </Pressable>
-
-              <Pressable
-                style={styles.editModalSaveBtn}
-                onPress={() => {
-                  if (tempAddress.trim()) {
-                    setLocationText(tempAddress.trim());
-                  }
-                  setShowEditAddressModal(false);
-                }}
-              >
-                <Text style={styles.editModalSaveText}>Apply Address</Text>
               </Pressable>
             </View>
           </View>
@@ -693,50 +712,47 @@ const styles = StyleSheet.create({
     color: '#64748b',
     marginBottom: spacing.md,
   },
-  editAddressInput: {
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: radius.md,
-    padding: spacing.md,
-    fontSize: 14,
-    lineHeight: 20,
-    color: '#0f172a',
-    backgroundColor: '#f8fafc',
-    minHeight: 85,
-    textAlignVertical: 'top',
-    marginBottom: spacing.md,
-  },
-  editModalActions: {
+  readOnlyAddressBox: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  editModalRedetectBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: radius.md,
-    backgroundColor: '#f1f5f9',
+    alignItems: 'flex-start',
+    gap: spacing.xs + 4,
     borderWidth: 1,
     borderColor: '#e2e8f0',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    backgroundColor: '#f8fafc',
+    minHeight: 75,
+    marginBottom: spacing.md,
   },
-  editModalRedetectText: {
-    fontSize: 13,
-    fontWeight: fontWeights.bold,
+  readOnlyAddressText: {
+    flex: 1,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: fontWeights.semibold,
     color: '#0f172a',
   },
-  editModalSaveBtn: {
-    flex: 1,
-    paddingVertical: 12,
+  editModalActions: {
+    width: '100%',
+  },
+  fullWidthRedetectBtn: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 13,
     paddingHorizontal: 16,
     borderRadius: radius.md,
     backgroundColor: '#0f172a',
-    alignItems: 'center',
   },
-  editModalSaveText: {
+  fullWidthRedetectPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.98 }],
+  },
+  fullWidthRedetectDisabled: {
+    opacity: 0.6,
+  },
+  fullWidthRedetectText: {
     fontSize: 14,
     fontWeight: fontWeights.bold,
     color: '#ffffff',
