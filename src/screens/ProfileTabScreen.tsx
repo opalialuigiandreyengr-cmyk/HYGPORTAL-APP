@@ -52,6 +52,8 @@ type Props = {
   onOpenProfile?: () => void;
   onOpenSettings?: () => void;
   onOpenMyTeam?: () => void;
+  onOpenRewards?: () => void;
+  pointsBalance?: number;
 };
 
 type ProfileToast = {
@@ -131,7 +133,7 @@ const PROFILE_SECTION_TABS: {
   { key: 'children', label: 'Children Information', icon: Baby, color: '#4f46e5' },
 ];
 
-export function ProfileTabScreen({ email, username, isLoading, result, onToast, onSignOut, onProfileUpdated, notificationCount = 0, onAssistant, onNotifications, onOpenProfile, onOpenSettings, onOpenMyTeam }: Props) {
+export function ProfileTabScreen({ email, username, isLoading, result, onToast, onSignOut, onProfileUpdated, notificationCount = 0, onAssistant, onNotifications, onOpenProfile, onOpenSettings, onOpenMyTeam, onOpenRewards, pointsBalance = 0 }: Props) {
   const resultProfile = result?.status === 'linked' ? result.profile : null;
   const [localProfile, setLocalProfile] = useState<EmployeeProfileSummary | null>(resultProfile);
   const profile = localProfile;
@@ -459,7 +461,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
     return (
       <View style={styles.root}>
         <StatusBar style="dark" />
-        <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onSignOut={onSignOut} />
+        <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} onSignOut={onSignOut} />
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#eab308" />
           <Text style={styles.loadingText}>Loading profile...</Text>
@@ -475,7 +477,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
       style={styles.root}
     >
       <StatusBar style="dark" />
-      <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onSignOut={onSignOut} />
+      <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} onSignOut={onSignOut} />
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}

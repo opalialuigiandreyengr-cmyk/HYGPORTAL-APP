@@ -47,11 +47,13 @@ type Props = {
   onOpenProfile?: () => void;
   onOpenSettings?: () => void;
   onOpenMyTeam?: () => void;
+  onOpenRewards?: () => void;
   onEditRequest?: (request: MyRequest) => void;
   refreshTrigger?: number;
+  pointsBalance?: number;
 };
 
-export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssistant, onNotifications, onOpenProfile, onOpenSettings, onOpenMyTeam, onEditRequest, refreshTrigger }: Props) {
+export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssistant, onNotifications, onOpenProfile, onOpenSettings, onOpenMyTeam, onOpenRewards, onEditRequest, refreshTrigger, pointsBalance = 0 }: Props) {
   const [items, setItems] = useState<MyRequest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
@@ -226,7 +228,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} />
+      <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} />
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <View style={styles.filterPanel}>
           <View style={styles.searchRow}>

@@ -37,6 +37,7 @@ type Props = {
   onOpenProfile: () => void;
   onOpenSettings: () => void;
   onOpenMyTeam?: () => void;
+  onOpenRewards?: () => void;
   onSignOut?: () => void | Promise<void>;
   notificationCount?: number;
   onAssistant?: () => void;
@@ -48,6 +49,7 @@ type Props = {
   onPhotoLog?: () => void;
   onActivityLog?: () => void;
   onBirthdayGreetingClosed?: () => void;
+  hideFab?: boolean;
 };
 
 export function DashboardScreen({
@@ -59,6 +61,7 @@ export function DashboardScreen({
   onOpenProfile,
   onOpenSettings,
   onOpenMyTeam,
+  onOpenRewards,
   onSignOut,
   notificationCount = 0,
   onAssistant,
@@ -70,6 +73,7 @@ export function DashboardScreen({
   onPhotoLog,
   onActivityLog,
   onBirthdayGreetingClosed,
+  hideFab = false,
 }: Props) {
   const [perkUsage, setPerkUsage] = useState<PerkUsage | null>(null);
   const [recentRequests, setRecentRequests] = useState<MyRequest[]>([]);
@@ -178,6 +182,7 @@ export function DashboardScreen({
         onOpenProfile={onOpenProfile}
         onOpenSettings={onOpenSettings}
         onOpenMyTeam={onOpenMyTeam}
+        onOpenRewards={onOpenRewards}
         onSignOut={onSignOut}
       />
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
@@ -267,11 +272,13 @@ export function DashboardScreen({
         onClose={handleCloseBirthdayModal}
       />
 
-      <DashboardFab
-        onPhotoProof={onPhotoProof}
-        onPhotoLog={onPhotoLog}
-        onActivityLog={onActivityLog}
-      />
+      {!hideFab && (
+        <DashboardFab
+          onPhotoProof={onPhotoProof}
+          onPhotoLog={onPhotoLog}
+          onActivityLog={onActivityLog}
+        />
+      )}
     </View>
   );
 }

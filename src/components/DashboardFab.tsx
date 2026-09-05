@@ -97,87 +97,89 @@ export function DashboardFab({ onPhotoProof, onPhotoLog, onActivityLog }: Dashbo
   });
 
   return (
-    <>
+    <View style={styles.overlayContainer} pointerEvents="box-none">
       {isOpen && (
         <Pressable
-          style={StyleSheet.absoluteFillObject}
+          style={StyleSheet.absoluteFill}
           onPress={closeMenu}
         />
       )}
 
-      <View style={styles.container} pointerEvents="box-none">
-        {/* Activity Log Action Button */}
-        <Animated.View
-          style={[
-            styles.subActionWrapper,
-            {
-              opacity: activityLogOpacity,
-              transform: [
-                { translateX: activityLogTranslateX },
-                { translateY: activityLogTranslateY },
-                { scale: activityLogScale },
-              ],
-            },
+      {/* Activity Log Action Button */}
+      <Animated.View
+        style={[
+          styles.subActionWrapper,
+          {
+            opacity: activityLogOpacity,
+            transform: [
+              { translateX: activityLogTranslateX },
+              { translateY: activityLogTranslateY },
+              { scale: activityLogScale },
+            ],
+          },
+        ]}
+        pointerEvents={isOpen ? 'auto' : 'none'}
+      >
+        <Pressable
+          style={({ pressed }) => [
+            styles.subActionButton,
+            pressed ? styles.subButtonPressed : null,
           ]}
-          pointerEvents={isOpen ? 'auto' : 'none'}
+          onPress={handlePhotoLogPress}
+          disabled={!isOpen}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
-          <Pressable
-            style={({ pressed }) => [
-              styles.subActionButton,
-              pressed ? styles.subButtonPressed : null,
-            ]}
-            onPress={handlePhotoLogPress}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          <Svg
+            width={24}
+            height={24}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#000000"
+            strokeWidth={2.4}
+            strokeLinecap="round"
+            strokeLinejoin="round"
           >
-            <Svg
-              width={24}
-              height={24}
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#000000"
-              strokeWidth={2.4}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <Rect x="4" y="3" width="16" height="18" rx="2" strokeWidth={2.2} />
-              <Line x1="8" y1="8" x2="8.01" y2="8" strokeWidth={3} />
-              <Line x1="12" y1="8" x2="16" y2="8" strokeWidth={2.2} />
-              <Line x1="8" y1="12" x2="8.01" y2="12" strokeWidth={3} />
-              <Line x1="12" y1="12" x2="16" y2="12" strokeWidth={2.2} />
-              <Line x1="8" y1="16" x2="8.01" y2="16" strokeWidth={3} />
-              <Line x1="12" y1="16" x2="16" y2="16" strokeWidth={2.2} />
-            </Svg>
-          </Pressable>
-        </Animated.View>
+            <Rect x="4" y="3" width="16" height="18" rx="2" strokeWidth={2.2} />
+            <Line x1="8" y1="8" x2="8.01" y2="8" strokeWidth={3} />
+            <Line x1="12" y1="8" x2="16" y2="8" strokeWidth={2.2} />
+            <Line x1="8" y1="12" x2="8.01" y2="12" strokeWidth={3} />
+            <Line x1="12" y1="12" x2="16" y2="12" strokeWidth={2.2} />
+            <Line x1="8" y1="16" x2="8.01" y2="16" strokeWidth={3} />
+            <Line x1="12" y1="16" x2="16" y2="16" strokeWidth={2.2} />
+          </Svg>
+        </Pressable>
+      </Animated.View>
 
-        {/* Photo Proof Action Button */}
-        <Animated.View
-          style={[
-            styles.subActionWrapper,
-            {
-              opacity: photoProofOpacity,
-              transform: [
-                { translateX: photoProofTranslateX },
-                { translateY: photoProofTranslateY },
-                { scale: photoProofScale },
-              ],
-            },
+      {/* Photo Proof Action Button */}
+      <Animated.View
+        style={[
+          styles.subActionWrapper,
+          {
+            opacity: photoProofOpacity,
+            transform: [
+              { translateX: photoProofTranslateX },
+              { translateY: photoProofTranslateY },
+              { scale: photoProofScale },
+            ],
+          },
+        ]}
+        pointerEvents={isOpen ? 'auto' : 'none'}
+      >
+        <Pressable
+          style={({ pressed }) => [
+            styles.subActionButton,
+            pressed ? styles.subButtonPressed : null,
           ]}
-          pointerEvents={isOpen ? 'auto' : 'none'}
+          onPress={handlePhotoProofPress}
+          disabled={!isOpen}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
-          <Pressable
-            style={({ pressed }) => [
-              styles.subActionButton,
-              pressed ? styles.subButtonPressed : null,
-            ]}
-            onPress={handlePhotoProofPress}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          >
-            <Camera size={24} color="#000000" strokeWidth={2.4} />
-          </Pressable>
-        </Animated.View>
+          <Camera size={24} color="#000000" strokeWidth={2.4} />
+        </Pressable>
+      </Animated.View>
 
-        {/* Main Floating Action Button */}
+      {/* Main Floating Action Button */}
+      <View style={styles.mainButtonWrapper} pointerEvents="box-none">
         <Pressable
           style={({ pressed }) => [
             styles.mainButton,
@@ -191,41 +193,25 @@ export function DashboardFab({ onPhotoProof, onPhotoLog, onActivityLog }: Dashbo
           </Animated.View>
         </Pressable>
       </View>
-    </>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    position: 'absolute',
-    right: 20,
-    bottom: 92,
-    alignItems: 'center',
-    justifyContent: 'center',
+  overlayContainer: {
+    ...StyleSheet.absoluteFill,
     zIndex: 99,
-  },
-  mainButton: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    backgroundColor: '#f5af00',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.28,
-    shadowRadius: 6,
-    elevation: 8,
-  },
-  mainButtonPressed: {
-    transform: [{ scale: 0.94 }],
-    opacity: 0.92,
   },
   subActionWrapper: {
     position: 'absolute',
+    right: 25,
+    bottom: 97,
+    width: 52,
+    height: 52,
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 98,
+    zIndex: 100,
+    elevation: 8,
   },
   subActionButton: {
     width: 52,
@@ -245,5 +231,31 @@ const styles = StyleSheet.create({
   subButtonPressed: {
     transform: [{ scale: 0.92 }],
     backgroundColor: '#f8fafc',
+  },
+  mainButtonWrapper: {
+    position: 'absolute',
+    right: 20,
+    bottom: 92,
+    width: 62,
+    height: 62,
+    zIndex: 101,
+    elevation: 10,
+  },
+  mainButton: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    backgroundColor: '#f5af00',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.28,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  mainButtonPressed: {
+    transform: [{ scale: 0.94 }],
+    opacity: 0.92,
   },
 });

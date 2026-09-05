@@ -249,6 +249,62 @@ export function ApplyEsarfScreen({
   const reasonInputRef = useRef<TextInput | null>(null);
   const sectionY = useRef<Record<SectionKey, number>>({ request: 0, transactions: 0, datetime: 0 });
 
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const focusedReasonIndex = useRef<number | null>(null);
+  const entryCardLayouts = useRef<Record<number, number>>({});
+  const reasonLayouts = useRef<Record<number, number>>({});
+  const entriesSectionY = useRef(0);
+  const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scrollToReasonInput = (index: number) => {
+    if (scrollTimer.current) {
+      clearTimeout(scrollTimer.current);
+    }
+    scrollTimer.current = setTimeout(() => {
+      const cardY = entryCardLayouts.current[index] ?? 0;
+      const rY = reasonLayouts.current[index] ?? 0;
+      const secY = entriesSectionY.current || sectionY.current.transactions || 0;
+      const totalY = secY + cardY + rY;
+
+      if (totalY > 0 && scrollRef.current) {
+        scrollRef.current.scrollTo({
+          y: Math.max(0, totalY - 70),
+          animated: true,
+        });
+      } else if (scrollRef.current) {
+        scrollRef.current.scrollToEnd({ animated: true });
+      }
+    }, Platform.OS === 'android' ? 120 : 60);
+  };
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (event) => {
+        const height = event.endCoordinates?.height ?? 0;
+        setKeyboardHeight(height);
+        if (focusedReasonIndex.current !== null) {
+          scrollToReasonInput(focusedReasonIndex.current);
+        }
+      }
+    );
+
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardHeight(0);
+      }
+    );
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+      if (scrollTimer.current) {
+        clearTimeout(scrollTimer.current);
+      }
+    };
+  }, []);
+
   const primaryDateFrom = entries[0]?.dateFrom || '';
 
   useEffect(() => {
@@ -865,13 +921,21 @@ export function ApplyEsarfScreen({
         onNotifications={onNotifications ? () => confirmDiscard(onNotifications) : undefined}
       />
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
         style={styles.keyboardAvoider}
       >
       <ScrollView
         ref={scrollRef}
-        contentContainerStyle={styles.scroll}
+        contentContainerStyle={[
+          styles.scroll,
+          {
+            paddingBottom:
+              Platform.OS === 'android'
+                ? (keyboardHeight > 0 ? keyboardHeight + 140 : spacing.xl)
+                : (keyboardHeight > 0 ? 100 : spacing.xl),
+          },
+        ]}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
@@ -989,6 +1053,7 @@ export function ApplyEsarfScreen({
         <View
           style={styles.entriesSectionContainer}
           onLayout={(event) => {
+            entriesSectionY.current = event.nativeEvent.layout.y;
             sectionY.current.transactions = event.nativeEvent.layout.y;
             sectionY.current.datetime = event.nativeEvent.layout.y;
           }}
@@ -1039,7 +1104,13 @@ export function ApplyEsarfScreen({
             const hours = getEntryTotalHours(entry);
 
             return (
-              <View key={entry.id} style={styles.entryCard}>
+              <View
+                key={entry.id}
+                style={styles.entryCard}
+                onLayout={(event) => {
+                  entryCardLayouts.current[actualIndex] = event.nativeEvent.layout.y;
+                }}
+              >
                 <View style={styles.entryCardHeader}>
                   <View style={styles.entryBadge}>
                     <Text style={styles.entryBadgeText}>{badgeNumber}</Text>
@@ -1234,7 +1305,12 @@ export function ApplyEsarfScreen({
                 ) : null}
 
                   {/* Row 3: Reason Text Area */}
-                  <View style={styles.reasonFieldWrap}>
+                  <View
+                    style={styles.reasonFieldWrap}
+                    onLayout={(event) => {
+                      reasonLayouts.current[actualIndex] = event.nativeEvent.layout.y;
+                    }}
+                  >
                     <Text style={styles.reasonFieldLabel}>Reason</Text>
                     <TextInput
                       value={entry.reason}
@@ -1254,9 +1330,18 @@ export function ApplyEsarfScreen({
                         styles.reasonTextArea,
                         validationErrors[`entry_${actualIndex}_reason`] ? styles.inputError : null,
                       ]}
+                      onFocus={() => {
+                        focusedReasonIndex.current = actualIndex;
+                        scrollToReasonInput(actualIndex);
+                      }}
+                      onBlur={() => {
+                        if (focusedReasonIndex.current === actualIndex) {
+                          focusedReasonIndex.current = null;
+                        }
+                      }}
                     />
                     {validationErrors[`entry_${actualIndex}_reason`] ? (
-                      <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_reason`]}</Text>
+                      <Text style={styles.reasonFieldError}>{validationErrors[`entry_${actualIndex}_reason`]}</Text>
                     ) : null}
                   </View>
                 </View>
@@ -2601,8 +2686,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
     fontWeight: fontWeights.bold,
-    marginTop: -8,
-    marginBottom: spacing.md,
+    marginTop: 6,
+    marginBottom: spacing.sm,
+  },
+  reasonFieldError: {
+    color: colors.semantic.danger,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: fontWeights.bold,
+    marginTop: 8,
+    marginBottom: spacing.xs,
   },
   inputShell: {
     minHeight: 48,

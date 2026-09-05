@@ -5,6 +5,7 @@ import {
   Dimensions,
   FlatList,
   Image,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -18,6 +19,7 @@ import {
   Camera,
   ChevronLeft,
   Clock,
+  ExternalLink,
   Eye,
   MapPin,
   Plus,
@@ -25,6 +27,7 @@ import {
   X,
 } from 'lucide-react-native';
 import { fontWeights, radius, spacing } from '../theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   deletePhotoProof,
   loadPhotoProofs,
@@ -34,18 +37,23 @@ import {
 type Props = {
   onBack: () => void;
   onTakeNew: () => void;
+  employeeId?: string | null;
   employeeName?: string | null;
+  userEmail?: string | null;
 };
 
-export function PhotoLogScreen({ onBack, onTakeNew, employeeName }: Props) {
+export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, userEmail }: Props) {
+  const insets = useSafeAreaInsets();
   const [logs, setLogs] = useState<PhotoProofItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedPhoto, setSelectedPhoto] = useState<PhotoProofItem | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<PhotoProofItem | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const fetchLogs = async () => {
     setIsLoading(true);
     try {
-      const items = await loadPhotoProofs();
+      const items = await loadPhotoProofs({ employeeId, employeeName, userEmail });
       setLogs(items);
     } catch (err) {
       console.error('Error loading photo logs:', err);
@@ -56,24 +64,28 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeName }: Props) {
 
   useEffect(() => {
     void fetchLogs();
-  }, []);
+  }, [employeeId, employeeName, userEmail]);
 
   const handleDelete = (item: PhotoProofItem) => {
-    Alert.alert(
-      'Delete Photo Proof',
-      `Are you sure you want to delete the photo proof taken at ${item.timeDigits} ${item.timePeriod}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            await deletePhotoProof(item.id);
-            setLogs((prev) => prev.filter((p) => p.id !== item.id));
-          },
-        },
-      ],
-    );
+    setItemToDelete(item);
+  };
+
+  const confirmDelete = async () => {
+    if (!itemToDelete) return;
+    setIsDeleting(true);
+    try {
+      await deletePhotoProof(itemToDelete);
+      setLogs((prev) => prev.filter((p) => p.id !== itemToDelete.id));
+      if (selectedPhoto?.id === itemToDelete.id) {
+        setSelectedPhoto(null);
+      }
+      setItemToDelete(null);
+    } catch (err: any) {
+      console.error('Failed to delete photo proof:', err);
+      Alert.alert('Delete Failed', `Could not delete photo proof: ${err?.message || err}`);
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   return (
@@ -81,7 +93,14 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeName }: Props) {
       <StatusBar style="dark" />
 
       {/* Header */}
-      <View style={styles.header}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop: Platform.OS === 'web' ? 14 : Math.max(insets.top + (Platform.OS === 'android' ? 8 : 0), 14),
+          },
+        ]}
+      >
         <Pressable style={styles.headerIconButton} onPress={onBack} hitSlop={12}>
           <ChevronLeft size={28} color="#0f172a" strokeWidth={2.4} />
         </Pressable>
@@ -117,7 +136,12 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeName }: Props) {
         <FlatList
           data={logs}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[
+            styles.listContent,
+            {
+              paddingBottom: Math.max(insets.bottom + 24, 40),
+            },
+          ]}
           showsVerticalScrollIndicator={false}
           renderItem={({ item }) => (
             <View style={styles.logCard}>
@@ -126,7 +150,16 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeName }: Props) {
                 style={styles.imageWrapper}
                 onPress={() => setSelectedPhoto(item)}
               >
-                <Image source={{ uri: item.photoUri }} style={styles.logImage} resizeMode="cover" />
+                {item.photoUri ? (
+                  <Image source={{ uri: item.photoUri }} style={styles.logImage} resizeMode="cover" />
+                ) : (
+                  <View style={styles.imagePlaceholder}>
+                    <Camera size={34} color="#94a3b8" strokeWidth={1.8} />
+                    <Text style={styles.imagePlaceholderText}>
+                      {item.driveWebViewLink ? 'Stored in Google Drive' : 'Syncing photo...'}
+                    </Text>
+                  </View>
+                )}
                 <View style={styles.imageOverlayGradient}>
                   <View style={styles.overlayTimeRow}>
                     <Text style={styles.overlayTimeText}>
@@ -193,21 +226,55 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeName }: Props) {
         onRequestClose={() => setSelectedPhoto(null)}
       >
         <View style={styles.viewerModalOverlay}>
-          <Pressable
-            style={styles.viewerCloseButton}
-            onPress={() => setSelectedPhoto(null)}
-            hitSlop={12}
+          <View
+            style={[
+              styles.viewerTopBar,
+              {
+                top: Platform.OS === 'web' ? 20 : Math.max(insets.top + (Platform.OS === 'android' ? 10 : 0), 20),
+              },
+            ]}
           >
-            <X size={26} color="#ffffff" strokeWidth={2.5} />
-          </Pressable>
+            {selectedPhoto && (
+              <Pressable
+                style={styles.viewerTrashBtn}
+                onPress={() => setItemToDelete(selectedPhoto)}
+                hitSlop={12}
+              >
+                <Trash2 size={20} color="#ffffff" strokeWidth={2.2} />
+              </Pressable>
+            )}
+            <Pressable
+              style={styles.viewerCloseButton}
+              onPress={() => setSelectedPhoto(null)}
+              hitSlop={12}
+            >
+              <X size={24} color="#ffffff" strokeWidth={2.5} />
+            </Pressable>
+          </View>
 
           {selectedPhoto && (
             <View style={styles.viewerContent}>
-              <Image
-                source={{ uri: selectedPhoto.photoUri }}
-                style={styles.viewerImage}
-                resizeMode="contain"
-              />
+              {selectedPhoto.photoUri ? (
+                <Image
+                  source={{ uri: selectedPhoto.photoUri }}
+                  style={styles.viewerImage}
+                  resizeMode="contain"
+                />
+              ) : (
+                <View style={[styles.viewerImage, styles.viewerPlaceholder]}>
+                  <Camera size={52} color="#94a3b8" strokeWidth={1.8} />
+                  <Text style={styles.viewerPlaceholderText}>Full image stored in Google Drive</Text>
+                  {selectedPhoto.driveWebViewLink ? (
+                    <Pressable
+                      style={styles.driveLinkBtn}
+                      onPress={() => Linking.openURL(selectedPhoto.driveWebViewLink!)}
+                    >
+                      <ExternalLink size={16} color="#ffffff" strokeWidth={2.2} />
+                      <Text style={styles.driveLinkText}>Open in Google Drive</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              )}
               <View style={styles.viewerWatermark}>
                 <View style={styles.overlayTimeRow}>
                   <Text style={styles.viewerTimeText}>
@@ -224,6 +291,58 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeName }: Props) {
               </View>
             </View>
           )}
+        </View>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        visible={Boolean(itemToDelete)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!isDeleting) setItemToDelete(null);
+        }}
+      >
+        <View style={styles.confirmModalOverlay}>
+          <View style={styles.confirmCard}>
+            <View style={styles.confirmIconCircle}>
+              <Trash2 size={28} color="#ef4444" strokeWidth={2.2} />
+            </View>
+            <Text style={styles.confirmTitle}>Delete Photo Proof?</Text>
+            <Text style={styles.confirmMessage}>
+              Are you sure you want to permanently delete this photo proof recorded at{' '}
+              <Text style={{ fontWeight: fontWeights.bold, color: '#0f172a' }}>
+                {itemToDelete?.timeDigits} {itemToDelete?.timePeriod}
+              </Text>
+              {itemToDelete?.dateFormatted ? ` on ${itemToDelete.dateFormatted}` : ''}?
+              {'\n\n'}
+              This will remove the photo record from your device and the cloud log.
+            </Text>
+
+            <View style={styles.confirmActionsRow}>
+              <Pressable
+                style={[styles.confirmCancelBtn, isDeleting ? { opacity: 0.6 } : null]}
+                onPress={() => setItemToDelete(null)}
+                disabled={isDeleting}
+              >
+                <Text style={styles.confirmCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.confirmDeleteBtn, isDeleting ? { opacity: 0.7 } : null]}
+                onPress={confirmDelete}
+                disabled={isDeleting}
+              >
+                {isDeleting ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <>
+                    <Trash2 size={16} color="#ffffff" strokeWidth={2.2} />
+                    <Text style={styles.confirmDeleteText}>Delete</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          </View>
         </View>
       </Modal>
     </View>
@@ -350,6 +469,46 @@ const styles = StyleSheet.create({
     position: 'relative',
     backgroundColor: '#0f172a',
   },
+  imagePlaceholder: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1e293b',
+    padding: 20,
+    gap: 8,
+  },
+  imagePlaceholderText: {
+    fontSize: 13,
+    color: '#94a3b8',
+    fontWeight: fontWeights.medium,
+    textAlign: 'center',
+  },
+  viewerPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  viewerPlaceholderText: {
+    fontSize: 14,
+    color: '#94a3b8',
+    fontWeight: fontWeights.medium,
+  },
+  driveLinkBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    backgroundColor: '#0284c7',
+  },
+  driveLinkText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+  },
   logImage: {
     width: '100%',
     height: '100%',
@@ -469,17 +628,108 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  viewerCloseButton: {
+  viewerTopBar: {
     position: 'absolute',
     top: Platform.OS === 'ios' ? 48 : 20,
+    left: 20,
     right: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    zIndex: 20,
+  },
+  viewerTrashBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(239, 68, 68, 0.85)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewerCloseButton: {
     width: 44,
     height: 44,
     borderRadius: 22,
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 20,
+  },
+  confirmModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.lg,
+  },
+  confirmCard: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: '#ffffff',
+    borderRadius: radius.lg,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 8,
+  },
+  confirmIconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#fee2e2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  confirmTitle: {
+    fontSize: 19,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  confirmMessage: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#64748b',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  confirmActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    width: '100%',
+  },
+  confirmCancelBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: radius.md,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmCancelText: {
+    fontSize: 14,
+    fontWeight: fontWeights.semibold,
+    color: '#475569',
+  },
+  confirmDeleteBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: radius.md,
+    backgroundColor: '#ef4444',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  confirmDeleteText: {
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+    color: '#ffffff',
   },
   viewerContent: {
     width: '100%',

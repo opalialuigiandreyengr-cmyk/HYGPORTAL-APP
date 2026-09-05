@@ -13,10 +13,11 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { ChevronLeft, Info, RefreshCw, SwitchCamera, X, Check, Eye, Pencil, MapPin } from 'lucide-react-native';
+import { ChevronLeft, Info, RefreshCw, SwitchCamera, X, Check, Eye, Pencil, MapPin, Images } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { CameraView } from 'expo-camera';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fontWeights, radius, spacing } from '../theme';
 import {
   formatProofTimestamp,
@@ -29,16 +30,21 @@ import {
 type Props = {
   onBack: () => void;
   onOpenPhotoLog: () => void;
+  employeeId?: string | null;
   employeeName?: string | null;
+  userEmail?: string | null;
   userStoreName?: string | null;
 };
 
 export function PhotoProofScreen({
   onBack,
   onOpenPhotoLog,
+  employeeId,
   employeeName = 'Employee',
+  userEmail,
   userStoreName,
 }: Props) {
+  const insets = useSafeAreaInsets();
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
   const [capturedPhotoUri, setCapturedPhotoUri] = useState<string | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
@@ -202,6 +208,7 @@ export function PhotoProofScreen({
 
     triggerFlash();
 
+    let newItem: PhotoProofItem | null = null;
     try {
       let finalPhotoUri = '';
 
@@ -247,7 +254,7 @@ export function PhotoProofScreen({
       setCapturedPhotoUri(finalPhotoUri);
 
       // Create new photo proof log item
-      const newItem: PhotoProofItem = {
+      newItem = {
         id: `proof_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         photoUri: finalPhotoUri,
         timestamp: new Date().toISOString(),
@@ -258,11 +265,13 @@ export function PhotoProofScreen({
         locationText: locationText || 'Tacloban City, 6500',
         latitude: coordinates.lat,
         longitude: coordinates.lon,
+        employeeId: employeeId || null,
         employeeName: employeeName || 'Employee',
+        userEmail: userEmail || null,
         storeName: userStoreName,
       };
 
-      console.log('[PhotoProof] Capturing photo proof for employee:', employeeName, 'store:', userStoreName);
+      console.log('[PhotoProof] Capturing photo proof for employee:', employeeName, 'id:', employeeId, 'store:', userStoreName);
       await savePhotoProof(newItem);
       console.log('[PhotoProof] Photo proof saved and synced!');
       setLastSavedItem(newItem);
@@ -270,8 +279,10 @@ export function PhotoProofScreen({
     } catch (err: any) {
       console.error('Failed to capture and save photo proof:', err);
       Alert.alert('Capture Warning', `Photo saved locally, but cloud sync logged an issue: ${err?.message || err}`);
-      setLastSavedItem(newItem);
-      setShowSavedModal(true);
+      if (newItem) {
+        setLastSavedItem(newItem);
+        setShowSavedModal(true);
+      }
     } finally {
       setIsCapturing(false);
     }
@@ -290,7 +301,14 @@ export function PhotoProofScreen({
       <StatusBar style="dark" />
 
       {/* Top Header */}
-      <View style={styles.header}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop: Platform.OS === 'web' ? 14 : Math.max(insets.top + (Platform.OS === 'android' ? 8 : 0), 14),
+          },
+        ]}
+      >
         <Pressable style={styles.headerIconButton} onPress={onBack} hitSlop={12}>
           <ChevronLeft size={28} color="#0f172a" strokeWidth={2.4} />
         </Pressable>
@@ -400,7 +418,15 @@ export function PhotoProofScreen({
       </View>
 
       {/* Bottom Shutter Bar */}
-      <View style={styles.bottomBar}>
+      <View
+        style={[
+          styles.bottomBar,
+          {
+            paddingBottom: Platform.OS === 'web' ? 10 : Math.max(insets.bottom, 12),
+            minHeight: Platform.OS === 'web' ? 110 : Math.max(90 + insets.bottom, 110),
+          },
+        ]}
+      >
         {capturedPhotoUri ? (
           <View style={styles.capturedControlsRow}>
             <Pressable style={styles.retakeButton} onPress={handleRetake}>
@@ -413,16 +439,38 @@ export function PhotoProofScreen({
             </Pressable>
           </View>
         ) : (
-          <Pressable
-            style={({ pressed }) => [
-              styles.shutterButtonOuter,
-              pressed ? styles.shutterButtonPressed : null,
-            ]}
-            onPress={handleCapture}
-            disabled={isCapturing}
-          >
-            <View style={styles.shutterButtonInner} />
-          </Pressable>
+          <View style={styles.shutterRow}>
+            {/* Left balance spacer so center button remains precisely centered */}
+            <View style={styles.shutterSideSlot} />
+
+            {/* Shutter Capture Button */}
+            <Pressable
+              style={({ pressed }) => [
+                styles.shutterButtonOuter,
+                pressed ? styles.shutterButtonPressed : null,
+              ]}
+              onPress={handleCapture}
+              disabled={isCapturing}
+              hitSlop={8}
+            >
+              <View style={styles.shutterButtonInner} />
+            </Pressable>
+
+            {/* Photo Log Button on the right side */}
+            <View style={styles.shutterSideSlot}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.shutterSideButton,
+                  pressed ? styles.shutterSideButtonPressed : null,
+                ]}
+                onPress={onOpenPhotoLog}
+                hitSlop={12}
+                accessibilityLabel="Photo Log"
+              >
+                <Images size={28} color="#0f172a" strokeWidth={2} />
+              </Pressable>
+            </View>
+          </View>
         )}
       </View>
 
@@ -690,7 +738,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   flashOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: '#ffffff',
     zIndex: 20,
   },
@@ -790,6 +838,28 @@ const styles = StyleSheet.create({
     height: 32,
     borderRadius: 16,
     backgroundColor: '#ffffff',
+  },
+  shutterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    paddingHorizontal: 24,
+  },
+  shutterSideSlot: {
+    width: 76,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shutterSideButton: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shutterSideButtonPressed: {
+    opacity: 0.5,
+    transform: [{ scale: 0.92 }],
   },
   capturedControlsRow: {
     flexDirection: 'row',

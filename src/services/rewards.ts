@@ -17,8 +17,6 @@ export type RewardsWallet = {
   history: RewardsWalletHistoryItem[];
 };
 
-const CACHE_KEY = 'rewards_wallet_v1';
-
 type HygPointAccountRow = {
   balance: number | string | null;
 };
@@ -34,36 +32,67 @@ type HygPointTransactionRow = {
   created_at: string | null;
 };
 
-export async function loadRewardsWallet() {
+export async function loadRewardsWallet(userId?: string, employeeId?: string): Promise<RewardsWallet> {
   const { data: sessionResult } = await supabase.auth.getSession();
-  if (!sessionResult.session?.user) {
+  const currentUserId = userId || sessionResult.session?.user?.id;
+  if (!currentUserId) {
     return emptyRewardsWallet();
   }
 
-  await ensureMyHygPointGifts();
+  const userCacheKey = `rewards_wallet_v2_${currentUserId}`;
 
-  const [{ data: account, error: accountError }, { data: transactions, error: transactionsError }] = await Promise.all([
-    supabase
-      .from('user_hyg_point_accounts')
-      .select('balance')
-      .maybeSingle<HygPointAccountRow>(),
-    supabase
-      .from('user_hyg_point_transactions')
-      .select('id, source, points, status, release_at, received_at, note, created_at')
-      .order('created_at', { ascending: false })
-      .returns<HygPointTransactionRow[]>(),
+  try {
+    await ensureMyHygPointGifts();
+  } catch {
+    // Non-blocking gift check
+  }
+
+  let empId = employeeId;
+  if (!empId) {
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('employee_id')
+      .eq('auth_user_id', currentUserId)
+      .maybeSingle<{ employee_id: string | null }>();
+    empId = userProfile?.employee_id ?? undefined;
+  }
+
+  let accountQuery = supabase
+    .from('user_hyg_point_accounts')
+    .select('balance');
+
+  let transactionsQuery = supabase
+    .from('user_hyg_point_transactions')
+    .select('id, source, points, status, release_at, received_at, note, created_at');
+
+  if (empId) {
+    accountQuery = accountQuery.or(`auth_user_id.eq.${currentUserId},employee_id.eq.${empId}`);
+    transactionsQuery = transactionsQuery.or(`auth_user_id.eq.${currentUserId},employee_id.eq.${empId}`);
+  } else {
+    accountQuery = accountQuery.eq('auth_user_id', currentUserId);
+    transactionsQuery = transactionsQuery.eq('auth_user_id', currentUserId);
+  }
+
+  const [{ data: accountRows, error: accountError }, { data: transactionRows, error: transactionsError }] = await Promise.all([
+    accountQuery.order('updated_at', { ascending: false }).limit(1),
+    transactionsQuery.order('created_at', { ascending: false }),
   ]);
 
-  if (accountError || transactionsError) {
-    const cached = await getCacheJSON<RewardsWallet>(CACHE_KEY);
+  if (accountError && transactionsError) {
+    const cached = await getCacheJSON<RewardsWallet>(userCacheKey);
     return cached ?? emptyRewardsWallet();
   }
 
-  const balance = Number(account?.balance ?? 0);
-  const rows = transactions ?? [];
+  const rows = transactionRows ?? [];
   const totalEarned = rows.reduce((sum, row) => {
     return row.status === 'claimed' ? sum + Number(row.points ?? 0) : sum;
   }, 0);
+
+  const accountBalance = accountRows && accountRows.length > 0 && accountRows[0].balance !== null
+    ? Number(accountRows[0].balance ?? 0)
+    : null;
+
+  const balance = accountBalance !== null ? accountBalance : totalEarned;
   const totalRedeemed = Math.max(0, totalEarned - balance);
   const history = rows.map(mapTransactionToHistoryItem);
   const wallet = {
@@ -73,7 +102,7 @@ export async function loadRewardsWallet() {
     history,
   } satisfies RewardsWallet;
 
-  await setCacheJSON(CACHE_KEY, wallet);
+  await setCacheJSON(userCacheKey, wallet);
   return wallet;
 }
 

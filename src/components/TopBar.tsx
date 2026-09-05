@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Animated, Easing, Image, Linking, Modal, Platform, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, DeviceEventEmitter, Easing, Image, Linking, Modal, Platform, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Bell, ChartNoAxesColumnIncreasing, Check, ChevronLeft, ChevronRight, ExternalLink, Info, LogOut, Menu, MessageCircle, RefreshCw, Settings, ShieldCheck, Sparkles, UsersRound, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -25,6 +25,7 @@ type Props = {
   onOpenProfile?: () => void;
   onOpenSettings?: () => void;
   onOpenMyTeam?: () => void;
+  onOpenRewards?: () => void;
   onBackHome?: () => void;
   backTitle?: string;
   backSubtitle?: string;
@@ -45,6 +46,7 @@ export function TopBar({
   onOpenProfile,
   onOpenSettings,
   onOpenMyTeam,
+  onOpenRewards,
   onBackHome,
   backTitle,
   backSubtitle,
@@ -90,6 +92,13 @@ export function TopBar({
   function openSidebarAction(action?: () => void) {
     closeSidebar();
     action?.();
+  }
+
+  function handleOpenRewards() {
+    openSidebarAction(() => {
+      onOpenRewards?.();
+      DeviceEventEmitter.emit('open_rewards_tab');
+    });
   }
 
   async function openHygFacebook() {
@@ -209,12 +218,15 @@ export function TopBar({
               </View>
             </View>
 
-            <Pressable style={({ pressed }) => [styles.sidebarPointsCard, pressed ? styles.sidebarPointsCardPressed : null]}>
+            <Pressable
+              style={({ pressed }) => [styles.sidebarPointsCard, pressed ? styles.sidebarPointsCardPressed : null]}
+              onPress={handleOpenRewards}
+            >
               <Image source={hygCoinsImage} style={styles.sidebarPointsCoin} resizeMode="contain" />
               <View style={styles.sidebarPointsText}>
                 <Text style={styles.sidebarPointsLabel}>HYG Points</Text>
                 <Text style={styles.sidebarPointsValue}>{formatSidebarPoints(pointsBalance)}</Text>
-                <Text style={styles.sidebarPointsRate}>1 Point = P1.00</Text>
+                <Text style={styles.sidebarPointsBalance}>Balance</Text>
               </View>
               <View style={styles.sidebarPointsAction}>
                 <ChartNoAxesColumnIncreasing size={21} color={colors.brand.ink} strokeWidth={2.7} />
@@ -533,7 +545,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
   },
   sidebarBackdropPressable: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   sidebarBackdrop: {
     flex: 1,
@@ -667,8 +679,8 @@ const styles = StyleSheet.create({
     lineHeight: 26,
     fontWeight: fontWeights.heavy,
   },
-  sidebarPointsRate: {
-    color: colors.surface,
+  sidebarPointsBalance: {
+    color: '#A3A3A3',
     fontSize: 12,
     lineHeight: 15,
     fontWeight: fontWeights.medium,

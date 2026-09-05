@@ -85,11 +85,13 @@ export function PrimaryButton({
 export function IconTextField({
   label,
   icon,
+  rightIcon,
   inputProps,
   error,
 }: {
   label: string;
   icon: ReactNode;
+  rightIcon?: ReactNode;
   inputProps: TextInputProps;
   error?: string;
 }) {
@@ -99,6 +101,7 @@ export function IconTextField({
       <View style={[styles.iconInputShell, error ? styles.inputInvalid : null, error ? styles.inputWithError : null]}>
         {icon}
         <TextInput placeholderTextColor="#94a3b8" {...inputProps} style={[styles.iconInput, inputProps.style]} />
+        {rightIcon}
       </View>
       {error ? <Text style={styles.fieldError}>{error}</Text> : null}
     </>
@@ -191,6 +194,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     paddingVertical: 0,
     paddingLeft: spacing.sm,
+    paddingRight: spacing.xs,
   },
   divider: {
     height: 1,

@@ -1,13 +1,13 @@
 import { StatusBar } from 'expo-status-bar';
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, BackHandler, Dimensions, Image, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, useWindowDimensions, View } from 'react-native';
-import * as Notifications from 'expo-notifications';
+import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Animated, BackHandler, DeviceEventEmitter, Dimensions, Image, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, useWindowDimensions, View } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import * as Notifications from 'expo-notifications';
 import * as XLSX from 'xlsx';
 import type { User } from '@supabase/supabase-js';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { Activity, Bell, BriefcaseBusiness, CalendarDays, Check, ChevronRight, ClipboardCheck, Download, Fingerprint, Gift, KeyRound, Layers3, ListChecks, LogOut, Moon, Plus, Route, ShieldCheck, Smartphone, Trash2, UsersRound, X } from 'lucide-react-native';
+import { Activity, Bell, BriefcaseBusiness, CalendarDays, Check, ChevronRight, ClipboardCheck, Download, Eye, EyeOff, Fingerprint, Gift, KeyRound, Layers3, ListChecks, LogOut, Moon, Plus, Route, ShieldCheck, Smartphone, Trash2, UsersRound, X } from 'lucide-react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PickerField, SelectButton } from './src/components/formControls';
@@ -203,6 +203,8 @@ export default function App() {
   const [recoverySession, setRecoverySession] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showRecoveryNewPassword, setShowRecoveryNewPassword] = useState(false);
+  const [showRecoveryConfirmPassword, setShowRecoveryConfirmPassword] = useState(false);
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
   const [updatePasswordError, setUpdatePasswordError] = useState('');
   const didAutoPromptBiometricRef = useRef(false);
@@ -224,7 +226,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+    const subscription = Notifications.addNotificationResponseReceivedListener((response: Notifications.NotificationResponse) => {
       const data = response.notification.request.content.data;
       const title = response.notification.request.content.title?.toLowerCase() || '';
       const body = response.notification.request.content.body?.toLowerCase() || '';
@@ -527,6 +529,8 @@ export default function App() {
       setRecoverySession(false);
       setNewPassword('');
       setConfirmPassword('');
+      setShowRecoveryNewPassword(false);
+      setShowRecoveryConfirmPassword(false);
       setAppToast({
         tone: 'success',
         title: 'Success',
@@ -573,32 +577,64 @@ export default function App() {
 
                   <View style={styles.recoveryInputGroup}>
                     <Text style={styles.recoveryInputLabel}>New Password</Text>
-                    <TextInput
-                      style={styles.recoveryInput}
-                      secureTextEntry
-                      value={newPassword}
-                      onChangeText={(text) => {
-                        setNewPassword(text);
-                        setUpdatePasswordError('');
-                      }}
-                      placeholder="At least 6 characters"
-                      placeholderTextColor="#94a3b8"
-                    />
+                    <View style={styles.recoveryInputShell}>
+                      <TextInput
+                        style={styles.recoveryInputField}
+                        secureTextEntry={!showRecoveryNewPassword}
+                        value={newPassword}
+                        onChangeText={(text) => {
+                          setNewPassword(text);
+                          setUpdatePasswordError('');
+                        }}
+                        placeholder="At least 6 characters"
+                        placeholderTextColor="#94a3b8"
+                        autoCapitalize="none"
+                      />
+                      <Pressable
+                        style={styles.recoveryEyeBtn}
+                        onPress={() => setShowRecoveryNewPassword((prev) => !prev)}
+                        hitSlop={8}
+                        accessibilityRole="button"
+                        accessibilityLabel={showRecoveryNewPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showRecoveryNewPassword ? (
+                          <EyeOff size={18} color="#64748b" strokeWidth={2.4} />
+                        ) : (
+                          <Eye size={18} color="#64748b" strokeWidth={2.4} />
+                        )}
+                      </Pressable>
+                    </View>
                   </View>
 
                   <View style={styles.recoveryInputGroup}>
                     <Text style={styles.recoveryInputLabel}>Confirm New Password</Text>
-                    <TextInput
-                      style={styles.recoveryInput}
-                      secureTextEntry
-                      value={confirmPassword}
-                      onChangeText={(text) => {
-                        setConfirmPassword(text);
-                        setUpdatePasswordError('');
-                      }}
-                      placeholder="Confirm your password"
-                      placeholderTextColor="#94a3b8"
-                    />
+                    <View style={styles.recoveryInputShell}>
+                      <TextInput
+                        style={styles.recoveryInputField}
+                        secureTextEntry={!showRecoveryConfirmPassword}
+                        value={confirmPassword}
+                        onChangeText={(text) => {
+                          setConfirmPassword(text);
+                          setUpdatePasswordError('');
+                        }}
+                        placeholder="Confirm your password"
+                        placeholderTextColor="#94a3b8"
+                        autoCapitalize="none"
+                      />
+                      <Pressable
+                        style={styles.recoveryEyeBtn}
+                        onPress={() => setShowRecoveryConfirmPassword((prev) => !prev)}
+                        hitSlop={8}
+                        accessibilityRole="button"
+                        accessibilityLabel={showRecoveryConfirmPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showRecoveryConfirmPassword ? (
+                          <EyeOff size={18} color="#64748b" strokeWidth={2.4} />
+                        ) : (
+                          <Eye size={18} color="#64748b" strokeWidth={2.4} />
+                        )}
+                      </Pressable>
+                    </View>
                   </View>
 
                   <View style={styles.recoveryActions}>
@@ -627,6 +663,8 @@ export default function App() {
                         setRecoverySession(false);
                         setNewPassword('');
                         setConfirmPassword('');
+                        setShowRecoveryNewPassword(false);
+                        setShowRecoveryConfirmPassword(false);
                       }}
                     >
                       <Text style={styles.recoveryCancelBtnText}>Cancel</Text>
@@ -660,11 +698,13 @@ export default function App() {
   async function refreshDashboard() {
     setDashboardStatus('Refreshing dashboard...');
     try {
-      const cached = await getCacheJSON<DashboardSummary>('dashboard_summary_v1');
+      const cacheKey = signedInUser ? `dashboard_summary_v2:${signedInUser.id}` : 'dashboard_summary_v2';
+      const cached = await getCacheJSON<DashboardSummary>(cacheKey);
       if (cached) {
         setDashboardSummary(cached);
       }
-      const summary = await loadDashboardSummary();
+      const employeeId = profileResult?.status === 'linked' ? profileResult.profile.employeeId : undefined;
+      const summary = await loadDashboardSummary(signedInUser?.id, employeeId);
       setDashboardSummary(summary);
       setDashboardStatus('');
     } catch (error) {
@@ -825,11 +865,6 @@ export default function App() {
       if (biometricEnabled) {
         await saveBiometricLogin(username, password);
       }
-      setAppToast({
-        tone: 'success',
-        title: 'Login successful',
-        message: 'Welcome back to HYG Portal.',
-      });
       await completeLogin(data.user);
     }
   }
@@ -897,11 +932,6 @@ export default function App() {
       setEmail(credential.username);
       setSavedUsername(credential.username);
       setPassword('');
-      setAppToast({
-        tone: 'success',
-        title: 'Biometric login successful',
-        message: `Welcome back, ${credential.username}.`,
-      });
       await completeLogin(data.user);
     } catch (error) {
       const msg = String(error instanceof Error ? error.message : error).toLowerCase();
@@ -948,6 +978,15 @@ export default function App() {
     didAutoPromptBiometricRef.current = true;
     void signInWithBiometric();
   }, [biometricAvailable, biometricEnabled, isSubmitting, publicScreen, savedUsername, signedInUser]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('open_rewards_tab', () => {
+      setActiveTab('rewards');
+    });
+    return () => {
+      sub.remove();
+    };
+  }, []);
 
   if (signedInUser) {
     const currentUsername =
@@ -1038,6 +1077,7 @@ export default function App() {
       setNotificationUnreadCount(0);
     };
     const openMyTeam = canUseMyTeam ? () => setActiveTab('my_team') : undefined;
+    const openRewards = () => setActiveTab('rewards');
 
     let tabContent: ReactNode = null;
     if (activeTab === 'requests') {
@@ -1050,8 +1090,10 @@ export default function App() {
           onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
+          onOpenRewards={openRewards}
           onEditRequest={openEditRequest}
           refreshTrigger={requestsRefreshKey}
+          pointsBalance={dashboardSummary.hyg_points_balance}
         />
       );
     } else if (activeTab === 'approvals' && canUseApprovals) {
@@ -1064,10 +1106,12 @@ export default function App() {
           onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
+          onOpenRewards={openRewards}
           onToast={setAppToast}
           targetRequestId={targetApprovalRequestId}
           autoOpenFirst={autoOpenApprovalModal}
           onClearTargetRequest={clearTargetRequest}
+          pointsBalance={dashboardSummary.hyg_points_balance}
         />
       );
     } else if (activeTab === 'notifications') {
@@ -1078,9 +1122,11 @@ export default function App() {
           onAssistant={openAssistant}
           onNotifications={openNotifications}
           onOpenProfile={() => setActiveTab('profile')}
+          onOpenRewards={openRewards}
           onBackHome={() => setActiveTab('home')}
           onCountChange={setNotificationUnreadCount}
           onOpenApprovalRequest={openApprovalFromNotification}
+          onClaimSuccess={refreshDashboard}
         />
       );
     } else if (activeTab === 'perks') {
@@ -1118,6 +1164,8 @@ export default function App() {
           onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
+          onOpenRewards={openRewards}
+          pointsBalance={dashboardSummary.hyg_points_balance}
         />
       );
     } else if (activeTab === 'settings') {
@@ -1127,6 +1175,7 @@ export default function App() {
           onNotifications={openNotifications}
           onBackHome={() => setActiveTab('home')}
           onSignOut={signOut}
+          onOpenRewards={openRewards}
           userEmail={signedInUser.email ?? ''}
           username={currentUsername}
           profileName={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email ?? ''}
@@ -1303,6 +1352,8 @@ export default function App() {
     } else if (activeTab === 'rewards') {
       tabContent = (
         <RewardsPlaceholderScreen
+          userId={signedInUser.id}
+          employeeId={profileResult?.status === 'linked' ? profileResult.profile.employeeId : undefined}
           profileName={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email ?? ''}
           username={currentUsername}
           employeeCode={profileResult?.status === 'linked' ? profileResult.profile.employeeNo || profileResult.profile.employeeId : signedInUser.id}
@@ -1314,6 +1365,17 @@ export default function App() {
           onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
+          onPointsUpdated={(newBalance) => {
+            setDashboardSummary((current) => {
+              if (current.hyg_points_balance === newBalance) {
+                return current;
+              }
+              return {
+                ...current,
+                hyg_points_balance: newBalance,
+              };
+            });
+          }}
           onToast={setAppToast}
           onSignOut={signOut}
         />
@@ -1329,6 +1391,7 @@ export default function App() {
           onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
+          onOpenRewards={openRewards}
           onSignOut={signOut}
         />
       );
@@ -1343,6 +1406,7 @@ export default function App() {
           onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
+          onOpenRewards={openRewards}
           onSignOut={signOut}
           onAssistant={openAssistant}
           onNotifications={openNotifications}
@@ -1354,6 +1418,7 @@ export default function App() {
           onActivityLog={() => openQuickRequest('photo_log')}
           onBirthdayGreetingClosed={() => void refreshNotificationUnreadCount()}
           notificationCount={notificationUnreadCount}
+          hideFab={Boolean(activeQuickRequestScreen)}
         />
       );
     }
@@ -1456,7 +1521,9 @@ export default function App() {
           <PhotoProofScreen
             onBack={closeQuickRequest}
             onOpenPhotoLog={() => openQuickRequest('photo_log')}
-            employeeName={profileResult?.status === 'linked' ? profileResult.profile.fullName : (signedInUser.email ?? 'Employee')}
+            employeeId={profileResult?.status === 'linked' ? profileResult.profile.employeeId : (signedInUser?.id ?? null)}
+            employeeName={profileResult?.status === 'linked' ? profileResult.profile.fullName : (signedInUser?.email ?? 'Employee')}
+            userEmail={signedInUser?.email ?? null}
             userStoreName={profileResult?.status === 'linked' ? (profileResult.profile.storeName || profileResult.profile.departmentName) : undefined}
           />
         </SlideOverlayContainer>
@@ -1465,7 +1532,9 @@ export default function App() {
           <PhotoLogScreen
             onBack={closeQuickRequest}
             onTakeNew={handleOpenPhotoProof}
-            employeeName={profileResult?.status === 'linked' ? profileResult.profile.fullName : (signedInUser.email ?? 'Employee')}
+            employeeId={profileResult?.status === 'linked' ? profileResult.profile.employeeId : (signedInUser?.id ?? null)}
+            employeeName={profileResult?.status === 'linked' ? profileResult.profile.fullName : (signedInUser?.email ?? 'Employee')}
+            userEmail={signedInUser?.email ?? null}
           />
         </SlideOverlayContainer>
       </View>,
@@ -1538,11 +1607,12 @@ function SlideOverlayContainer({
   return (
     <Animated.View
       style={[
-        StyleSheet.absoluteFillObject,
+        StyleSheet.absoluteFill,
         {
           transform: [{ translateX: slideAnim }],
           backgroundColor: '#ffffff',
-          zIndex: 10,
+          zIndex: 999,
+          elevation: 50,
           width: '100%',
           maxWidth: '100%',
           overflow: 'hidden',
@@ -1555,6 +1625,8 @@ function SlideOverlayContainer({
 }
 
 function RewardsPlaceholderScreen({
+  userId,
+  employeeId,
   profileName,
   username,
   employeeCode,
@@ -1566,9 +1638,12 @@ function RewardsPlaceholderScreen({
   onOpenProfile,
   onOpenSettings,
   onOpenMyTeam,
+  onPointsUpdated,
   onToast,
   onSignOut,
 }: {
+  userId?: string | null;
+  employeeId?: string | null;
   profileName?: string | null;
   username?: string | null;
   employeeCode?: string | null;
@@ -1580,10 +1655,17 @@ function RewardsPlaceholderScreen({
   onOpenProfile: () => void;
   onOpenSettings: () => void;
   onOpenMyTeam?: () => void;
+  onPointsUpdated?: (balance: number) => void;
   onToast?: (toast: AppToastMessage) => void;
   onSignOut?: () => void | Promise<void>;
 }) {
-  const barcodeDigits = makeEan13Digits(employeeCode || username || profileName || 'HYG Portal');
+  const onPointsUpdatedRef = useRef(onPointsUpdated);
+  onPointsUpdatedRef.current = onPointsUpdated;
+
+  const barcodeDigits = useMemo(
+    () => makeEan13Digits(employeeCode || username || profileName || 'HYG Portal'),
+    [employeeCode, username, profileName]
+  );
   const [showWalletHistory, setShowWalletHistory] = useState(false);
   const [wallet, setWallet] = useState<RewardsWallet>(() => ({
     balance: pointsBalance,
@@ -1592,41 +1674,55 @@ function RewardsPlaceholderScreen({
     history: [],
   }));
   const [walletStatus, setWalletStatus] = useState('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const { width } = useWindowDimensions();
   const rewardsCardWidth = Math.max(0, (width - spacing.md * 2 - spacing.sm) / 2);
   const effectivePointsBalance = wallet.balance;
 
-  useEffect(() => {
-    let active = true;
-    async function refreshWallet() {
-      setWalletStatus('Loading wallet...');
-      try {
-        const nextWallet = await loadRewardsWallet();
-        if (!active) {
-          return;
-        }
-        setWallet(nextWallet);
-        setWalletStatus('');
-      } catch (error) {
-        if (!active) {
-          return;
-        }
-        setWalletStatus(error instanceof Error ? error.message : 'Unable to load HYG Wallet.');
-      }
-    }
+  const [comingSoonFeature, setComingSoonFeature] = useState<string | null>(null);
 
-    void refreshWallet();
-
-    return () => {
-      active = false;
-    };
+  const handleComingSoon = useCallback((featureTitle?: string) => {
+    setComingSoonFeature(featureTitle || 'This feature');
   }, []);
 
+  const refreshWallet = useCallback(async (isPull = false) => {
+    if (isPull) {
+      setIsRefreshing(true);
+    } else {
+      setWallet((curr) => {
+        if (curr.history.length === 0 && curr.totalEarned === 0 && curr.balance === 0) {
+          setWalletStatus('Loading wallet...');
+        }
+        return curr;
+      });
+    }
+    try {
+      const nextWallet = await loadRewardsWallet(userId ?? undefined, employeeId ?? undefined);
+      setWallet(nextWallet);
+      onPointsUpdatedRef.current?.(nextWallet.balance);
+      setWalletStatus('');
+    } catch (error) {
+      setWalletStatus(error instanceof Error ? error.message : 'Unable to load HYG Wallet.');
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [userId, employeeId]);
+
   useEffect(() => {
-    setWallet((current) => ({
-      ...current,
-      balance: current.balance || pointsBalance,
-    }));
+    void refreshWallet();
+  }, [refreshWallet]);
+
+  useEffect(() => {
+    setWallet((current) => {
+      if (current.history.length === 0 && current.totalEarned === 0 && pointsBalance > 0) {
+        return {
+          ...current,
+          balance: pointsBalance,
+          totalEarned: pointsBalance,
+        };
+      }
+      return current;
+    });
   }, [pointsBalance]);
 
   if (showWalletHistory) {
@@ -1647,7 +1743,18 @@ function RewardsPlaceholderScreen({
           onOpenMyTeam={onOpenMyTeam}
           onSignOut={onSignOut}
         />
-        <ScrollView contentContainerStyle={styles.settingsScroll} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={styles.settingsScroll}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={() => void refreshWallet(true)}
+              colors={[colors.brand.gold]}
+              tintColor={colors.brand.gold}
+            />
+          }
+        >
           <View style={styles.rewardsHistoryHeader}>
             <Image source={hygCoinsImage} style={styles.rewardsHistoryIcon} resizeMode="contain" />
             <View>
@@ -1701,7 +1808,18 @@ function RewardsPlaceholderScreen({
         onOpenMyTeam={onOpenMyTeam}
         onSignOut={onSignOut}
       />
-      <ScrollView contentContainerStyle={[styles.settingsScroll, styles.myTeamScroll]} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.settingsScroll, styles.myTeamScroll]}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={() => void refreshWallet(true)}
+            colors={[colors.brand.gold]}
+            tintColor={colors.brand.gold}
+          />
+        }
+      >
         <View style={styles.rewardsBarcodeCard}>
           <Text style={styles.rewardsBarcodeHint}>Scan to earn HYG Points</Text>
           <Text style={styles.rewardsBarcodeSub}>Present this barcode at any HYG partner location</Text>
@@ -1737,7 +1855,7 @@ function RewardsPlaceholderScreen({
               </View>
               <Pressable
                 style={({ pressed }) => [styles.rewardsPointsAction, pressed ? styles.rewardsPointsActionPressed : null]}
-                onPress={() => Alert.alert('Coming soon', 'Rewards redemption will be available soon.')}
+                onPress={() => handleComingSoon('Rewards Redemption')}
               >
                 <Text style={styles.rewardsPointsActionText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72}>
                   View Rewards
@@ -1775,7 +1893,13 @@ function RewardsPlaceholderScreen({
                   </Text>
                 </View>
               </View>
-              {walletStatus ? <Text style={styles.rewardsWalletStatus}>{walletStatus}</Text> : null}
+              <View style={styles.rewardsWalletStatusSlot}>
+                {walletStatus ? (
+                  <Text style={styles.rewardsWalletStatus} numberOfLines={1}>
+                    {walletStatus}
+                  </Text>
+                ) : null}
+              </View>
               <Pressable
                 style={({ pressed }) => [styles.rewardsWalletHistoryButton, pressed ? styles.rewardsWalletHistoryButtonPressed : null]}
                 onPress={() => setShowWalletHistory(true)}
@@ -1788,9 +1912,21 @@ function RewardsPlaceholderScreen({
         </View>
 
         <View style={styles.rewardsServiceGrid}>
-          <RewardsServiceTile title="Earn Points" text="Scan and earn points at partner locations" />
-          <RewardsServiceTile title="Redeem Rewards" text="Use your points to get rewards" />
-          <RewardsServiceTile title="Track History" text="View your points activity and history" />
+          <RewardsServiceTile
+            title="Earn Points"
+            text="Scan and earn points at partner locations"
+            onPress={() => handleComingSoon('Earn Points')}
+          />
+          <RewardsServiceTile
+            title="Redeem Rewards"
+            text="Use your points to get rewards"
+            onPress={() => handleComingSoon('Redeem Rewards')}
+          />
+          <RewardsServiceTile
+            title="Track History"
+            text="View your points activity and history"
+            onPress={() => handleComingSoon('Track History')}
+          />
         </View>
 
         <View style={styles.rewardsPromoStrip}>
@@ -1801,24 +1937,87 @@ function RewardsPlaceholderScreen({
           </View>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={comingSoonFeature !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setComingSoonFeature(null)}
+      >
+        <View style={styles.rewardsModalBackdrop}>
+          <Pressable style={styles.rewardsModalDismissArea} onPress={() => setComingSoonFeature(null)} />
+          <View style={styles.rewardsModalCard}>
+            <Pressable
+              style={styles.rewardsModalCloseBtn}
+              onPress={() => setComingSoonFeature(null)}
+              hitSlop={12}
+            >
+              <X size={18} color="#94a3b8" />
+            </Pressable>
+
+            <View style={styles.rewardsModalIconWrapper}>
+              <View style={styles.rewardsModalIconOuterRing}>
+                <View style={styles.rewardsModalIconInnerCircle}>
+                  <Gift size={24} color="#ca8a04" strokeWidth={2.4} />
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.rewardsModalBadge}>
+              <Text style={styles.rewardsModalBadgeText}>COMING SOON</Text>
+            </View>
+
+            <Text style={styles.rewardsModalTitle}>Coming Soon.</Text>
+            <Text style={styles.rewardsModalSub}>
+              {comingSoonFeature
+                ? `${comingSoonFeature} is currently under development and will be available soon.`
+                : 'This feature will be available soon.'}
+            </Text>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.rewardsModalActionBtn,
+                pressed ? styles.rewardsModalActionBtnPressed : null,
+              ]}
+              onPress={() => setComingSoonFeature(null)}
+            >
+              <Text style={styles.rewardsModalActionBtnText}>Got It</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
-function RewardsServiceTile({ title, text }: { title: string; text: string }) {
+function RewardsServiceTile({
+  title,
+  text,
+  onPress,
+}: {
+  title: string;
+  text: string;
+  onPress?: () => void;
+}) {
   return (
-    <View style={styles.rewardsServiceTile}>
+    <Pressable
+      style={({ pressed }) => [
+        styles.rewardsServiceTile,
+        pressed ? styles.rewardsServiceTilePressed : null,
+      ]}
+      onPress={onPress}
+    >
       <View style={styles.rewardsServiceIcon}>
         <Image source={hygCoinsImage} style={styles.rewardsServiceCoin} resizeMode="contain" />
       </View>
       <Text style={styles.rewardsServiceTitle}>{title}</Text>
       <Text style={styles.rewardsServiceText}>{text}</Text>
-    </View>
+    </Pressable>
   );
 }
 
-function RewardsBarcode({ digits }: { digits: string }) {
-  const pattern = getEan13Pattern(digits);
+const RewardsBarcode = memo(function RewardsBarcode({ digits }: { digits: string }) {
+  const pattern = useMemo(() => getEan13Pattern(digits), [digits]);
 
   return (
     <View style={styles.barcodeBars}>
@@ -1827,7 +2026,7 @@ function RewardsBarcode({ digits }: { digits: string }) {
       ))}
     </View>
   );
-}
+});
 
 function makeEan13Digits(seed: string) {
   const numeric = seed.replace(/\D/g, '');
@@ -1971,6 +2170,7 @@ function MyTeamPlaceholderScreen({
   onOpenProfile,
   onOpenSettings,
   onOpenMyTeam,
+  onOpenRewards,
   onToast,
   onSignOut,
 }: {
@@ -1982,6 +2182,7 @@ function MyTeamPlaceholderScreen({
   onOpenProfile: () => void;
   onOpenSettings: () => void;
   onOpenMyTeam?: () => void;
+  onOpenRewards?: () => void;
   onToast?: (toast: AppToastMessage) => void;
   onSignOut?: () => void | Promise<void>;
 }) {
@@ -2135,6 +2336,7 @@ function MyTeamPlaceholderScreen({
         onOpenProfile={onOpenProfile}
         onOpenSettings={onOpenSettings}
         onOpenMyTeam={onOpenMyTeam}
+        onOpenRewards={onOpenRewards}
         onSignOut={onSignOut}
       />
       <ScrollView contentContainerStyle={[styles.settingsScroll, styles.myTeamScroll]} showsVerticalScrollIndicator={false}>
@@ -3146,6 +3348,7 @@ function SettingsTabScreen({
   onNotifications,
   onBackHome,
   onOpenMyTeam,
+  onOpenRewards,
   onSignOut,
   userEmail,
   username,
@@ -3163,6 +3366,7 @@ function SettingsTabScreen({
   onNotifications?: () => void;
   onBackHome: () => void;
   onOpenMyTeam?: () => void;
+  onOpenRewards?: () => void;
   onSignOut: () => void | Promise<void>;
   userEmail: string;
   username?: string | null;
@@ -3239,6 +3443,7 @@ function SettingsTabScreen({
         onNotifications={onNotifications}
         onBackHome={onBackHome}
         onOpenMyTeam={onOpenMyTeam}
+        onOpenRewards={onOpenRewards}
         onSignOut={onSignOut}
       />
       <ScrollView contentContainerStyle={styles.settingsTabScroll} showsVerticalScrollIndicator={false}>
@@ -5449,6 +5654,29 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#0f172a',
   },
+  recoveryInputShell: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 6,
+    backgroundColor: '#ffffff',
+    paddingLeft: 12,
+    paddingRight: 8,
+    minHeight: 42,
+  },
+  recoveryInputField: {
+    flex: 1,
+    paddingVertical: 8,
+    fontSize: 14,
+    color: '#0f172a',
+  },
+  recoveryEyeBtn: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   recoveryActions: {
     marginTop: 16,
     gap: 8,
@@ -6898,7 +7126,7 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
   },
   scheduleMonthModalDismiss: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   scheduleMonthModalSheet: {
     borderRadius: 8,
@@ -8004,13 +8232,18 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginTop: 2,
   },
+  rewardsWalletStatusSlot: {
+    minHeight: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginVertical: 2,
+  },
   rewardsWalletStatus: {
     color: '#cbd5e1',
     fontSize: 11,
     lineHeight: 15,
     fontWeight: '700',
     textAlign: 'center',
-    marginTop: 2,
   },
   rewardsWalletHistoryButton: {
     minHeight: 40,
@@ -8132,6 +8365,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: spacing.sm,
   },
+  rewardsServiceTilePressed: {
+    opacity: 0.78,
+    transform: [{ scale: 0.98 }],
+  },
   rewardsServiceIcon: {
     width: 34,
     height: 34,
@@ -8188,6 +8425,110 @@ const styles = StyleSheet.create({
     lineHeight: 15,
     fontWeight: '700',
     marginTop: 2,
+  },
+  rewardsModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(7, 20, 38, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.md,
+  },
+  rewardsModalDismissArea: {
+    ...StyleSheet.absoluteFill,
+  },
+  rewardsModalCard: {
+    width: '100%',
+    maxWidth: 340,
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    padding: spacing.lg,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    elevation: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  rewardsModalCloseBtn: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rewardsModalIconWrapper: {
+    marginBottom: spacing.sm,
+  },
+  rewardsModalIconOuterRing: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#fef3c7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#fde68a',
+  },
+  rewardsModalIconInnerCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#fde047',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rewardsModalBadge: {
+    backgroundColor: '#fef3c7',
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    marginBottom: spacing.xs,
+  },
+  rewardsModalBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#854d0e',
+    letterSpacing: 0.5,
+  },
+  rewardsModalTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: colors.brand.ink,
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  rewardsModalSub: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.muted,
+    textAlign: 'center',
+    marginBottom: spacing.lg,
+    paddingHorizontal: spacing.xs,
+  },
+  rewardsModalActionBtn: {
+    width: '100%',
+    minHeight: 44,
+    backgroundColor: colors.brand.gold,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rewardsModalActionBtnPressed: {
+    opacity: 0.82,
+    transform: [{ scale: 0.98 }],
+  },
+  rewardsModalActionBtnText: {
+    color: colors.brand.ink,
+    fontSize: 15,
+    fontWeight: '800',
   },
   header: {
     marginBottom: spacing.lg,

@@ -127,7 +127,7 @@ export async function getBiometricLogin(): Promise<BiometricLogin | null> {
   };
 
   // Populate a random challenge (crypto-secure) as browsers require a non‑empty value
-  crypto.getRandomValues(publicKey.challenge as Uint8Array);
+  crypto.getRandomValues(publicKey.challenge as any);
 
   try {
     const assertion = await navigator.credentials.get({ publicKey }) as PublicKeyCredential;
@@ -200,7 +200,7 @@ export async function promptBiometric(reason: string = 'Authenticate to sign in'
     allowCredentials: [allowCredential],
     userVerification: 'required',
   };
-  crypto.getRandomValues(publicKey.challenge as Uint8Array);
+  crypto.getRandomValues(publicKey.challenge as any);
   try {
     const assertion = await navigator.credentials.get({ publicKey }) as PublicKeyCredential;
     return !!assertion;

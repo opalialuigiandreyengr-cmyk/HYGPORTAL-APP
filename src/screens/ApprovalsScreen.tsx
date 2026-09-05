@@ -36,8 +36,13 @@ import { supabase } from '../lib/supabase';
 import {
   EsarfCardView,
   EsarfRequestInfoPanel,
+  buildUpdatedReasonText,
+  computeEffectiveTotalHours,
   formatUnifiedRequestCode,
   formatUnifiedRequestType,
+  isOtOrOffsetTransaction,
+  isOvertimeOrOffset,
+  isRequestEditable,
   parseEsarfEntries,
 } from '../components/EsarfDetailsView';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
@@ -59,10 +64,12 @@ type Props = {
   onOpenProfile?: () => void;
   onOpenSettings?: () => void;
   onOpenMyTeam?: () => void;
+  onOpenRewards?: () => void;
   onToast?: (toast: AppToastMessage) => void;
   targetRequestId?: string | null;
   autoOpenFirst?: boolean;
   onClearTargetRequest?: () => void;
+  pointsBalance?: number;
 };
 
 export function ApprovalsScreen({
@@ -73,10 +80,12 @@ export function ApprovalsScreen({
   onOpenProfile,
   onOpenSettings,
   onOpenMyTeam,
+  onOpenRewards,
   onToast,
   targetRequestId,
   autoOpenFirst,
   onClearTargetRequest,
+  pointsBalance = 0,
 }: Props) {
   const [mainTab, setMainTab] = useState<'pending' | 'approved'>('pending');
   const [items, setItems] = useState<PendingApproval[]>([]);
@@ -265,9 +274,62 @@ export function ApprovalsScreen({
     setPage(1);
   }, [activeCategory, query, mainTab]);
 
-  async function approve(item: PendingApproval, rejectedIndices: number[] = []) {
+  async function approve(
+    item: PendingApproval,
+    rejectedIndices: number[] = [],
+    adjustedHoursMap: Record<number, string> = {},
+  ) {
     setStatus('Approving request...');
     try {
+      const isLeave = item.request_type_code === 'leave';
+      const entries = !isLeave ? parseEsarfEntries(item) : [];
+      const isEditable = isRequestEditable(item, entries);
+      const hasHoursAdjustment = isEditable && Object.keys(adjustedHoursMap).length > 0;
+
+      const newTotalHours = computeEffectiveTotalHours(
+        entries,
+        rejectedIndices,
+        adjustedHoursMap,
+        item.total_hours,
+      );
+
+      const updatedReason = buildUpdatedReasonText(
+        item.reason,
+        entries,
+        adjustedHoursMap,
+        rejectedIndices,
+      );
+
+      // 1. Update time_request_details in database if hours were adjusted or entries rejected
+      if (hasHoursAdjustment || rejectedIndices.length > 0) {
+        const updatePayload: Record<string, any> = {
+          total_hours: newTotalHours,
+        };
+        if (updatedReason !== item.reason) {
+          updatePayload.reason = updatedReason;
+        }
+
+        try {
+          const { error: updateErr } = await supabase
+            .from('time_request_details')
+            .update(updatePayload)
+            .eq('request_id', item.request_id);
+
+          if (updateErr) {
+            console.warn('Direct update failed, trying RPC fallback:', updateErr);
+            await supabase.rpc('admin_update_request_data', {
+              p_request_id: item.request_id,
+              p_is_perk: false,
+              p_total_hours: newTotalHours,
+              p_reason: updatedReason,
+            });
+          }
+        } catch (dbErr) {
+          console.warn('Error updating time_request_details:', dbErr);
+        }
+      }
+
+      // 2. Also call update_time_request_entry_rejections if any entries rejected
       if (rejectedIndices.length > 0) {
         try {
           await supabase.rpc('update_time_request_entry_rejections', {
@@ -275,53 +337,59 @@ export function ApprovalsScreen({
             p_rejected_entry_indices: rejectedIndices,
           });
         } catch {
-          // Fallback to direct table update
-          const { data: details } = await supabase
-            .from('time_request_details')
-            .select('reason')
-            .eq('request_id', item.request_id)
-            .maybeSingle();
-
-          let rawReason = details?.reason || item.reason || '';
-          rejectedIndices.forEach((idx) => {
-            const regex = new RegExp(`(\\[Entry\\s+${idx}\\][^\n]*)`, 'gi');
-            if (rawReason.match(regex)) {
-              rawReason = rawReason.replace(regex, `$1 [REJECTED]`);
-            } else {
-              rawReason = `${rawReason}\n[Entry ${idx}] [REJECTED]`;
-            }
-          });
-
-          await supabase
-            .from('time_request_details')
-            .update({ reason: rawReason })
-            .eq('request_id', item.request_id);
+          // Handled via reason update above
         }
       }
 
+      // 3. Decide approval step (RPC 'decide_approval_step')
       await decideApprovalStep(item.step_id, 'approved', 'Approved from mobile.');
       await refresh();
+
+      const adjustedMsg = hasHoursAdjustment
+        ? ` with ${newTotalHours.toFixed(2)} hrs (adjusted)`
+        : '';
       onToast?.({
         tone: 'success',
         title: 'Request approved',
-        message: `${formatApprovalType(item)} was approved successfully.`,
+        message: `${formatApprovalType(item)} was approved successfully${adjustedMsg}.`,
       });
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Unable to update approval.');
     }
   }
 
-  function confirmApprove(item: PendingApproval, rejectedIndices: number[] = []) {
+  function confirmApprove(
+    item: PendingApproval,
+    rejectedIndices: number[] = [],
+    adjustedHoursMap: Record<number, string> = {},
+  ) {
+    const isLeave = item.request_type_code === 'leave';
+    const entries = !isLeave ? parseEsarfEntries(item) : [];
+    const isEditable = isRequestEditable(item, entries);
+    const hasAdjustment = isEditable && Object.keys(adjustedHoursMap).some((idxStr) => {
+      const entry = entries.find((e) => e.index === Number(idxStr));
+      if (!entry) return false;
+      const val = adjustedHoursMap[Number(idxStr)];
+      return val !== '' && parseFloat(val) !== parseFloat(entry.totalHours);
+    });
+
+    const newTotal = computeEffectiveTotalHours(entries, rejectedIndices, adjustedHoursMap, item.total_hours);
+
+    let message = `Are you sure you want to approve ${formatApprovalType(item)} from ${item.requester_name || 'this employee'}?`;
+    if (hasAdjustment) {
+      message = `Are you sure you want to approve ${formatApprovalType(item)} from ${item.requester_name || 'this employee'} with adjusted total of ${newTotal.toFixed(2)} hrs (originally ${(item.total_hours ?? 0).toFixed(2)} hrs)?`;
+    }
+
     platformAlert(
       'Approve request?',
-      `Are you sure you want to approve ${formatApprovalType(item)} from ${item.requester_name || 'this employee'}?`,
+      message,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Approve',
           onPress: () => {
             setSelectedApproval(null);
-            void approve(item, rejectedIndices);
+            void approve(item, rejectedIndices, adjustedHoursMap);
           },
         },
       ],
@@ -343,7 +411,7 @@ export function ApprovalsScreen({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} />
+      <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} />
       
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         {/* Main Tab Switcher: Pending vs Approved */}
@@ -646,7 +714,7 @@ function ApprovalDetailsSheet({
   approval: { item: PendingApproval; sequence: number } | null;
   profile: EmployeeProfileSummary | null;
   onClose: () => void;
-  onApprove: (item: PendingApproval, rejectedIndices?: number[]) => void;
+  onApprove: (item: PendingApproval, rejectedIndices?: number[], adjustedHoursMap?: Record<number, string>) => void;
   onPerformReject: (item: PendingApproval, reason: string) => Promise<void>;
 }) {
   const item = approval?.item ?? null;
@@ -657,8 +725,13 @@ function ApprovalDetailsSheet({
     return item && !isLeave ? parseEsarfEntries(item) : [];
   }, [item, isLeave]);
 
+  const isEditable = useMemo(() => {
+    return isRequestEditable(item, esarfEntries);
+  }, [item, esarfEntries]);
+
   const [selectedEntryIndices, setSelectedEntryIndices] = useState<number[]>([]);
   const [rejectedEntryIndices, setRejectedEntryIndices] = useState<number[]>([]);
+  const [adjustedHoursMap, setAdjustedHoursMap] = useState<Record<number, string>>({});
   const [isRejectingInline, setIsRejectingInline] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [rejectError, setRejectError] = useState('');
@@ -678,6 +751,7 @@ function ApprovalDetailsSheet({
     setRejectReason('');
     setRejectError('');
     setIsSubmittingReject(false);
+    setAdjustedHoursMap({});
   }, [approval]);
 
   useEffect(() => {
@@ -887,18 +961,30 @@ function ApprovalDetailsSheet({
                   </Pressable>
                 </View>
 
-                {esarfEntries.map((entry) => (
-                  <EsarfCardView
-                    key={entry.index}
-                    entry={entry}
-                    showCheckbox
-                    isSelected={selectedEntryIndices.includes(entry.index)}
-                    isRejected={rejectedEntryIndices.includes(entry.index)}
-                    onToggleSelect={() => toggleEntrySelect(entry.index)}
-                    onToggleReject={() => toggleRejectEntry(entry.index)}
-                    hideTimeline
-                  />
-                ))}
+                {esarfEntries.map((entry) => {
+                  const canEdit = isEditable && isOtOrOffsetTransaction(entry.transactionLabel);
+                  return (
+                    <EsarfCardView
+                      key={entry.index}
+                      entry={entry}
+                      showCheckbox
+                      isSelected={selectedEntryIndices.includes(entry.index)}
+                      isRejected={rejectedEntryIndices.includes(entry.index)}
+                      onToggleSelect={() => toggleEntrySelect(entry.index)}
+                      onToggleReject={() => toggleRejectEntry(entry.index)}
+                      hideTimeline
+                      isEditableHours={canEdit}
+                      adjustedHours={adjustedHoursMap[entry.index]}
+                      onHoursChange={(val) => {
+                        const cleaned = val.replace(/[^0-9.]/g, '').replace(/(\..*?)\..*/g, '$1');
+                        setAdjustedHoursMap((prev) => ({
+                          ...prev,
+                          [entry.index]: cleaned,
+                        }));
+                      }}
+                    />
+                  );
+                })}
               </View>
             )}
           </ScrollView>
@@ -962,14 +1048,47 @@ function ApprovalDetailsSheet({
               </View>
             </View>
           ) : (
-            <View style={styles.approverFooter}>
-              <Pressable style={styles.approverRejectBtn} onPress={handleRejectAll}>
-                <Text style={styles.approverRejectText}>Reject All</Text>
-              </Pressable>
-              <Pressable style={styles.approverConfirmBtn} onPress={() => onApprove(item, effectiveRejectedIndices)}>
-                <Text style={styles.approverConfirmText}>Confirm Approval</Text>
-              </Pressable>
-            </View>
+            <>
+              {isEditable && Object.keys(adjustedHoursMap).some((idxStr) => {
+                const entry = esarfEntries.find((e) => e.index === Number(idxStr));
+                if (!entry) return false;
+                const val = adjustedHoursMap[Number(idxStr)];
+                return val !== '' && parseFloat(val) !== parseFloat(entry.totalHours);
+              }) ? (
+                <View style={styles.adjustedHoursBanner}>
+                  <Clock3 size={15} color="#854d0e" strokeWidth={2.4} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.adjustedHoursBannerTitle}>
+                      Adjusted Total: <Text style={styles.adjustedHoursBold}>{computeEffectiveTotalHours(esarfEntries, effectiveRejectedIndices, adjustedHoursMap, item.total_hours).toFixed(2)} hrs</Text>
+                    </Text>
+                    <Text style={styles.adjustedHoursBannerSub}>
+                      Original requested: {(item.total_hours ?? 0).toFixed(2)} hrs
+                    </Text>
+                  </View>
+                </View>
+              ) : null}
+
+              <View style={styles.approverFooter}>
+                <Pressable style={styles.approverRejectBtn} onPress={handleRejectAll}>
+                  <Text style={styles.approverRejectText}>Reject All</Text>
+                </Pressable>
+                <Pressable
+                  style={styles.approverConfirmBtn}
+                  onPress={() => {
+                    for (const [idxStr, val] of Object.entries(adjustedHoursMap)) {
+                      const parsed = parseFloat(val);
+                      if (val.trim() === '' || isNaN(parsed) || parsed < 0) {
+                        platformAlert('Invalid Hours', `Please enter a valid number of hours for Entry ${idxStr}.`);
+                        return;
+                      }
+                    }
+                    onApprove(item, effectiveRejectedIndices, adjustedHoursMap);
+                  }}
+                >
+                  <Text style={styles.approverConfirmText}>Confirm Approval</Text>
+                </Pressable>
+              </View>
+            </>
           )}
         </View>
       </KeyboardAvoidingView>
@@ -1213,8 +1332,7 @@ function approvalTimeline(item: PendingApproval | ApprovedApproval) {
   const isSingleApprover = isLeave || isUseOffset;
   const fallback = isSingleApprover ? [1] : [1, 2];
   const summary = (item.approval_summary ?? [])
-    .filter((step) => !isSingleApprover || step.step_order === 1 || step.required_level === 1)
-    .slice(0, fallback.length);
+    .filter((step) => !isSingleApprover || step.step_order === 1 || step.required_level === 1);
   const rows: { label: string; status: string; actedAt: string | null }[] = summary.length
     ? summary.map((step) => ({
         label: approvalRoleLabel(step),
@@ -2097,6 +2215,33 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: fontWeights.heavy,
     color: '#ffffff',
+  },
+  adjustedHoursBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: spacing.md,
+    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#fefce8',
+    borderWidth: 1,
+    borderColor: '#fef08a',
+  },
+  adjustedHoursBannerTitle: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#854d0e',
+  },
+  adjustedHoursBold: {
+    fontWeight: fontWeights.heavy,
+    color: '#713f12',
+  },
+  adjustedHoursBannerSub: {
+    fontSize: 11,
+    color: '#a16207',
+    marginTop: 1,
   },
   approvedSheetFooter: {
     flexDirection: 'row',

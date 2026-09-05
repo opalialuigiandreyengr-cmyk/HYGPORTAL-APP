@@ -152,11 +152,14 @@ async function ensureHygPointGift(rpcName: 'ensure_my_launch_hyg_points_gift' | 
   const { error } = await supabase.rpc(rpcName);
   if (error) {
     const message = error.message.toLowerCase();
-    const isMissingRpc =
+    const isIgnorable =
       message.includes(rpcName.toLowerCase()) ||
       message.includes('could not find the function') ||
-      message.includes('pgrst202');
-    if (!isMissingRpc) {
+      message.includes('pgrst202') ||
+      message.includes('on conflict') ||
+      message.includes('constraint') ||
+      message.includes('authentication required');
+    if (!isIgnorable) {
       console.warn(`Unable to ensure ${label}.`, error.message);
     }
   }

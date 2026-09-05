@@ -1,6 +1,6 @@
 import React from 'react';
-import { View, Text, StyleSheet, Pressable } from 'react-native';
-import { CalendarDays, Check, Clock3, FileText, Users, X } from 'lucide-react-native';
+import { View, Text, StyleSheet, Pressable, TextInput } from 'react-native';
+import { CalendarDays, Check, Clock3, Edit3, FileText, Users, X } from 'lucide-react-native';
 import { colors, radius, fontWeights, spacing } from '../theme';
 import { formatEsarfDateRange } from '../screens/ApplyEsarfScreen';
 
@@ -209,6 +209,110 @@ export function parseEsarfEntries(item: {
   ];
 }
 
+export function isOtOrOffsetTransaction(label?: string | null): boolean {
+  if (!label) return false;
+  const l = label.trim().toLowerCase();
+
+  // Check if it has OT (Overtime)
+  const hasOt = l.includes('overtime') || /\b(ot)\b/i.test(l);
+
+  // Check if it has Offset Earn (and not only "Use Offset")
+  const labelWithoutUseOffset = l.replace(/use[_\s-]?offset/gi, '');
+  const hasOffsetEarn = labelWithoutUseOffset.includes('offset');
+
+  // Must have OT or Offset (alone or in combination with OB/FIO)
+  return hasOt || hasOffsetEarn;
+}
+
+export function isRequestEditable(
+  item: { request_type_code?: string | null; transaction_type?: string | null } | null,
+  entries: ParsedEsarfEntry[],
+): boolean {
+  if (!item) return false;
+  const rtc = item.request_type_code?.toLowerCase();
+  if (rtc === 'leave') {
+    return false;
+  }
+
+  if (entries.length === 0) {
+    return isOtOrOffsetTransaction(item.transaction_type);
+  }
+
+  // Editable if at least one entry has OT or Offset (alone or combined with OB/FIO, e.g. OB/FIO/OT, OB/FIO/Offset).
+  // If the request is only OB, FIO, UT, and use offset (no OT or Offset), it will return false.
+  return entries.some((e) => isOtOrOffsetTransaction(e.transactionLabel));
+}
+
+export const isOvertimeOrOffset = isOtOrOffsetTransaction;
+
+export function computeEffectiveTotalHours(
+  entries: ParsedEsarfEntry[],
+  rejectedIndices: number[],
+  adjustedHoursMap: Record<number, string>,
+  originalTotalHours: number | null,
+): number {
+  if (entries.length === 0) {
+    return originalTotalHours ?? 0;
+  }
+
+  const activeEntries = entries.filter((e) => !rejectedIndices.includes(e.index));
+  if (activeEntries.length === 0) {
+    return 0;
+  }
+
+  let sum = 0;
+  for (const entry of activeEntries) {
+    const rawVal =
+      adjustedHoursMap[entry.index] !== undefined && adjustedHoursMap[entry.index].trim() !== ''
+        ? adjustedHoursMap[entry.index]
+        : entry.totalHours;
+    const hrs = parseFloat(rawVal) || 0;
+    sum += hrs;
+  }
+
+  return Math.round(sum * 100) / 100;
+}
+
+export function buildUpdatedReasonText(
+  currentReason: string | null,
+  entries: ParsedEsarfEntry[],
+  adjustedHoursMap: Record<number, string>,
+  rejectedIndices: number[],
+): string {
+  let text = currentReason || '';
+  if (!text) return text;
+
+  if (text.includes('[Entry ')) {
+    entries.forEach((entry) => {
+      const idx = entry.index;
+      const isRejected = rejectedIndices.includes(idx);
+      const hasAdjustedHours =
+        adjustedHoursMap[idx] !== undefined && adjustedHoursMap[idx].trim() !== '';
+
+      if (hasAdjustedHours) {
+        const newHrs = parseFloat(adjustedHoursMap[idx]) || 0;
+        const newHrsFormatted = Number.isInteger(newHrs) ? newHrs.toFixed(2) : String(newHrs);
+        const entryRegex = new RegExp(`(\\[Entry\\s+${idx}\\][^\n]*?\\()([0-9.]+\\s*hrs?\\))`, 'i');
+        if (text.match(entryRegex)) {
+          text = text.replace(entryRegex, `$1${newHrsFormatted} hrs)`);
+        }
+      }
+
+      if (isRejected && !text.match(new RegExp(`\\[Entry\\s+${idx}\\][^\n]*\\[REJECTED\\]`, 'i'))) {
+        const regex = new RegExp(`(\\[Entry\\s+${idx}\\][^\n]*)`, 'gi');
+        if (text.match(regex)) {
+          text = text.replace(regex, `$1 [REJECTED]`);
+        } else {
+          text = `${text}\n[Entry ${idx}] [REJECTED]`;
+        }
+      }
+    });
+    return text;
+  }
+
+  return text;
+}
+
 export type TimelineStep = {
   title: string;
   subtitle: string;
@@ -330,6 +434,9 @@ export function EsarfCardView({
   onToggleReject,
   hideTimeline,
   isDisabled,
+  isEditableHours,
+  adjustedHours,
+  onHoursChange,
 }: {
   entry: ParsedEsarfEntry;
   timelineRows?: TimelineStep[];
@@ -340,6 +447,9 @@ export function EsarfCardView({
   onToggleReject?: () => void;
   hideTimeline?: boolean;
   isDisabled?: boolean;
+  isEditableHours?: boolean;
+  adjustedHours?: string;
+  onHoursChange?: (val: string) => void;
 }) {
   const isEntryRejected = isRejected ?? entry.isRejected ?? false;
   const isLocked = isDisabled || entry.isRejected;
@@ -446,8 +556,40 @@ export function EsarfCardView({
         </View>
 
         <View style={styles.gridCol}>
-          <Text style={styles.gridLabel}>Total Hrs.</Text>
-          <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>{entry.totalHours}</Text>
+          <View style={styles.gridLabelRow}>
+            <Text style={styles.gridLabel}>Total Hrs.</Text>
+            {isEditableHours && !isEntryRejected && !isDisabled ? (
+              <View style={styles.adjustablePill}>
+                <Edit3 size={10} color="#854d0e" strokeWidth={2.4} />
+                <Text style={styles.adjustablePillText}>Editable</Text>
+              </View>
+            ) : null}
+          </View>
+
+          {isEditableHours && !isEntryRejected && !isDisabled ? (
+            <View style={styles.hoursInputShell}>
+              <TextInput
+                style={styles.hoursInputField}
+                value={adjustedHours !== undefined ? adjustedHours : entry.totalHours}
+                onChangeText={onHoursChange}
+                keyboardType="decimal-pad"
+                selectTextOnFocus
+                placeholder="0.00"
+                placeholderTextColor="#94a3b8"
+              />
+              <Text style={styles.hoursUnitText}>hrs</Text>
+            </View>
+          ) : (
+            <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>
+              {adjustedHours !== undefined ? adjustedHours : entry.totalHours}
+            </Text>
+          )}
+
+          {isEditableHours && !isEntryRejected && !isDisabled && adjustedHours !== undefined && adjustedHours !== entry.totalHours ? (
+            <Text style={styles.originalHoursNote}>
+              Orig: {entry.totalHours} hrs
+            </Text>
+          ) : null}
         </View>
       </View>
 
@@ -603,6 +745,59 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.bold,
     color: '#94a3b8',
     marginBottom: 3,
+  },
+  gridLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginBottom: 3,
+  },
+  adjustablePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: '#fef9c3',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#fef08a',
+  },
+  adjustablePillText: {
+    fontSize: 9,
+    fontWeight: fontWeights.bold,
+    color: '#854d0e',
+  },
+  hoursInputShell: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#f8fafc',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    height: 32,
+    maxWidth: 110,
+  },
+  hoursInputField: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: fontWeights.heavy,
+    color: '#0f172a',
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+  },
+  hoursUnitText: {
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+    marginLeft: 4,
+  },
+  originalHoursNote: {
+    fontSize: 10,
+    color: '#854d0e',
+    fontWeight: fontWeights.semibold,
+    marginTop: 2,
   },
   gridValue: {
     fontSize: 13,

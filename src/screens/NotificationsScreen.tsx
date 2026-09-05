@@ -27,6 +27,8 @@ export function NotificationsScreen({
   onOpenProfile,
   onBackHome,
   onOpenApprovalRequest,
+  onClaimSuccess,
+  onOpenRewards,
 }: {
   profileResult?: ProfileLoadResult | null;
   notificationCount?: number;
@@ -36,6 +38,8 @@ export function NotificationsScreen({
   onOpenProfile?: () => void;
   onBackHome?: () => void;
   onOpenApprovalRequest?: (requestId?: string | null) => void;
+  onClaimSuccess?: () => void;
+  onOpenRewards?: () => void;
 }) {
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
   const [items, setItems] = useState<AppNotification[]>([]);
@@ -110,6 +114,7 @@ export function NotificationsScreen({
       setItems(next);
       onCountChange?.(unreadCount(next));
       setSelectedGift(null);
+      onClaimSuccess?.();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Unable to claim HYG Points.');
     } finally {
@@ -132,6 +137,7 @@ export function NotificationsScreen({
         onMessages={onAssistant}
         onNotifications={onNotifications}
         onOpenProfile={onOpenProfile}
+        onOpenRewards={onOpenRewards}
         onBackHome={onBackHome}
       />
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>

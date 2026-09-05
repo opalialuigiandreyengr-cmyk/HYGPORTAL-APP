@@ -1,7 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { type ReactNode, useEffect, useState } from 'react';
 import { Image, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { CalendarCheck, Download, FileCheck2, Fingerprint, LockKeyhole, Mail, ShieldCheck, Smartphone, X } from 'lucide-react-native';
+import { CalendarCheck, Download, Eye, EyeOff, FileCheck2, Fingerprint, LockKeyhole, Mail, ShieldCheck, Smartphone, X } from 'lucide-react-native';
 
 import { AppScreen, Card, IconTextField, PrimaryButton } from '../components/ui';
 import { colors, fontWeights, radius, spacing, typography } from '../theme';
@@ -43,6 +43,7 @@ export function LoginScreen({
 }: LoginScreenProps) {
   const [showAndroidDownload, setShowAndroidDownload] = useState(false);
   const [showIosInstall, setShowIosInstall] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [resetInput, setResetInput] = useState('');
@@ -259,12 +260,27 @@ export function LoginScreen({
           <IconTextField
             label="Password"
             icon={<LockKeyhole size={17} color={colors.muted} strokeWidth={2.5} />}
+            rightIcon={
+              <Pressable
+                style={styles.eyeButton}
+                onPress={() => setShowPassword((current) => !current)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? (
+                  <EyeOff size={18} color={colors.muted} strokeWidth={2.4} />
+                ) : (
+                  <Eye size={18} color={colors.muted} strokeWidth={2.4} />
+                )}
+              </Pressable>
+            }
             error={passwordError}
             inputProps={{
               value: password,
               onChangeText: onPasswordChange,
               autoCapitalize: 'none',
-              secureTextEntry: true,
+              secureTextEntry: !showPassword,
               placeholder: 'Password',
               returnKeyType: 'done',
               onSubmitEditing: onSubmit,
@@ -621,6 +637,12 @@ const styles = StyleSheet.create({
     marginTop: -spacing.xs,
     marginBottom: spacing.md,
   },
+  eyeButton: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   forgotPasswordText: {
     color: colors.primary,
     fontSize: 13,
@@ -634,7 +656,7 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
   },
   modalDismissArea: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   resetCard: {
     width: '100%',
