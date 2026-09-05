@@ -9,4 +9,5 @@ export const env = {
   googleDriveScriptUrl: process.env.EXPO_PUBLIC_GDRIVE_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbyIsvO5CHfj1db0bSmX9QPefanWsOkgIFTxquzqZPp6pqX1ThpjEZ1jbGRyZyN-EDpJhg/exec',
   googleDriveRootFolderId: process.env.EXPO_PUBLIC_GDRIVE_ROOT_FOLDER_ID || '1N-OzBcYFP5-l3CcEWuaGcLSxU8iFm0zV',
   inventoryUrl: process.env.EXPO_PUBLIC_INVENTORY_URL || 'https://luigiandreyopalia.pythonanywhere.com/inventory/store_inventory_data',
+  employeeDataUrl: process.env.EXPO_PUBLIC_EMPLOYEE_DATA_URL || 'https://hygportal.vercel.app/employees/sync',
 };

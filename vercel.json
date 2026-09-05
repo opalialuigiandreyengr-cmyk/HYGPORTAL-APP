@@ -14,6 +14,14 @@
       "destination": "https://luigiandreyopalia.pythonanywhere.com/inventory/store_inventory_data"
     },
     {
+      "source": "/employees/sync",
+      "destination": "/api/employees/sync"
+    },
+    {
+      "source": "/api/employees/store_employee_data",
+      "destination": "/api/employees/sync"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
