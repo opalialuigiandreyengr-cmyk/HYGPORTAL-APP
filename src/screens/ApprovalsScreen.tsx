@@ -412,7 +412,7 @@ export function ApprovalsScreen({
     <View style={styles.root}>
       <StatusBar style="dark" />
       <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} />
-      
+
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         {/* Main Tab Switcher: Pending vs Approved */}
         <View style={styles.mainTabContainer}>
@@ -499,29 +499,29 @@ export function ApprovalsScreen({
 
         {mainTab === 'pending'
           ? (paginatedItems as PendingApproval[]).map((item, index) => {
-              const sequence = (currentPage - 1) * pageSize + index + 1;
-              return (
-                <ApprovalCard
-                  key={item.step_id}
-                  item={item}
-                  profile={profile}
-                  sequence={sequence}
-                  onView={() => setSelectedApproval({ item, sequence })}
-                />
-              );
-            })
+            const sequence = (currentPage - 1) * pageSize + index + 1;
+            return (
+              <ApprovalCard
+                key={item.step_id}
+                item={item}
+                profile={profile}
+                sequence={sequence}
+                onView={() => setSelectedApproval({ item, sequence })}
+              />
+            );
+          })
           : (paginatedItems as ApprovedApproval[]).map((item, index) => {
-              const sequence = (currentPage - 1) * pageSize + index + 1;
-              return (
-                <ApprovedCard
-                  key={item.step_id || item.request_id}
-                  item={item}
-                  profile={profile}
-                  sequence={sequence}
-                  onView={() => setSelectedApproved({ item, sequence })}
-                />
-              );
-            })}
+            const sequence = (currentPage - 1) * pageSize + index + 1;
+            return (
+              <ApprovedCard
+                key={item.step_id || item.request_id}
+                item={item}
+                profile={profile}
+                sequence={sequence}
+                onView={() => setSelectedApproved({ item, sequence })}
+              />
+            );
+          })}
 
         {currentFilteredItems.length > pageSize ? (
           <View style={styles.paginationBar}>
@@ -694,7 +694,7 @@ function ApprovedCard({
               <Text style={styles.typePillText}>{formatApprovalType(item)}</Text>
             </View>
             <Pressable style={styles.viewApprovedButton} onPress={onView}>
-              <Eye size={15} color="#15803d" strokeWidth={2.3} />
+              <Eye size={15} color="#000000ff" strokeWidth={2.3} />
               <Text style={styles.viewApprovedText}>View</Text>
             </Pressable>
           </View>
@@ -1335,15 +1335,15 @@ function approvalTimeline(item: PendingApproval | ApprovedApproval) {
     .filter((step) => !isSingleApprover || step.step_order === 1 || step.required_level === 1);
   const rows: { label: string; status: string; actedAt: string | null }[] = summary.length
     ? summary.map((step) => ({
-        label: approvalRoleLabel(step),
-        status: `L${step.required_level} | ${approvalStepStatus(step.status)}`,
-        actedAt: step.acted_at,
-      }))
+      label: approvalRoleLabel(step),
+      status: `L${step.required_level} | ${approvalStepStatus(step.status)}`,
+      actedAt: step.acted_at,
+    }))
     : fallback.map((level) => ({
-        label: `Level ${level} Approver`,
-        status: `L${level} | ${level === 1 ? 'Pending to approve' : 'Not yet processed'}`,
-        actedAt: null,
-      }));
+      label: `Level ${level} Approver`,
+      status: `L${level} | ${level === 1 ? 'Pending to approve' : 'Not yet processed'}`,
+      actedAt: null,
+    }));
 
   while (rows.length < fallback.length) {
     const level = fallback[rows.length];
@@ -1831,9 +1831,9 @@ const styles = StyleSheet.create({
   viewApprovedButton: {
     minHeight: 26,
     borderRadius: radius.sm,
-    backgroundColor: '#f0fdf4',
+    backgroundColor: '#f1f5f9',
     borderWidth: 1,
-    borderColor: '#86efac',
+    borderColor: '#cbd5e1',
     paddingHorizontal: spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
@@ -1842,7 +1842,7 @@ const styles = StyleSheet.create({
   viewApprovedText: {
     fontSize: 14,
     fontWeight: fontWeights.bold,
-    color: '#15803d',
+    color: '#000000ff',
   },
   sheetBackdrop: {
     flex: 1,

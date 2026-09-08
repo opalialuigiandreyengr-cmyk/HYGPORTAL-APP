@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { AppState, type AppStateStatus, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
@@ -12,6 +12,7 @@ import { loadMyRequests, loadMyRequestsCached, type MyRequest } from '../service
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { isAutoApprovedBirthdayGrant } from '../services/birthdayLeave';
+import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import {
   EsarfCardView,
   EsarfRequestInfoPanel,
@@ -21,13 +22,14 @@ import {
 } from '../components/EsarfDetailsView';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
-type StatusFilter = 'all' | 'pending' | 'approved' | 'rejected';
+type StatusFilter = 'all' | 'pending' | 'approved' | 'validated' | 'rejected';
 type CategoryFilter = 'all' | 'esarf' | 'leave' | 'perks';
 
 const statusTabs: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'pending', label: 'Pending' },
   { key: 'approved', label: 'Approved' },
+  { key: 'validated', label: 'Validated' },
   { key: 'rejected', label: 'Rejected' },
 ];
 
@@ -82,11 +84,11 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
     onEditRequest(item);
   }
 
-  async function refresh() {
+  async function refresh(forceRefresh = true) {
     setIsLoading(true);
     setStatus('Loading...');
     try {
-      const requests = await loadMyRequests();
+      const requests = await loadMyRequests(forceRefresh);
       setItems(requests);
       setStatus(requests.length ? '' : 'No requests yet.');
     } catch (error) {
@@ -96,20 +98,115 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
     }
   }
 
+  async function refreshSilently() {
+    try {
+      const requests = await loadMyRequests(false);
+      setItems(requests);
+      setStatus(requests.length ? '' : 'No requests yet.');
+    } catch {
+      // Keep current items on silent error
+    }
+  }
+
   useEffect(() => {
     let active = true;
+
+    // 1. Initial load from cache then fresh from server
     (async () => {
       const cached = await loadMyRequestsCached();
       if (active && cached.length) {
         setItems(cached);
         setStatus('');
       }
-      await refresh();
+      if (active) {
+        await refresh(false);
+      }
     })();
+
+    // 2. AppState listener: Refresh whenever the app is brought to foreground
+    const appStateSub = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active') {
+        void refreshSilently();
+      }
+    });
+
+    // 3. Periodic silent polling (every 8 seconds while on screen) to guarantee real-time sync
+    const pollInterval = setInterval(() => {
+      void refreshSilently();
+    }, 8000);
+
+    // 4. Supabase Realtime channel subscription for instant database reflections
+    let realtimeChannel: any = null;
+    const employeeId = profileResult?.status === 'linked' ? profileResult.profile.employeeId : undefined;
+
+    if (isSupabaseConfigured) {
+      const channelId = `realtime_requests_screen_${employeeId || 'my'}_${Date.now()}`;
+      realtimeChannel = supabase.channel(channelId);
+
+      if (employeeId) {
+        realtimeChannel
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'requests',
+              filter: `submitted_by_employee_id=eq.${employeeId}`,
+            },
+            () => {
+              void refreshSilently();
+            },
+          )
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'employee_perk_requests',
+              filter: `employee_id=eq.${employeeId}`,
+            },
+            () => {
+              void refreshSilently();
+            },
+          );
+      } else {
+        realtimeChannel.on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'requests',
+          },
+          () => {
+            void refreshSilently();
+          },
+        );
+      }
+
+      realtimeChannel
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'request_approval_steps',
+          },
+          () => {
+            void refreshSilently();
+          },
+        )
+        .subscribe();
+    }
+
     return () => {
       active = false;
+      appStateSub.remove();
+      clearInterval(pollInterval);
+      if (realtimeChannel) {
+        void supabase.removeChannel(realtimeChannel);
+      }
     };
-  }, [refreshTrigger]);
+  }, [profileResult?.status, profileResult?.status === 'linked' ? profileResult.profile.employeeId : undefined, refreshTrigger]);
 
   const counts = useMemo(() => {
     const categoryItems = activeCategory === 'all'
@@ -120,12 +217,13 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
       (totals, item) => {
         totals.all += 1;
         const statusKey = normalizeStatus(item.status, item);
-        if (statusKey === 'approved') totals.approved += 1;
+        if (statusKey === 'validated') totals.validated += 1;
+        else if (statusKey === 'approved') totals.approved += 1;
         else if (statusKey === 'rejected') totals.rejected += 1;
         else totals.pending += 1;
         return totals;
       },
-      { all: 0, pending: 0, approved: 0, rejected: 0 },
+      { all: 0, pending: 0, approved: 0, validated: 0, rejected: 0 },
     );
   }, [activeCategory, items]);
 
@@ -161,6 +259,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
         item.request_type_name,
         item.request_type_code,
         item.status,
+        statusLabel(item),
         item.reason,
       ]
         .filter(Boolean)
@@ -243,7 +342,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
                 returnKeyType="search"
               />
             </View>
-            <Pressable disabled={isLoading} style={styles.filterButton} onPress={refresh}>
+            <Pressable disabled={isLoading} style={styles.filterButton} onPress={() => void refresh(true)}>
               {isLoading ? (
                 <RefreshCcw size={15} color={colors.text} strokeWidth={2.6} />
               ) : (
@@ -779,22 +878,46 @@ function normalizeStatus(status: string, item?: MyRequest): StatusFilter {
   if (item && isAutoApprovedBirthdayGrant(item)) {
     return 'approved';
   }
-  const value = (status || '').toLowerCase();
+  const value = (status || '').toLowerCase().trim();
+  if (value.includes('validat')) return 'validated';
   if (value.includes('approved')) return 'approved';
+  if (item?.final_approved_at && !value.includes('reject') && !value.includes('denied')) return 'approved';
+  if (item?.approval_summary && item.approval_summary.length > 0) {
+    const isLeave = item.request_type_code === 'leave';
+    const isUseOffset = isUseOffsetRequest(item);
+    const isSingleApprover = isLeave || isUseOffset;
+    const summary = item.approval_summary.filter(
+      (step) => !isSingleApprover || step.step_order === 1 || step.required_level === 1,
+    );
+    if (summary.length > 0 && summary.every((s) => (s.status || '').toLowerCase().includes('approved'))) {
+      return 'approved';
+    }
+  }
   if (value.includes('reject') || value.includes('denied')) return 'rejected';
   return 'pending';
 }
 
-function statusLabel(item: MyRequest) {
+function statusLabel(item: MyRequest): string {
   if (isPartialApproval(item)) {
     const entries = parseEsarfEntries(item);
     const approvedCount = entries.filter((e) => !e.isRejected).length;
     return `${approvedCount}/${entries.length} APPROVED`;
   }
+  const rawStatus = (item.status || '').trim();
+  const lower = rawStatus.toLowerCase();
+
+  // If validated in database, display as is ("VALIDATED")
+  if (lower.includes('validat')) {
+    return 'VALIDATED';
+  }
+
   const statusKey = normalizeStatus(item.status, item);
-  if (isPerkRequest(item) && statusKey === 'approved') return 'APPROVED';
+  if (statusKey === 'validated') return 'VALIDATED';
   if (statusKey === 'approved') return 'APPROVED';
   if (statusKey === 'rejected') return 'REJECTED';
+  if (rawStatus && lower !== 'pending' && lower !== 'submitted' && lower !== 'waiting') {
+    return rawStatus.toUpperCase();
+  }
   return 'PENDING';
 }
 
@@ -814,6 +937,10 @@ function renderStatusPillContent(item: MyRequest) {
 
 function statusPillStyle(status: StatusFilter | 'partial', item?: MyRequest) {
   if (item && isPartialApproval(item)) {
+    return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
+  }
+  const rawStatus = (item?.status || '').toLowerCase();
+  if (status === 'validated' || rawStatus.includes('validat')) {
     return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
   }
   if (status === 'approved') return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
@@ -1768,14 +1895,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
+    paddingHorizontal: 2,
   },
   tabLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 3,
   },
   tabLabel: {
-    fontSize: 14,
+    fontSize: 12.5,
     fontWeight: fontWeights.bold,
     color: colors.muted,
   },
@@ -1783,22 +1911,23 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   tabCountBadge: {
-    minWidth: 13,
-    height: 13,
+    minWidth: 14,
+    height: 14,
     borderRadius: 7,
     backgroundColor: colors.background,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 2,
   },
   tabCountText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: fontWeights.heavy,
     color: colors.primary,
   },
   tabIndicator: {
     position: 'absolute',
-    left: 8,
-    right: 8,
+    left: 4,
+    right: 4,
     bottom: 0,
     height: 3,
     borderRadius: 999,

@@ -234,10 +234,17 @@ export function DashboardScreen({
             icon={<CalendarDays size={19} color="#6d28d9" strokeWidth={2.5} />}
             label="Leave Credit"
             value={`${summary.leave_credit_remaining.toFixed(1)}d`}
-            detail="Remaining leave days"
+            detail={
+              summary.annual_credit_days
+                ? `${summary.leave_credit_remaining.toFixed(1)} of ${summary.annual_credit_days.toFixed(1)} days left`
+                : 'Remaining leave days'
+            }
             trackColor="#ddd6fe"
             fillColor="#7c3aed"
-            ratio={Math.min(summary.leave_credit_remaining / 7, 1)}
+            ratio={Math.min(
+              summary.leave_credit_remaining / Math.max(1, summary.annual_credit_days || 7),
+              1,
+            )}
             compact={isCompactDashboard}
           />
         </View>
@@ -665,10 +672,11 @@ function formatStatus(status: string) {
 }
 
 function getActivityStatusTone(status: string) {
-  if (status === 'approved') {
+  const lower = (status || '').toLowerCase();
+  if (lower === 'approved' || lower.includes('validat')) {
     return 'approved';
   }
-  if (status === 'rejected' || status === 'cancelled') {
+  if (lower === 'rejected' || lower === 'cancelled') {
     return 'rejected';
   }
   return 'pending';

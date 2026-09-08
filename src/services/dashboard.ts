@@ -1,13 +1,14 @@
 import { supabase } from '../lib/supabase';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 
-import { loadMyRequestsCached, type MyRequest } from './requests';
 
 export type DashboardSummary = {
   pending_requests: number;
   pending_approvals: number;
   offset_balance: number;
   leave_credit_remaining: number;
+  annual_credit_days: number;
+  leave_used_days: number;
   hyg_points_balance: number;
 };
 
@@ -15,13 +16,32 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
   const { data: sessionResult } = await supabase.auth.getSession();
   const currentUserId = userId || sessionResult.session?.user?.id;
   const cacheKey = currentUserId ? `dashboard_summary_v2_${currentUserId}` : 'dashboard_summary_v2';
-  const [{ data, error }, hygPointsBalance, myRequests] = await Promise.all([
+
+  let empId = employeeId;
+  if (!empId && currentUserId) {
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('employee_id')
+      .eq('auth_user_id', currentUserId)
+      .maybeSingle<{ employee_id: string | null }>();
+    empId = userProfile?.employee_id ?? undefined;
+  }
+
+  const [rpcResult, hygPointsBalance, leaveBalanceRow] = await Promise.all([
     supabase.rpc('get_my_dashboard_summary'),
-    loadHygPointsBalance(currentUserId, employeeId),
-    loadMyRequestsCached(),
+    loadHygPointsBalance(currentUserId, empId),
+    empId
+      ? supabase
+          .from('leave_balances')
+          .select('annual_credit_days, used_days')
+          .eq('employee_id', empId)
+          .maybeSingle<{ annual_credit_days: number | null; used_days: number | null }>()
+      : Promise.resolve({ data: null, error: null }),
   ]);
 
-  if (error) {
+  const { data, error } = rpcResult;
+
+  if (error && !leaveBalanceRow.data) {
     const cached = await getCacheJSON<DashboardSummary>(cacheKey);
     if (cached) {
       return { ...cached, hyg_points_balance: hygPointsBalance };
@@ -30,26 +50,29 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
   }
 
   const first = Array.isArray(data) ? data[0] : data;
-  const rawRemaining = Number(first?.leave_credit_remaining ?? 7);
 
-  // Birthday Leave is a company gift and must NOT deduct from standard leave credits.
-  const birthdayLeaveCount = myRequests.filter(
-    (req) =>
-      req.leave_category === 'Birthday Leave' ||
-      req.leave_category === 'Birthday Leave Grant' ||
-      req.reason?.toLowerCase().includes('birthday leave'),
-  ).length;
+  // Exact real-time leave balance from leave_balances table (matching admin desktop)
+  let annualCreditDays = 7;
+  let leaveUsedDays = 0;
+  let leaveCreditRemaining = 7;
 
-  let effectiveRemaining = rawRemaining;
-  if (birthdayLeaveCount > 0 && rawRemaining < 7) {
-    effectiveRemaining = Math.min(7, rawRemaining + birthdayLeaveCount);
+  if (leaveBalanceRow.data) {
+    annualCreditDays = Number(leaveBalanceRow.data.annual_credit_days ?? 7);
+    leaveUsedDays = Number(leaveBalanceRow.data.used_days ?? 0);
+    leaveCreditRemaining = Math.max(0, annualCreditDays - leaveUsedDays);
+  } else if (first?.leave_credit_remaining !== undefined && first?.leave_credit_remaining !== null) {
+    leaveCreditRemaining = Math.max(0, Number(first.leave_credit_remaining));
+    annualCreditDays = Math.max(7, leaveCreditRemaining);
+    leaveUsedDays = Math.max(0, annualCreditDays - leaveCreditRemaining);
   }
 
   const summary = {
     pending_requests: Number(first?.pending_requests ?? 0),
     pending_approvals: Number(first?.pending_approvals ?? 0),
     offset_balance: Number(first?.offset_balance ?? 0),
-    leave_credit_remaining: effectiveRemaining,
+    leave_credit_remaining: leaveCreditRemaining,
+    annual_credit_days: annualCreditDays,
+    leave_used_days: leaveUsedDays,
     hyg_points_balance: hygPointsBalance,
   } satisfies DashboardSummary;
 

@@ -9,7 +9,7 @@
     "web": "expo start --web",
     "build:web": "npx expo export --platform web && node scripts/copy-pwa-assets.js",
     "check:assistant": "node scripts/check-assistant-edge-cases.js",
-    "postinstall": "node scripts/patch-expo-notifications.js"
+    "postinstall": "node scripts/patch-expo-notifications.js && node scripts/patch-expo-camera.js"
   },
   "dependencies": {
     "@expo/metro-runtime": "~57.0.15",

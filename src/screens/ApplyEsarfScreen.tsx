@@ -123,6 +123,43 @@ function WebNativeTimePicker({ value, onChange }: { value: string; onChange: (va
 const NO_SCHEDULE_LABEL = 'No schedule';
 const NO_DAY_OFF_LABEL = 'No day off';
 
+function getFriendlyErrorMessage(rawMessage: string): { title: string; message: string; isRetryable: boolean } {
+  const lower = rawMessage.toLowerCase();
+  if (lower.includes('network connection was lost') || lower.includes('the network connection was lost')) {
+    return {
+      title: 'Network Connection Lost',
+      message: 'The network connection was interrupted while communicating with the server. Your entries are safely preserved. Please verify your internet connection and tap Retry.',
+      isRetryable: true,
+    };
+  }
+  if (lower.includes('timed out') || lower.includes('timeout')) {
+    return {
+      title: 'Submission Timed Out',
+      message: 'The server took too long to respond. Your entries are safely preserved. Please check your internet connection and tap Retry.',
+      isRetryable: true,
+    };
+  }
+  if (lower.includes('fetch failed') || lower.includes('network request failed') || lower.includes('connection error')) {
+    return {
+      title: 'Connection Error',
+      message: 'Unable to reach the server. Your entries are safely preserved. Please verify your internet connection and tap Retry.',
+      isRetryable: true,
+    };
+  }
+  if (lower.includes('insufficient offset balance')) {
+    return {
+      title: 'Insufficient Offset Balance',
+      message: rawMessage,
+      isRetryable: false,
+    };
+  }
+  return {
+    title: 'Submission Failed',
+    message: rawMessage,
+    isRetryable: true,
+  };
+}
+
 export function ApplyEsarfScreen({
   name,
   username,
@@ -170,13 +207,13 @@ export function ApplyEsarfScreen({
   const initialSchedule = editingRequest?.time_schedule
     ? normalizeSchedule(editingRequest.time_schedule)
     : initialDraft?.fields.schedule
-    ? normalizeSchedule(initialDraft.fields.schedule)
-    : fixedSchedule;
+      ? normalizeSchedule(initialDraft.fields.schedule)
+      : fixedSchedule;
   const initialDayOff = editingRequest?.day_off
     ? normalizeDayOff(editingRequest.day_off)
     : initialDraft?.fields.dayOff
-    ? normalizeDayOff(initialDraft.fields.dayOff)
-    : fixedDayOff;
+      ? normalizeDayOff(initialDraft.fields.dayOff)
+      : fixedDayOff;
   const initialPayrollClass = editingRequest?.payroll_class ?? initialDraft?.fields.payrollClass ?? profilePayrollClass ?? 'Select payroll class';
   const initialTransactions = initialDraft?.fields.transactions ?? [];
   const initialDateFrom = editingRequest?.date_from ?? initialDraft?.fields.dateFrom ?? '';
@@ -255,6 +292,21 @@ export function ApplyEsarfScreen({
   const reasonLayouts = useRef<Record<number, number>>({});
   const entriesSectionY = useRef(0);
   const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingScrollToIndex = useRef<number | null>(null);
+  const submittedGroupIndices = useRef<Set<number>>(new Set());
+
+  const scrollToEntryCard = (index: number) => {
+    const cardY = entryCardLayouts.current[index];
+    const secY = entriesSectionY.current || sectionY.current.transactions || 0;
+    if (cardY !== undefined && scrollRef.current) {
+      scrollRef.current.scrollTo({
+        y: Math.max(0, secY + cardY - 16),
+        animated: true,
+      });
+    } else if (scrollRef.current) {
+      scrollRef.current.scrollToEnd({ animated: true });
+    }
+  };
 
   const scrollToReasonInput = (index: number) => {
     if (scrollTimer.current) {
@@ -409,6 +461,8 @@ export function ApplyEsarfScreen({
   }, [primaryDateFrom, fixedDayOff, fixedSchedule, isOperationsDepartment, isUserCustomSchedule, isUserCustomDayOff]);
 
   function addEntry() {
+    const nextIndex = entries.length;
+    pendingScrollToIndex.current = nextIndex;
     setEntries((prev) => [
       ...prev,
       {
@@ -421,11 +475,32 @@ export function ApplyEsarfScreen({
         reason: '',
       },
     ]);
+
+    setTimeout(() => {
+      if (pendingScrollToIndex.current === nextIndex) {
+        pendingScrollToIndex.current = null;
+        scrollToEntryCard(nextIndex);
+      }
+    }, Platform.OS === 'android' ? 140 : 80);
   }
 
   function removeEntry(index: number) {
     if (entries.length <= 1) return;
-    setEntries((prev) => prev.filter((_, i) => i !== index));
+    const entryNumber = index + 1;
+    platformAlert(
+      'Delete Request',
+      `Are you sure you want to delete Request #${entryNumber}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setEntries((prev) => prev.filter((_, i) => i !== index));
+          },
+        },
+      ],
+    );
   }
 
   function updateEntry(index: number, updates: Partial<EsarfEntry>) {
@@ -688,7 +763,7 @@ export function ApplyEsarfScreen({
     if (!payrollClassOptions.includes(payrollClass)) errors.payrollClass = 'Payroll class is required.';
 
     entries.forEach((entry, i) => {
-      const num = entries.length - i;
+      const num = i + 1;
       const transKeys = parseEntryTransactions(entry.transaction);
       if (!transKeys.length) errors[`entry_${i}_transaction`] = `Request #${num}: Select at least one transaction type.`;
       if (!isOvertimeAllowedForPayroll(payrollClass) && transKeys.includes('ot')) {
@@ -714,6 +789,14 @@ export function ApplyEsarfScreen({
       if (!entry.reason.trim()) errors[`entry_${i}_reason`] = `Request #${num}: Reason is required.`;
     });
 
+    if (editingRequest) {
+      const hasRegular = entries.some((e) => !parseEntryTransactions(e.transaction).includes('use_offset'));
+      const hasUseOffset = entries.some((e) => parseEntryTransactions(e.transaction).includes('use_offset'));
+      if (hasRegular && hasUseOffset) {
+        errors.editing_mixed = 'When editing an existing request, you cannot mix Use Offset with other transaction types.';
+      }
+    }
+
     const totalUseOffsetHours = entries
       .filter((e) => parseEntryTransactions(e.transaction).includes('use_offset'))
       .reduce((sum, e) => sum + getEntryTotalHours(e), 0);
@@ -735,56 +818,6 @@ export function ApplyEsarfScreen({
     }, 12000);
 
     try {
-      const allTransKeys = entries.flatMap((e) => parseEntryTransactions(e.transaction));
-      const isUseOffset = allTransKeys.includes('use_offset');
-      const isOffsetEarn = allTransKeys.includes('offset');
-
-      let primaryRequestType: RequestTypeCode = 'overtime';
-      if (isUseOffset) {
-        primaryRequestType = 'use_offset';
-      } else if (isOffsetEarn) {
-        primaryRequestType = 'offset_earn';
-      }
-
-      const transactionTypesPerEntry = entries.map((e) => {
-        const keys = parseEntryTransactions(e.transaction);
-        const opts = transactionOptions.filter((t) => keys.includes(t.key));
-        return opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
-      });
-      const combinedTransactionType = Array.from(new Set(transactionTypesPerEntry)).join(', ');
-
-      const totalHoursSum = entries.reduce((sum, e) => sum + getEntryTotalHours(e), 0);
-
-      const allDatesFrom = entries.map((e) => e.dateFrom).filter(Boolean);
-      const allDatesTo = entries.map((e) => e.dateTo || e.dateFrom).filter(Boolean);
-      const sortedFrom = [...allDatesFrom].sort();
-      const sortedTo = [...allDatesTo].sort();
-
-      const firstEntry = entries[0];
-      const lastEntry = entries[entries.length - 1];
-      const overallDateFrom = sortedFrom[0] || firstEntry.dateFrom;
-      const overallDateTo = sortedTo[sortedTo.length - 1] || lastEntry.dateTo || lastEntry.dateFrom || firstEntry.dateFrom;
-      const overallTimeFrom = firstEntry.timeFrom;
-      const overallTimeTo = lastEntry.timeTo || firstEntry.timeTo;
-
-      let combinedReason: string;
-      if (entries.length === 1) {
-        combinedReason = firstEntry.reason.trim();
-      } else {
-        combinedReason = entries
-          .map((e, idx) => {
-            const keys = parseEntryTransactions(e.transaction);
-            const opts = transactionOptions.filter((t) => keys.includes(t.key));
-            const transLabel = opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
-            const dateStr = formatEsarfDateRange(e.dateFrom, e.dateTo);
-            const timeFromStr = e.timeFrom ? formatTimeDisplay(e.timeFrom) : '';
-            const timeToStr = e.timeTo ? formatTimeDisplay(e.timeTo) : '';
-            const hrs = getEntryTotalHours(e);
-            return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr} (${hrs.toFixed(2)} hrs): ${e.reason.trim()}`;
-          })
-          .join('\n');
-      }
-
       if (editingRequest) {
         const targetReqId = editingRequest.request_id || (editingRequest as any).id;
         if (!targetReqId) {
@@ -802,6 +835,44 @@ export function ApplyEsarfScreen({
           setSubmitStatus(msg);
           setIsSubmitting(false);
           return;
+        }
+
+        const transactionTypesPerEntry = entries.map((e) => {
+          const keys = parseEntryTransactions(e.transaction);
+          const opts = transactionOptions.filter((t) => keys.includes(t.key));
+          return opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
+        });
+        const combinedTransactionType = Array.from(new Set(transactionTypesPerEntry)).join(', ');
+        const totalHoursSum = entries.reduce((sum, e) => sum + getEntryTotalHours(e), 0);
+
+        const allDatesFrom = entries.map((e) => e.dateFrom).filter(Boolean);
+        const allDatesTo = entries.map((e) => e.dateTo || e.dateFrom).filter(Boolean);
+        const sortedFrom = [...allDatesFrom].sort();
+        const sortedTo = [...allDatesTo].sort();
+
+        const firstEntry = entries[0];
+        const lastEntry = entries[entries.length - 1];
+        const overallDateFrom = sortedFrom[0] || firstEntry.dateFrom;
+        const overallDateTo = sortedTo[sortedTo.length - 1] || lastEntry.dateTo || lastEntry.dateFrom || firstEntry.dateFrom;
+        const overallTimeFrom = firstEntry.timeFrom;
+        const overallTimeTo = lastEntry.timeTo || firstEntry.timeTo;
+
+        let combinedReason: string;
+        if (entries.length === 1) {
+          combinedReason = firstEntry.reason.trim();
+        } else {
+          combinedReason = entries
+            .map((e, idx) => {
+              const keys = parseEntryTransactions(e.transaction);
+              const opts = transactionOptions.filter((t) => keys.includes(t.key));
+              const transLabel = opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
+              const dateStr = formatEsarfDateRange(e.dateFrom, e.dateTo);
+              const timeFromStr = e.timeFrom ? formatTimeDisplay(e.timeFrom) : '';
+              const timeToStr = e.timeTo ? formatTimeDisplay(e.timeTo) : '';
+              const hrs = getEntryTotalHours(e);
+              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr} (${hrs.toFixed(2)} hrs): ${e.reason.trim()}`;
+            })
+            .join('\n');
         }
 
         await withTimeout(
@@ -832,35 +903,160 @@ export function ApplyEsarfScreen({
         return;
       }
 
-      const res = await withTimeout<{ data: any; error: any }>(
-        Promise.resolve(
-          supabase.rpc('submit_time_request', {
-            p_request_type_code: primaryRequestType,
-            p_date_from: overallDateFrom,
-            p_date_to: overallDateTo,
-            p_time_from: overallTimeFrom,
-            p_time_to: overallTimeTo,
-            p_total_hours: totalHoursSum,
-            p_reason: combinedReason,
-            p_time_schedule: schedule,
-            p_day_off: dayOff,
-            p_payroll_class: payrollClass,
-            p_transaction_type: combinedTransactionType,
-          }),
-        ),
-        25000,
-        'ESARF submission timed out. Please check your network connection and try again.',
-      );
+      // New submission: partition entries into regular (Group A) and Use Offset (Group B)
+      const isEntryUseOffset = (entry: EsarfEntry) => {
+        const keys = parseEntryTransactions(entry.transaction);
+        return keys.includes('use_offset');
+      };
 
-      if (res?.error) {
-        throw new Error(res.error.message);
+      const regularEntries = entries.filter((e) => !isEntryUseOffset(e));
+      const useOffsetEntries = entries.filter((e) => isEntryUseOffset(e));
+
+      const groupsToSubmit: EsarfEntry[][] = [];
+      if (regularEntries.length > 0) {
+        groupsToSubmit.push(regularEntries);
+      }
+      if (useOffsetEntries.length > 0) {
+        groupsToSubmit.push(useOffsetEntries);
       }
 
-      setSubmitStatus(`Submitted ESARF request with ${entries.length} entry(ies).`);
+      for (let g = 0; g < groupsToSubmit.length; g++) {
+        if (submittedGroupIndices.current.has(g)) {
+          continue;
+        }
+
+        if (g > 0) {
+          // Brief pause between separate group submissions to stabilize connection pool
+          await new Promise((r) => setTimeout(r, 450));
+        }
+
+        const groupEntries = groupsToSubmit[g];
+        if (groupsToSubmit.length > 1) {
+          setSubmitStatus(`Submitting request ${g + 1} of ${groupsToSubmit.length}...`);
+        }
+
+        const allTransKeys = groupEntries.flatMap((e) => parseEntryTransactions(e.transaction));
+        const isUseOffset = allTransKeys.includes('use_offset');
+        const isOffsetEarn = allTransKeys.includes('offset');
+
+        let primaryRequestType: RequestTypeCode = 'overtime';
+        if (isUseOffset) {
+          primaryRequestType = 'use_offset';
+        } else if (isOffsetEarn) {
+          primaryRequestType = 'offset_earn';
+        }
+
+        const transactionTypesPerEntry = groupEntries.map((e) => {
+          const keys = parseEntryTransactions(e.transaction);
+          const opts = transactionOptions.filter((t) => keys.includes(t.key));
+          return opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
+        });
+        const combinedTransactionType = Array.from(new Set(transactionTypesPerEntry)).join(', ');
+
+        const totalHoursSum = groupEntries.reduce((sum, e) => sum + getEntryTotalHours(e), 0);
+
+        const allDatesFrom = groupEntries.map((e) => e.dateFrom).filter(Boolean);
+        const allDatesTo = groupEntries.map((e) => e.dateTo || e.dateFrom).filter(Boolean);
+        const sortedFrom = [...allDatesFrom].sort();
+        const sortedTo = [...allDatesTo].sort();
+
+        const firstEntry = groupEntries[0];
+        const lastEntry = groupEntries[groupEntries.length - 1];
+        const overallDateFrom = sortedFrom[0] || firstEntry.dateFrom;
+        const overallDateTo = sortedTo[sortedTo.length - 1] || lastEntry.dateTo || lastEntry.dateFrom || firstEntry.dateFrom;
+        const overallTimeFrom = firstEntry.timeFrom;
+        const overallTimeTo = lastEntry.timeTo || firstEntry.timeTo;
+
+        let combinedReason: string;
+        if (groupEntries.length === 1) {
+          combinedReason = firstEntry.reason.trim();
+        } else {
+          combinedReason = groupEntries
+            .map((e, idx) => {
+              const keys = parseEntryTransactions(e.transaction);
+              const opts = transactionOptions.filter((t) => keys.includes(t.key));
+              const transLabel = opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
+              const dateStr = formatEsarfDateRange(e.dateFrom, e.dateTo);
+              const timeFromStr = e.timeFrom ? formatTimeDisplay(e.timeFrom) : '';
+              const timeToStr = e.timeTo ? formatTimeDisplay(e.timeTo) : '';
+              const hrs = getEntryTotalHours(e);
+              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr} (${hrs.toFixed(2)} hrs): ${e.reason.trim()}`;
+            })
+            .join('\n');
+        }
+
+        let res: { data: any; error: any } | null = null;
+        let lastErr: any = null;
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            if (attempt > 0) {
+              setSubmitStatus(`Connection interrupted. Reconnecting (${attempt}/2)...`);
+              await new Promise((r) => setTimeout(r, 1000 * attempt));
+            }
+
+            res = await withTimeout<{ data: any; error: any }>(
+              Promise.resolve(
+                supabase.rpc('submit_time_request', {
+                  p_request_type_code: primaryRequestType,
+                  p_date_from: overallDateFrom,
+                  p_date_to: overallDateTo,
+                  p_time_from: overallTimeFrom,
+                  p_time_to: overallTimeTo,
+                  p_total_hours: totalHoursSum,
+                  p_reason: combinedReason,
+                  p_time_schedule: schedule,
+                  p_day_off: dayOff,
+                  p_payroll_class: payrollClass,
+                  p_transaction_type: combinedTransactionType,
+                }),
+              ),
+              25000,
+              'ESARF submission timed out. Please check your network connection and try again.',
+            );
+
+            if (res?.error) {
+              throw new Error(res.error.message);
+            }
+
+            lastErr = null;
+            break;
+          } catch (err: any) {
+            lastErr = err;
+            const errMsg = (err?.message || String(err)).toLowerCase();
+            const isTransient =
+              errMsg.includes('network connection was lost') ||
+              errMsg.includes('network request failed') ||
+              errMsg.includes('fetch failed') ||
+              errMsg.includes('timed out') ||
+              errMsg.includes('timeout') ||
+              errMsg.includes('aborterror') ||
+              errMsg.includes('econnreset') ||
+              errMsg.includes('socket');
+            if (!isTransient || attempt === 2) {
+              break;
+            }
+          }
+        }
+
+        if (lastErr) {
+          throw lastErr;
+        }
+
+        submittedGroupIndices.current.add(g);
+      }
+
+      submittedGroupIndices.current.clear();
+
+      const successMessage = groupsToSubmit.length > 1
+        ? `Submitted ${groupsToSubmit.length} separate ESARF requests (${regularEntries.length} regular entry(ies) and ${useOffsetEntries.length} Use Offset entry(ies)).`
+        : `Submitted ESARF request with ${entries.length} entry(ies).`;
+
+      setSubmitStatus(successMessage);
       onToast?.({
         tone: 'success',
         title: 'ESARF submitted',
-        message: `ESARF request with ${entries.length} entry(ies) sent for approval.`,
+        message: `${successMessage} Sent for approval.`,
       });
       await onSubmitted?.();
     } catch (error) {
@@ -890,9 +1086,15 @@ export function ApplyEsarfScreen({
     const isEdit = Boolean(editingRequest);
     const actionText = isEdit ? 'Update' : 'Submit';
     const confirmTitle = isEdit ? 'Confirm ESARF Update' : 'Confirm ESARF Submission';
+    const hasRegular = entries.some((e) => !parseEntryTransactions(e.transaction).includes('use_offset'));
+    const hasUseOffset = entries.some((e) => parseEntryTransactions(e.transaction).includes('use_offset'));
+    const isSplit = !isEdit && hasRegular && hasUseOffset;
+
     const confirmMsg = isEdit
       ? 'Are you sure you want to update this ESARF request?'
-      : `Are you sure you want to submit this ESARF request with ${entries.length} entry(ies)?`;
+      : isSplit
+        ? `Your request contains both regular ESARF entries and Use Offset. These will be automatically split and submitted as 2 separate requests for approval.`
+        : `Are you sure you want to submit this ESARF request with ${entries.length} entry(ies)?`;
 
     platformAlert(confirmTitle, confirmMsg, [
       { text: 'Cancel', style: 'cancel' },
@@ -925,384 +1127,390 @@ export function ApplyEsarfScreen({
         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
         style={styles.keyboardAvoider}
       >
-      <ScrollView
-        ref={scrollRef}
-        contentContainerStyle={[
-          styles.scroll,
-          {
-            paddingBottom:
-              Platform.OS === 'android'
-                ? (keyboardHeight > 0 ? keyboardHeight + 140 : spacing.xl)
-                : (keyboardHeight > 0 ? 100 : spacing.xl),
-          },
-        ]}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        showsVerticalScrollIndicator={false}
-      >
-        <View
-          style={[
-            styles.scheduleCard,
-            hasSectionError(validationErrors, 'request') ? styles.scheduleCardInvalid : null,
+        <ScrollView
+          ref={scrollRef}
+          contentContainerStyle={[
+            styles.scroll,
+            {
+              paddingBottom:
+                Platform.OS === 'android'
+                  ? (keyboardHeight > 0 ? keyboardHeight + 140 : spacing.xl)
+                  : (keyboardHeight > 0 ? 100 : spacing.xl),
+            },
           ]}
-          onLayout={(event) => {
-            sectionY.current.request = event.nativeEvent.layout.y;
-          }}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
         >
-          <View style={styles.scheduleCardHeader}>
-            <CalendarDays size={20} color={colors.primary} strokeWidth={2.2} />
-            <Text style={styles.scheduleCardTitle}>Schedule and Payroll</Text>
-          </View>
+          <View
+            style={[
+              styles.scheduleCard,
+              hasSectionError(validationErrors, 'request') ? styles.scheduleCardInvalid : null,
+            ]}
+            onLayout={(event) => {
+              sectionY.current.request = event.nativeEvent.layout.y;
+            }}
+          >
+            <View style={styles.scheduleCardHeader}>
+              <CalendarDays size={20} color={colors.primary} strokeWidth={2.2} />
+              <Text style={styles.scheduleCardTitle}>Schedule and Payroll</Text>
+            </View>
 
-          <View style={styles.scheduleFieldGroup}>
-            <Text style={styles.scheduleFieldLabel}>Time Schedule</Text>
-            <View
-              style={[
-                styles.scheduleInputBox,
-                validationErrors.schedule ? styles.inputError : null,
-              ]}
-            >
-              <Pressable
-                style={styles.scheduleInputTouchable}
-                onPress={() => setActiveSelect('schedule')}
+            <View style={styles.scheduleFieldGroup}>
+              <Text style={styles.scheduleFieldLabel}>Time Schedule</Text>
+              <View
+                style={[
+                  styles.scheduleInputBox,
+                  validationErrors.schedule ? styles.inputError : null,
+                ]}
               >
-                <Text
-                  style={[
-                    styles.scheduleInputText,
-                    !schedule || schedule === NO_SCHEDULE_LABEL ? styles.placeholderText : null,
-                  ]}
-                  numberOfLines={1}
-                >
-                  {schedule || 'Select time schedule'}
-                </Text>
-              </Pressable>
-              <View style={styles.scheduleActionIcons}>
                 <Pressable
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={styles.scheduleIconButton}
-                  onPress={openCustomScheduleModal}
-                  accessibilityLabel="Set custom base schedule"
+                  style={styles.scheduleInputTouchable}
+                  onPress={() => setActiveSelect('schedule')}
                 >
-                  <Clock3 size={18} color={colors.primary} strokeWidth={2.2} />
+                  <Text
+                    style={[
+                      styles.scheduleInputText,
+                      !schedule || schedule === NO_SCHEDULE_LABEL ? styles.placeholderText : null,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {schedule || 'Select time schedule'}
+                  </Text>
                 </Pressable>
+                <View style={styles.scheduleActionIcons}>
+                  <Pressable
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    style={styles.scheduleIconButton}
+                    onPress={openCustomScheduleModal}
+                    accessibilityLabel="Set custom base schedule"
+                  >
+                    <Clock3 size={18} color={colors.primary} strokeWidth={2.2} />
+                  </Pressable>
+                </View>
+              </View>
+              {validationErrors.schedule ? (
+                <Text style={styles.fieldError}>{validationErrors.schedule}</Text>
+              ) : null}
+            </View>
+
+            <View style={styles.scheduleTwoColumnRow}>
+              <View style={styles.scheduleColumnField}>
+                <Text style={styles.scheduleFieldLabel}>Day-off</Text>
+                <View
+                  style={[
+                    styles.scheduleInputBox,
+                    validationErrors.dayOff ? styles.inputError : null,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.scheduleInputText,
+                      !dayOff || dayOff === NO_DAY_OFF_LABEL ? styles.placeholderText : null,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {dayOff || 'Select day off'}
+                  </Text>
+                  <Pressable
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    style={styles.scheduleIconButton}
+                    onPress={() => setActiveSelect('day_off')}
+                  >
+                    <Repeat size={18} color="#64748b" strokeWidth={2} />
+                  </Pressable>
+                </View>
+                {validationErrors.dayOff ? (
+                  <Text style={styles.fieldError}>{validationErrors.dayOff}</Text>
+                ) : null}
+              </View>
+
+              <View style={styles.scheduleColumnField}>
+                <Text style={styles.scheduleFieldLabel}>Payroll Class</Text>
+                <View
+                  style={[
+                    styles.scheduleInputBox,
+                    validationErrors.payrollClass ? styles.inputError : null,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.scheduleInputText,
+                      !payrollClass || payrollClass === 'Select payroll class'
+                        ? styles.placeholderText
+                        : null,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {payrollClass || 'Select payroll class'}
+                  </Text>
+                </View>
+                {validationErrors.payrollClass ? (
+                  <Text style={styles.fieldError}>{validationErrors.payrollClass}</Text>
+                ) : null}
               </View>
             </View>
-            {validationErrors.schedule ? (
-              <Text style={styles.fieldError}>{validationErrors.schedule}</Text>
+          </View>
+
+          <View
+            style={styles.entriesSectionContainer}
+            onLayout={(event) => {
+              entriesSectionY.current = event.nativeEvent.layout.y;
+              sectionY.current.transactions = event.nativeEvent.layout.y;
+              sectionY.current.datetime = event.nativeEvent.layout.y;
+            }}
+          >
+            <View style={styles.entriesSectionHeader}>
+              <Text style={styles.entriesSectionTitle}>ESARF Request/s</Text>
+            </View>
+
+            {operationsScopeLabel ? (
+              <View style={styles.operationsScope}>
+                <Text style={styles.operationsScopeText} numberOfLines={1}>
+                  {operationsScopeLabel}
+                </Text>
+              </View>
             ) : null}
-          </View>
 
-          <View style={styles.scheduleTwoColumnRow}>
-            <View style={styles.scheduleColumnField}>
-              <Text style={styles.scheduleFieldLabel}>Day-off</Text>
+            {requestInfoNotice ? (
               <View
                 style={[
-                  styles.scheduleInputBox,
-                  validationErrors.dayOff ? styles.inputError : null,
+                  styles.scheduleNotice,
+                  scheduleContextError || payrollContextError ? styles.scheduleNoticeError : null,
                 ]}
               >
                 <Text
                   style={[
-                    styles.scheduleInputText,
-                    !dayOff || dayOff === NO_DAY_OFF_LABEL ? styles.placeholderText : null,
+                    styles.scheduleNoticeText,
+                    scheduleContextError || payrollContextError ? styles.scheduleNoticeTextError : null,
                   ]}
-                  numberOfLines={1}
                 >
-                  {dayOff || 'Select day off'}
-                </Text>
-                <Pressable
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={styles.scheduleIconButton}
-                  onPress={() => setActiveSelect('day_off')}
-                >
-                  <Repeat size={18} color="#64748b" strokeWidth={2} />
-                </Pressable>
-              </View>
-              {validationErrors.dayOff ? (
-                <Text style={styles.fieldError}>{validationErrors.dayOff}</Text>
-              ) : null}
-            </View>
-
-            <View style={styles.scheduleColumnField}>
-              <Text style={styles.scheduleFieldLabel}>Payroll Class</Text>
-              <View
-                style={[
-                  styles.scheduleInputBox,
-                  validationErrors.payrollClass ? styles.inputError : null,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.scheduleInputText,
-                    !payrollClass || payrollClass === 'Select payroll class'
-                      ? styles.placeholderText
-                      : null,
-                  ]}
-                  numberOfLines={1}
-                >
-                  {payrollClass || 'Select payroll class'}
+                  {requestInfoNotice}
                 </Text>
               </View>
-              {validationErrors.payrollClass ? (
-                <Text style={styles.fieldError}>{validationErrors.payrollClass}</Text>
-              ) : null}
-            </View>
-          </View>
-        </View>
+            ) : null}
 
-        <View
-          style={styles.entriesSectionContainer}
-          onLayout={(event) => {
-            entriesSectionY.current = event.nativeEvent.layout.y;
-            sectionY.current.transactions = event.nativeEvent.layout.y;
-            sectionY.current.datetime = event.nativeEvent.layout.y;
-          }}
-        >
-          <View style={styles.entriesSectionHeader}>
-            <Text style={styles.entriesSectionTitle}>ESARF Request Information</Text>
-            <Pressable style={styles.addEntryButton} onPress={addEntry} hitSlop={6}>
-              <Plus size={18} color="#0f172a" strokeWidth={3} />
-            </Pressable>
-          </View>
+            {entries.map((entry, index) => {
+              const actualIndex = index;
+              const badgeNumber = actualIndex + 1;
+              const entryTransKeys = parseEntryTransactions(entry.transaction);
+              const isUseOffset = entryTransKeys.includes('use_offset');
+              const selectedOptions = transactionOptions.filter((t) => entryTransKeys.includes(t.key));
+              const transactionLabelText = selectedOptions.length
+                ? selectedOptions.map((t) => t.shortLabel || t.label).join(', ')
+                : 'Select transaction';
+              const dateDisplayText = formatEsarfDateRange(entry.dateFrom, entry.dateTo);
+              const hours = getEntryTotalHours(entry);
 
-          {operationsScopeLabel ? (
-            <View style={styles.operationsScope}>
-              <Text style={styles.operationsScopeText} numberOfLines={1}>
-                {operationsScopeLabel}
-              </Text>
-            </View>
-          ) : null}
-
-          {requestInfoNotice ? (
-            <View
-              style={[
-                styles.scheduleNotice,
-                scheduleContextError || payrollContextError ? styles.scheduleNoticeError : null,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.scheduleNoticeText,
-                  scheduleContextError || payrollContextError ? styles.scheduleNoticeTextError : null,
-                ]}
-              >
-                {requestInfoNotice}
-              </Text>
-            </View>
-          ) : null}
-
-          {entries.map((entry, index) => {
-            const actualIndex = index;
-            const badgeNumber = actualIndex + 1;
-            const entryTransKeys = parseEntryTransactions(entry.transaction);
-            const isUseOffset = entryTransKeys.includes('use_offset');
-            const selectedOptions = transactionOptions.filter((t) => entryTransKeys.includes(t.key));
-            const transactionLabelText = selectedOptions.length
-              ? selectedOptions.map((t) => t.shortLabel || t.label).join(', ')
-              : 'Select transaction';
-            const dateDisplayText = formatEsarfDateRange(entry.dateFrom, entry.dateTo);
-            const hours = getEntryTotalHours(entry);
-
-            return (
-              <View
-                key={entry.id}
-                style={styles.entryCard}
-                onLayout={(event) => {
-                  entryCardLayouts.current[actualIndex] = event.nativeEvent.layout.y;
-                }}
-              >
-                <View style={styles.entryCardHeader}>
-                  <View style={styles.entryBadge}>
-                    <Text style={styles.entryBadgeText}>{badgeNumber}</Text>
-                  </View>
-                  <Text style={styles.entryCardTitle}>ESARF Request Information</Text>
-                  {entries.length > 1 ? (
-                    <Pressable
-                      style={styles.deleteEntryButton}
-                      onPress={() => removeEntry(actualIndex)}
-                      hitSlop={6}
-                    >
-                      <Trash2 size={16} color="#ef4444" strokeWidth={2.2} />
-                    </Pressable>
-                  ) : null}
-                </View>
-
-                {/* Row 1: Transaction Type & Date From-To */}
-                <View style={styles.underlineRow}>
-                  <View style={styles.underlineField}>
-                    <Pressable
-                      style={[
-                        styles.underlineBox,
-                        validationErrors[`entry_${actualIndex}_transaction`] ? styles.inputError : null,
-                      ]}
-                      onPress={() => setActiveTransactionSelectIndex(actualIndex)}
-                    >
-                      <Text
-                        style={[
-                          styles.underlineText,
-                          !selectedOptions.length ? styles.underlineTextPlaceholder : null,
-                        ]}
-                        numberOfLines={1}
+              return (
+                <View
+                  key={entry.id}
+                  style={styles.entryCard}
+                  onLayout={(event) => {
+                    const y = event.nativeEvent.layout.y;
+                    entryCardLayouts.current[actualIndex] = y;
+                    if (pendingScrollToIndex.current === actualIndex) {
+                      pendingScrollToIndex.current = null;
+                      const secY = entriesSectionY.current || sectionY.current.transactions || 0;
+                      scrollRef.current?.scrollTo({
+                        y: Math.max(0, secY + y - 16),
+                        animated: true,
+                      });
+                    }
+                  }}
+                >
+                  <View style={styles.entryCardHeader}>
+                    <View style={styles.entryBadge}>
+                      <Text style={styles.entryBadgeText}>{badgeNumber}</Text>
+                    </View>
+                    <Text style={styles.entryCardTitle}>ESARF Request Information</Text>
+                    {entries.length > 1 ? (
+                      <Pressable
+                        style={styles.deleteEntryButton}
+                        onPress={() => removeEntry(actualIndex)}
+                        hitSlop={6}
                       >
-                        {transactionLabelText}
-                      </Text>
-                      <ChevronDown size={16} color="#64748b" strokeWidth={2.4} />
-                    </Pressable>
-                    <Text style={styles.underlineLabel}>Transaction Type</Text>
-                    {validationErrors[`entry_${actualIndex}_transaction`] ? (
-                      <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_transaction`]}</Text>
+                        <Trash2 size={16} color="#ef4444" strokeWidth={2.2} />
+                      </Pressable>
                     ) : null}
                   </View>
 
-                  <View style={styles.underlineField}>
-                    <Pressable
-                      style={[
-                        styles.underlineBox,
-                        validationErrors[`entry_${actualIndex}_dateFrom`] ? styles.inputError : null,
-                      ]}
-                      onPress={() => setActiveDateChoiceIndex(actualIndex)}
-                    >
-                      <Text
+                  {/* Row 1: Transaction Type & Date From-To */}
+                  <View style={styles.underlineRow}>
+                    <View style={styles.underlineField}>
+                      <Pressable
                         style={[
-                          styles.underlineText,
-                          !entry.dateFrom ? styles.underlineTextPlaceholder : null,
+                          styles.underlineBox,
+                          validationErrors[`entry_${actualIndex}_transaction`] ? styles.inputError : null,
                         ]}
-                        numberOfLines={1}
+                        onPress={() => setActiveTransactionSelectIndex(actualIndex)}
                       >
-                        {dateDisplayText}
-                      </Text>
-                      <CalendarDays size={16} color="#64748b" strokeWidth={2} />
-                    </Pressable>
-                    <Text style={styles.underlineLabel}>Date From-To</Text>
-                    {validationErrors[`entry_${actualIndex}_dateFrom`] ? (
-                      <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_dateFrom`]}</Text>
-                    ) : null}
-                  </View>
-                </View>
+                        <Text
+                          style={[
+                            styles.underlineText,
+                            !selectedOptions.length ? styles.underlineTextPlaceholder : null,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {transactionLabelText}
+                        </Text>
+                        <ChevronDown size={16} color="#64748b" strokeWidth={2.4} />
+                      </Pressable>
+                      <Text style={styles.underlineLabel}>Transaction Type</Text>
+                      {validationErrors[`entry_${actualIndex}_transaction`] ? (
+                        <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_transaction`]}</Text>
+                      ) : null}
+                    </View>
 
-                {/* Row 2: Total No of Hours / Offset Balance, Time From, Time To */}
-                <View style={styles.underlineRow}>
-                  <View style={styles.underlineField}>
-                    <View
-                      style={[
-                        styles.underlineBox,
-                        isUseOffset && ((offsetBalance ?? 0) <= 0 || (hours > 0 && hours > (offsetBalance ?? 0)))
-                          ? styles.inputError
-                          : null,
-                      ]}
-                    >
-                      <Text
+                    <View style={styles.underlineField}>
+                      <Pressable
                         style={[
-                          styles.underlineText,
+                          styles.underlineBox,
+                          validationErrors[`entry_${actualIndex}_dateFrom`] ? styles.inputError : null,
+                        ]}
+                        onPress={() => setActiveDateChoiceIndex(actualIndex)}
+                      >
+                        <Text
+                          style={[
+                            styles.underlineText,
+                            !entry.dateFrom ? styles.underlineTextPlaceholder : null,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {dateDisplayText}
+                        </Text>
+                        <CalendarDays size={16} color="#64748b" strokeWidth={2} />
+                      </Pressable>
+                      <Text style={styles.underlineLabel}>Date From-To</Text>
+                      {validationErrors[`entry_${actualIndex}_dateFrom`] ? (
+                        <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_dateFrom`]}</Text>
+                      ) : null}
+                    </View>
+                  </View>
+
+                  {/* Row 2: Total No of Hours / Offset Balance, Time From, Time To */}
+                  <View style={styles.underlineRow}>
+                    <View style={styles.underlineField}>
+                      <View
+                        style={[
+                          styles.underlineBox,
                           isUseOffset && ((offsetBalance ?? 0) <= 0 || (hours > 0 && hours > (offsetBalance ?? 0)))
-                            ? { color: '#ef4444', fontWeight: '800' }
+                            ? styles.inputError
                             : null,
                         ]}
                       >
-                        {isUseOffset ? (offsetBalance ?? 0).toFixed(2) : (hours ?? 0).toFixed(2)}
+                        <Text
+                          style={[
+                            styles.underlineText,
+                            isUseOffset && ((offsetBalance ?? 0) <= 0 || (hours > 0 && hours > (offsetBalance ?? 0)))
+                              ? { color: '#ef4444', fontWeight: '800' }
+                              : null,
+                          ]}
+                        >
+                          {isUseOffset ? (offsetBalance ?? 0).toFixed(2) : (hours ?? 0).toFixed(2)}
+                        </Text>
+                      </View>
+                      <Text
+                        style={[
+                          styles.underlineLabel,
+                          isUseOffset && ((offsetBalance ?? 0) <= 0 || (hours > 0 && hours > (offsetBalance ?? 0)))
+                            ? { color: '#ef4444' }
+                            : null,
+                        ]}
+                      >
+                        {isUseOffset ? 'Offset Balance' : 'Total No of Hours'}
                       </Text>
                     </View>
-                    <Text
-                      style={[
-                        styles.underlineLabel,
-                        isUseOffset && ((offsetBalance ?? 0) <= 0 || (hours > 0 && hours > (offsetBalance ?? 0)))
-                          ? { color: '#ef4444' }
-                          : null,
-                      ]}
-                    >
-                      {isUseOffset ? 'Offset Balance' : 'Total No of Hours'}
-                    </Text>
-                  </View>
 
-                  <View style={styles.underlineField}>
-                    <Pressable
-                      style={[
-                        styles.underlineBox,
-                        validationErrors[`entry_${actualIndex}_timeFrom`] ||
-                        (isUseOffset && hours > (offsetBalance ?? 0))
-                          ? styles.inputError
-                          : null,
-                      ]}
-                      onPress={() => setActiveScrollableTimePicker({ index: actualIndex, field: 'time_from' })}
-                    >
-                      <Text
+                    <View style={styles.underlineField}>
+                      <Pressable
                         style={[
-                          styles.underlineText,
-                          !entry.timeFrom ? styles.underlineTextPlaceholder : null,
+                          styles.underlineBox,
+                          validationErrors[`entry_${actualIndex}_timeFrom`] ||
+                            (isUseOffset && hours > (offsetBalance ?? 0))
+                            ? styles.inputError
+                            : null,
                         ]}
-                        numberOfLines={1}
+                        onPress={() => setActiveScrollableTimePicker({ index: actualIndex, field: 'time_from' })}
                       >
-                        {entry.timeFrom ? formatTimeDisplay(entry.timeFrom) : '--:-- --'}
-                      </Text>
-                      <Clock3 size={16} color="#64748b" strokeWidth={2} />
-                    </Pressable>
-                    <Text style={styles.underlineLabel}>Time From</Text>
-                    {validationErrors[`entry_${actualIndex}_timeFrom`] ? (
-                      <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_timeFrom`]}</Text>
-                    ) : null}
-                  </View>
+                        <Text
+                          style={[
+                            styles.underlineText,
+                            !entry.timeFrom ? styles.underlineTextPlaceholder : null,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {entry.timeFrom ? formatTimeDisplay(entry.timeFrom) : '--:-- --'}
+                        </Text>
+                        <Clock3 size={16} color="#64748b" strokeWidth={2} />
+                      </Pressable>
+                      <Text style={styles.underlineLabel}>Time From</Text>
+                      {validationErrors[`entry_${actualIndex}_timeFrom`] ? (
+                        <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_timeFrom`]}</Text>
+                      ) : null}
+                    </View>
 
-                  <View style={styles.underlineField}>
-                    <Pressable
-                      style={[
-                        styles.underlineBox,
-                        validationErrors[`entry_${actualIndex}_timeTo`] ||
-                        (isUseOffset && hours > (offsetBalance ?? 0))
-                          ? styles.inputError
-                          : null,
-                      ]}
-                      onPress={() => setActiveScrollableTimePicker({ index: actualIndex, field: 'time_to' })}
-                    >
-                      <Text
+                    <View style={styles.underlineField}>
+                      <Pressable
                         style={[
-                          styles.underlineText,
-                          !entry.timeTo ? styles.underlineTextPlaceholder : null,
+                          styles.underlineBox,
+                          validationErrors[`entry_${actualIndex}_timeTo`] ||
+                            (isUseOffset && hours > (offsetBalance ?? 0))
+                            ? styles.inputError
+                            : null,
                         ]}
-                        numberOfLines={1}
+                        onPress={() => setActiveScrollableTimePicker({ index: actualIndex, field: 'time_to' })}
                       >
-                        {entry.timeTo ? formatTimeDisplay(entry.timeTo) : '--:-- --'}
-                      </Text>
-                      <Clock3 size={16} color="#64748b" strokeWidth={2} />
-                    </Pressable>
-                    <Text style={styles.underlineLabel}>Time To</Text>
-                    {validationErrors[`entry_${actualIndex}_timeTo`] ? (
-                      <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_timeTo`]}</Text>
-                    ) : null}
+                        <Text
+                          style={[
+                            styles.underlineText,
+                            !entry.timeTo ? styles.underlineTextPlaceholder : null,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {entry.timeTo ? formatTimeDisplay(entry.timeTo) : '--:-- --'}
+                        </Text>
+                        <Clock3 size={16} color="#64748b" strokeWidth={2} />
+                      </Pressable>
+                      <Text style={styles.underlineLabel}>Time To</Text>
+                      {validationErrors[`entry_${actualIndex}_timeTo`] ? (
+                        <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_timeTo`]}</Text>
+                      ) : null}
+                    </View>
                   </View>
-                </View>
 
-                {/* Inline Offset Balance Warnings / Info */}
-                {isUseOffset ? (
-                  <View style={styles.offsetFeedbackWrap}>
-                    {(offsetBalance ?? 0) <= 0 ? (
-                      <View style={styles.offsetWarningBadge}>
-                        <AlertTriangle size={13} color="#ef4444" strokeWidth={2.4} />
-                        <Text style={styles.offsetWarningBadgeText}>
-                          No offset balance available (0.00 hrs).
+                  {/* Inline Offset Balance Warnings / Info */}
+                  {isUseOffset ? (
+                    <View style={styles.offsetFeedbackWrap}>
+                      {(offsetBalance ?? 0) <= 0 ? (
+                        <View style={styles.offsetWarningBadge}>
+                          <AlertTriangle size={13} color="#ef4444" strokeWidth={2.4} />
+                          <Text style={styles.offsetWarningBadgeText}>
+                            No offset balance available (0.00 hrs).
+                          </Text>
+                        </View>
+                      ) : entry.timeFrom && entry.timeTo && hours > (offsetBalance ?? 0) ? (
+                        <View style={styles.offsetWarningBadge}>
+                          <AlertTriangle size={13} color="#ef4444" strokeWidth={2.4} />
+                          <Text style={styles.offsetWarningBadgeText}>
+                            Selected duration ({hours.toFixed(2)} hrs) exceeds offset balance by {(hours - (offsetBalance ?? 0)).toFixed(2)} hrs.
+                          </Text>
+                        </View>
+                      ) : entry.timeFrom && entry.timeTo && hours > 0 ? (
+                        <View style={styles.offsetSuccessBadge}>
+                          <Check size={13} color="#16a34a" strokeWidth={2.4} />
+                          <Text style={styles.offsetSuccessBadgeText}>
+                            Using {hours.toFixed(2)} hrs • {((offsetBalance ?? 0) - hours).toFixed(2)} hrs balance remaining
+                          </Text>
+                        </View>
+                      ) : null}
+                      {validationErrors[`entry_${actualIndex}_offsetBalance`] ? (
+                        <Text style={styles.fieldError}>
+                          {validationErrors[`entry_${actualIndex}_offsetBalance`]}
                         </Text>
-                      </View>
-                    ) : entry.timeFrom && entry.timeTo && hours > (offsetBalance ?? 0) ? (
-                      <View style={styles.offsetWarningBadge}>
-                        <AlertTriangle size={13} color="#ef4444" strokeWidth={2.4} />
-                        <Text style={styles.offsetWarningBadgeText}>
-                          Selected duration ({hours.toFixed(2)} hrs) exceeds offset balance by {(hours - (offsetBalance ?? 0)).toFixed(2)} hrs.
-                        </Text>
-                      </View>
-                    ) : entry.timeFrom && entry.timeTo && hours > 0 ? (
-                      <View style={styles.offsetSuccessBadge}>
-                        <Check size={13} color="#16a34a" strokeWidth={2.4} />
-                        <Text style={styles.offsetSuccessBadgeText}>
-                          Using {hours.toFixed(2)} hrs • {((offsetBalance ?? 0) - hours).toFixed(2)} hrs balance remaining
-                        </Text>
-                      </View>
-                    ) : null}
-                    {validationErrors[`entry_${actualIndex}_offsetBalance`] ? (
-                      <Text style={styles.fieldError}>
-                        {validationErrors[`entry_${actualIndex}_offsetBalance`]}
-                      </Text>
-                    ) : null}
-                  </View>
-                ) : null}
+                      ) : null}
+                    </View>
+                  ) : null}
 
                   {/* Row 3: Reason Text Area */}
                   <View
@@ -1347,397 +1555,425 @@ export function ApplyEsarfScreen({
                 </View>
               );
             })}
-        </View>
 
-        <View style={styles.actions}>
-          <Pressable style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
-            <Text style={styles.cancelText}>Cancel</Text>
-          </Pressable>
-          <Pressable
-            disabled={isSubmitting}
-            style={[styles.submitButton, isSubmitting ? styles.submitButtonDisabled : null]}
-            onPress={submit}
-          >
-            <Text style={styles.submitText}>{isSubmitting ? 'Submitting...' : 'Submit Request'}</Text>
-          </Pressable>
-        </View>
-        {submissionErrorModal ? (
+            {/* Add Entry Button placed directly below the entry card(s) */}
+            <Pressable
+              style={({ pressed }) => [
+                styles.addEntryBelowButton,
+                pressed ? styles.addEntryBelowButtonPressed : null,
+              ]}
+              onPress={addEntry}
+              hitSlop={6}
+              accessibilityLabel="Add another request entry"
+            >
+              <View style={styles.addEntryBelowIcon}>
+                <Plus size={16} color="#0f172a" strokeWidth={3} />
+              </View>
+              <Text style={styles.addEntryBelowText}>Add Another Request</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.actions}>
+            <Pressable style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
+              <Text style={styles.cancelText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              disabled={isSubmitting}
+              style={[styles.submitButton, isSubmitting ? styles.submitButtonDisabled : null]}
+              onPress={submit}
+            >
+              <Text style={styles.submitText}>{isSubmitting ? 'Submitting...' : 'Submit Request'}</Text>
+            </Pressable>
+          </View>
+          {submissionErrorModal ? (() => {
+            const errorInfo = getFriendlyErrorMessage(submissionErrorModal);
+            return (
+              <Modal
+                transparent
+                animationType="fade"
+                visible={Boolean(submissionErrorModal)}
+                onRequestClose={() => setSubmissionErrorModal(null)}
+              >
+                <View style={styles.errorModalBackdrop}>
+                  <View style={styles.errorModalCard}>
+                    <View style={styles.errorModalIconContainer}>
+                      <AlertTriangle size={32} color="#ef4444" strokeWidth={2.4} />
+                    </View>
+
+                    <Text style={styles.errorModalTitle}>{errorInfo.title}</Text>
+
+                    <Text style={styles.errorModalMessage}>{errorInfo.message}</Text>
+
+                    <View style={styles.errorModalActions}>
+                      <Pressable
+                        style={styles.errorModalDismissBtn}
+                        onPress={() => {
+                          setSubmissionErrorModal(null);
+                        }}
+                      >
+                        <Text style={styles.errorModalDismissText}>Close</Text>
+                      </Pressable>
+
+                      {errorInfo.isRetryable ? (
+                        <Pressable
+                          style={styles.errorModalReloadBtn}
+                          onPress={() => {
+                            setSubmissionErrorModal(null);
+                            executeSubmit();
+                          }}
+                        >
+                          <RotateCcw size={15} color="#0f172a" />
+                          <Text style={styles.errorModalReloadText}>Retry</Text>
+                        </Pressable>
+                      ) : (
+                        <Pressable
+                          style={styles.errorModalReloadBtn}
+                          onPress={() => {
+                            setSubmissionErrorModal(null);
+                            setIsSubmitting(false);
+                            setSubmitStatus('');
+                            if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                              window.location.reload();
+                            }
+                          }}
+                        >
+                          <RotateCcw size={15} color="#0f172a" />
+                          <Text style={styles.errorModalReloadText}>Reset / Reload</Text>
+                        </Pressable>
+                      )}
+                    </View>
+                  </View>
+                </View>
+              </Modal>
+            );
+          })() : null}
+
+          {activeEntryPicker ? (
+            <UniversalDateTimePicker
+              value={pickerValue()}
+              mode={activeEntryPicker.kind.startsWith('date') ? 'date' : 'time'}
+              display="default"
+              is24Hour={false}
+              onChange={handlePickerChange}
+              onClose={() => setActiveEntryPicker(null)}
+            />
+          ) : null}
+
+          {selectSheet ? (
+            <Modal transparent animationType="fade" visible onRequestClose={() => setActiveSelect(null)}>
+              <View style={styles.modalBackdrop}>
+                <Pressable style={styles.modalDismissArea} onPress={() => setActiveSelect(null)} />
+                <View style={styles.optionSheet}>
+                  <View style={styles.sheetHandle} />
+                  <Text style={styles.sheetTitle}>{selectSheet.title}</Text>
+                  {selectSheet.options.map((option) => {
+                    const selected = option === selectSheet.value;
+                    const isCustom = option === 'Custom schedule...';
+                    return (
+                      <Pressable
+                        key={option}
+                        style={[
+                          styles.optionRow,
+                          selected ? styles.optionRowActive : null,
+                          isCustom ? styles.customOptionRow : null,
+                        ]}
+                        onPress={() => chooseSelectOption(option)}
+                      >
+                        {isCustom ? (
+                          <View style={styles.customOptionWrap}>
+                            <Clock3 size={16} color={colors.primary} strokeWidth={2.2} />
+                            <Text style={[styles.optionText, styles.customOptionText]}>{option}</Text>
+                          </View>
+                        ) : (
+                          <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>{option}</Text>
+                        )}
+                        {selected ? <Check size={18} color={colors.brand.goldStrong} strokeWidth={3} /> : null}
+                      </Pressable>
+                    );
+                  })}
+                  <Pressable style={styles.sheetCancelButton} onPress={() => setActiveSelect(null)}>
+                    <Text style={styles.cancelText}>Cancel</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </Modal>
+          ) : null}
+
+          {isCustomScheduleOpen ? (
+            <Modal transparent animationType="fade" visible onRequestClose={() => setIsCustomScheduleOpen(false)}>
+              <View style={styles.modalBackdrop}>
+                <Pressable style={styles.modalDismissArea} onPress={() => setIsCustomScheduleOpen(false)} />
+                <View style={styles.customScheduleModalPanel}>
+                  <View style={styles.sheetHandle} />
+                  <View style={styles.customScheduleHeader}>
+                    <View style={styles.customScheduleIconBadge}>
+                      <Clock3 size={18} color="#0f172a" strokeWidth={2.5} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.customScheduleTitle}>Custom Base Schedule</Text>
+                      <Text style={styles.customScheduleSubtitle}>
+                        Tap Shift Start or Shift End to choose working hours.
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.customTimeRow}>
+                    <Pressable
+                      style={[
+                        styles.customTimeColCard,
+                        customTimePickerKind === 'start' ? styles.customTimeColCardActive : null,
+                      ]}
+                      onPress={() => setCustomTimePickerKind('start')}
+                    >
+                      <Text
+                        style={[
+                          styles.customTimeLabel,
+                          customTimePickerKind === 'start' ? styles.customTimeLabelActive : null,
+                        ]}
+                      >
+                        Shift Start
+                      </Text>
+                      <View style={styles.customTimeBoxInner}>
+                        <Text style={styles.customTimeText}>
+                          {formatTimeDisplay(customStartTime)}
+                        </Text>
+                        <Clock3
+                          size={16}
+                          color={customTimePickerKind === 'start' ? colors.brand.goldStrong : colors.primary}
+                          strokeWidth={2.2}
+                        />
+                      </View>
+                    </Pressable>
+
+                    <Pressable
+                      style={[
+                        styles.customTimeColCard,
+                        customTimePickerKind === 'end' ? styles.customTimeColCardActive : null,
+                      ]}
+                      onPress={() => setCustomTimePickerKind('end')}
+                    >
+                      <Text
+                        style={[
+                          styles.customTimeLabel,
+                          customTimePickerKind === 'end' ? styles.customTimeLabelActive : null,
+                        ]}
+                      >
+                        Shift End
+                      </Text>
+                      <View style={styles.customTimeBoxInner}>
+                        <Text style={styles.customTimeText}>
+                          {formatTimeDisplay(customEndTime)}
+                        </Text>
+                        <Clock3
+                          size={16}
+                          color={customTimePickerKind === 'end' ? colors.brand.goldStrong : colors.primary}
+                          strokeWidth={2.2}
+                        />
+                      </View>
+                    </Pressable>
+                  </View>
+
+                  {customTimePickerKind ? (
+                    <View style={styles.inlineTimePickerContainer}>
+                      <Text style={styles.inlineTimePickerHeader}>
+                        Selecting {customTimePickerKind === 'start' ? 'Shift Start Time' : 'Shift End Time'}:
+                      </Text>
+
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        style={styles.timePresetsScrollView}
+                        contentContainerStyle={styles.timePresetsScroll}
+                      >
+                        {(customTimePickerKind === 'start'
+                          ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                          : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                        ).map((timeVal) => {
+                          const activeVal = customTimePickerKind === 'start' ? customStartTime : customEndTime;
+                          const isSelected = activeVal === timeVal;
+                          return (
+                            <Pressable
+                              key={timeVal}
+                              style={[styles.presetTimePill, isSelected ? styles.presetTimePillActive : null]}
+                              onPress={() => {
+                                if (customTimePickerKind === 'start') {
+                                  setCustomStartTime(timeVal);
+                                } else {
+                                  setCustomEndTime(timeVal);
+                                }
+                              }}
+                            >
+                              <Text style={[styles.presetTimeText, isSelected ? styles.presetTimeTextActive : null]}>
+                                {formatTimeDisplay(timeVal)}
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                      </ScrollView>
+                    </View>
+                  ) : null}
+
+                  <View style={styles.customSchedulePreviewBox}>
+                    <Text style={styles.customSchedulePreviewLabel}>Preview Base Schedule</Text>
+                    <Text style={styles.customSchedulePreviewValue}>
+                      {getCustomSchedulePreview(customStartTime, customEndTime)}
+                    </Text>
+                  </View>
+
+                  <View style={styles.customScheduleActions}>
+                    <Pressable style={styles.cancelButton} onPress={() => setIsCustomScheduleOpen(false)}>
+                      <Text style={styles.cancelText}>Cancel</Text>
+                    </Pressable>
+                    <Pressable style={styles.submitButton} onPress={confirmCustomSchedule}>
+                      <Text style={styles.submitText}>Apply Schedule</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+          ) : null}
+
+          {activeTransactionSelectIndex !== null ? (
+            <Modal transparent animationType="fade" visible onRequestClose={() => setActiveTransactionSelectIndex(null)}>
+              <View style={styles.modalBackdrop}>
+                <Pressable style={styles.modalDismissArea} onPress={() => setActiveTransactionSelectIndex(null)} />
+                <View style={styles.optionSheet}>
+                  <View style={styles.sheetHandle} />
+                  <Text style={styles.sheetTitle}>Select Transaction Type(s)</Text>
+                  <Text style={styles.transactionModalSubtitle}>
+                    Choose one or more transaction types for this request entry.
+                  </Text>
+                  {transactionOptions.map((option) => {
+                    const currentTransStr = entries[activeTransactionSelectIndex]?.transaction || '';
+                    const currentSelectedKeys = parseEntryTransactions(currentTransStr);
+                    const selected = currentSelectedKeys.includes(option.key);
+                    const isOtDisabled = option.key === 'ot' && !isOvertimeAllowedForPayroll(payrollClass);
+                    const isConflictDisabled = !selected && isTransactionDisabled(option.key, currentSelectedKeys);
+                    const disabled = isOtDisabled || isConflictDisabled;
+
+                    return (
+                      <Pressable
+                        key={option.key}
+                        disabled={disabled}
+                        style={[
+                          styles.optionRow,
+                          selected ? styles.optionRowActive : null,
+                          disabled ? styles.transactionOptionDisabled : null,
+                        ]}
+                        onPress={() => {
+                          let newKeys: string[];
+                          if (selected) {
+                            newKeys = currentSelectedKeys.filter((k) => k !== option.key);
+                          } else {
+                            newKeys = [...currentSelectedKeys, option.key];
+                          }
+                          updateEntry(activeTransactionSelectIndex, { transaction: newKeys.join(',') });
+                          setValidationErrors((current) => ({
+                            ...current,
+                            [`entry_${activeTransactionSelectIndex}_transaction`]: undefined,
+                          }));
+                        }}
+                      >
+                        <View style={styles.transactionOptionCheckRow}>
+                          <View style={[styles.checkbox, selected ? styles.checkboxActive : null]}>
+                            {selected ? <Check size={14} color="#0f172a" strokeWidth={3} /> : null}
+                          </View>
+                          <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>
+                            {option.label}
+                          </Text>
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                  <Pressable
+                    style={styles.transactionDoneButton}
+                    onPress={() => setActiveTransactionSelectIndex(null)}
+                  >
+                    <Text style={styles.submitText}>Done</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </Modal>
+          ) : null}
+
+          {activeDateChoiceIndex !== null ? (
+            <DateRangePickerModal
+              visible
+              initialStartDate={entries[activeDateChoiceIndex]?.dateFrom || ''}
+              initialEndDate={entries[activeDateChoiceIndex]?.dateTo || ''}
+              onApply={(startYMD, endYMD) => {
+                const idx = activeDateChoiceIndex;
+                updateEntry(idx, { dateFrom: startYMD, dateTo: endYMD });
+                setActiveDateChoiceIndex(null);
+              }}
+              onClose={() => setActiveDateChoiceIndex(null)}
+            />
+          ) : null}
+
+          {activeScrollableTimePicker !== null ? (
+            <ScrollableTimePickerModal
+              visible
+              title={activeScrollableTimePicker.field === 'time_from' ? 'Set Time From' : 'Set Time To'}
+              initialTime={
+                activeScrollableTimePicker.field === 'time_from'
+                  ? entries[activeScrollableTimePicker.index]?.timeFrom || '09:00'
+                  : entries[activeScrollableTimePicker.index]?.timeTo || '18:00'
+              }
+              onConfirm={(time24) => {
+                const idx = activeScrollableTimePicker.index;
+                if (activeScrollableTimePicker.field === 'time_from') {
+                  updateEntry(idx, { timeFrom: time24 });
+                } else {
+                  updateEntry(idx, { timeTo: time24 });
+                }
+                setActiveScrollableTimePicker(null);
+              }}
+              onCancel={() => setActiveScrollableTimePicker(null)}
+            />
+          ) : null}
+
           <Modal
             transparent
             animationType="fade"
-            visible={Boolean(submissionErrorModal)}
-            onRequestClose={() => setSubmissionErrorModal(null)}
+            visible={showSubmissionNotes}
+            onRequestClose={() => setShowSubmissionNotes(false)}
           >
-            <View style={styles.errorModalBackdrop}>
-              <View style={styles.errorModalCard}>
-                <View style={styles.errorModalIconContainer}>
-                  <AlertTriangle size={32} color="#ef4444" strokeWidth={2.4} />
-                </View>
-
-                <Text style={styles.errorModalTitle}>
-                  {submissionErrorModal.toLowerCase().includes('timed out')
-                    ? 'Submission Timed Out'
-                    : 'Submission Failed'}
-                </Text>
-
-                <Text style={styles.errorModalMessage}>{submissionErrorModal}</Text>
-
-                <View style={styles.errorModalActions}>
-                  <Pressable
-                    style={styles.errorModalDismissBtn}
-                    onPress={() => {
-                      setSubmissionErrorModal(null);
-                    }}
-                  >
-                    <Text style={styles.errorModalDismissText}>Close</Text>
-                  </Pressable>
-
-                  <Pressable
-                    style={styles.errorModalReloadBtn}
-                    onPress={() => {
-                      setSubmissionErrorModal(null);
-                      setIsSubmitting(false);
-                      setSubmitStatus('');
-                      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-                        window.location.reload();
-                      }
-                    }}
-                  >
-                    <RotateCcw size={15} color="#0f172a" />
-                    <Text style={styles.errorModalReloadText}>Reset / Reload</Text>
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-          </Modal>
-        ) : null}
-
-        {activeEntryPicker ? (
-          <UniversalDateTimePicker
-            value={pickerValue()}
-            mode={activeEntryPicker.kind.startsWith('date') ? 'date' : 'time'}
-            display="default"
-            is24Hour={false}
-            onChange={handlePickerChange}
-            onClose={() => setActiveEntryPicker(null)}
-          />
-        ) : null}
-
-        {selectSheet ? (
-          <Modal transparent animationType="fade" visible onRequestClose={() => setActiveSelect(null)}>
-            <View style={styles.modalBackdrop}>
-              <Pressable style={styles.modalDismissArea} onPress={() => setActiveSelect(null)} />
-              <View style={styles.optionSheet}>
-                <View style={styles.sheetHandle} />
-                <Text style={styles.sheetTitle}>{selectSheet.title}</Text>
-                {selectSheet.options.map((option) => {
-                  const selected = option === selectSheet.value;
-                  const isCustom = option === 'Custom schedule...';
-                  return (
-                    <Pressable
-                      key={option}
-                      style={[
-                        styles.optionRow,
-                        selected ? styles.optionRowActive : null,
-                        isCustom ? styles.customOptionRow : null,
-                      ]}
-                      onPress={() => chooseSelectOption(option)}
-                    >
-                      {isCustom ? (
-                        <View style={styles.customOptionWrap}>
-                          <Clock3 size={16} color={colors.primary} strokeWidth={2.2} />
-                          <Text style={[styles.optionText, styles.customOptionText]}>{option}</Text>
-                        </View>
-                      ) : (
-                        <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>{option}</Text>
-                      )}
-                      {selected ? <Check size={18} color={colors.brand.goldStrong} strokeWidth={3} /> : null}
-                    </Pressable>
-                  );
-                })}
-                <Pressable style={styles.sheetCancelButton} onPress={() => setActiveSelect(null)}>
-                  <Text style={styles.cancelText}>Cancel</Text>
-                </Pressable>
-              </View>
-            </View>
-          </Modal>
-        ) : null}
-
-        {isCustomScheduleOpen ? (
-          <Modal transparent animationType="fade" visible onRequestClose={() => setIsCustomScheduleOpen(false)}>
-            <View style={styles.modalBackdrop}>
-              <Pressable style={styles.modalDismissArea} onPress={() => setIsCustomScheduleOpen(false)} />
-              <View style={styles.customScheduleModalPanel}>
-                <View style={styles.sheetHandle} />
-                <View style={styles.customScheduleHeader}>
-                  <View style={styles.customScheduleIconBadge}>
-                    <Clock3 size={18} color="#0f172a" strokeWidth={2.5} />
+            <View style={styles.notesBackdrop}>
+              <View style={styles.notesPanel}>
+                <View style={styles.notesHeader}>
+                  <View>
+                    <Text style={styles.notesTitle}>Submission Notes</Text>
+                    <Text style={styles.notesSubtitle}>Review before sending your ESARF.</Text>
                   </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.customScheduleTitle}>Custom Base Schedule</Text>
-                    <Text style={styles.customScheduleSubtitle}>
-                      Tap Shift Start or Shift End to choose working hours.
-                    </Text>
-                  </View>
-                </View>
-
-                <View style={styles.customTimeRow}>
-                  <Pressable
-                    style={[
-                      styles.customTimeColCard,
-                      customTimePickerKind === 'start' ? styles.customTimeColCardActive : null,
-                    ]}
-                    onPress={() => setCustomTimePickerKind('start')}
-                  >
-                    <Text
-                      style={[
-                        styles.customTimeLabel,
-                        customTimePickerKind === 'start' ? styles.customTimeLabelActive : null,
-                      ]}
-                    >
-                      Shift Start
-                    </Text>
-                    <View style={styles.customTimeBoxInner}>
-                      <Text style={styles.customTimeText}>
-                        {formatTimeDisplay(customStartTime)}
-                      </Text>
-                      <Clock3
-                        size={16}
-                        color={customTimePickerKind === 'start' ? colors.brand.goldStrong : colors.primary}
-                        strokeWidth={2.2}
-                      />
-                    </View>
-                  </Pressable>
-
-                  <Pressable
-                    style={[
-                      styles.customTimeColCard,
-                      customTimePickerKind === 'end' ? styles.customTimeColCardActive : null,
-                    ]}
-                    onPress={() => setCustomTimePickerKind('end')}
-                  >
-                    <Text
-                      style={[
-                        styles.customTimeLabel,
-                        customTimePickerKind === 'end' ? styles.customTimeLabelActive : null,
-                      ]}
-                    >
-                      Shift End
-                    </Text>
-                    <View style={styles.customTimeBoxInner}>
-                      <Text style={styles.customTimeText}>
-                        {formatTimeDisplay(customEndTime)}
-                      </Text>
-                      <Clock3
-                        size={16}
-                        color={customTimePickerKind === 'end' ? colors.brand.goldStrong : colors.primary}
-                        strokeWidth={2.2}
-                      />
-                    </View>
+                  <Pressable style={styles.notesCloseButton} onPress={() => setShowSubmissionNotes(false)}>
+                    <X size={18} color={colors.text} strokeWidth={2.7} />
                   </Pressable>
                 </View>
 
-                {customTimePickerKind ? (
-                  <View style={styles.inlineTimePickerContainer}>
-                    <Text style={styles.inlineTimePickerHeader}>
-                      Selecting {customTimePickerKind === 'start' ? 'Shift Start Time' : 'Shift End Time'}:
-                    </Text>
-
-                    <ScrollView
-                      horizontal
-                      showsHorizontalScrollIndicator={false}
-                      style={styles.timePresetsScrollView}
-                      contentContainerStyle={styles.timePresetsScroll}
-                    >
-                      {(customTimePickerKind === 'start'
-                        ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
-                        : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
-                      ).map((timeVal) => {
-                        const activeVal = customTimePickerKind === 'start' ? customStartTime : customEndTime;
-                        const isSelected = activeVal === timeVal;
-                        return (
-                          <Pressable
-                            key={timeVal}
-                            style={[styles.presetTimePill, isSelected ? styles.presetTimePillActive : null]}
-                            onPress={() => {
-                              if (customTimePickerKind === 'start') {
-                                setCustomStartTime(timeVal);
-                              } else {
-                                setCustomEndTime(timeVal);
-                              }
-                            }}
-                          >
-                            <Text style={[styles.presetTimeText, isSelected ? styles.presetTimeTextActive : null]}>
-                              {formatTimeDisplay(timeVal)}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
-                    </ScrollView>
-                  </View>
-                ) : null}
-
-                <View style={styles.customSchedulePreviewBox}>
-                  <Text style={styles.customSchedulePreviewLabel}>Preview Base Schedule</Text>
-                  <Text style={styles.customSchedulePreviewValue}>
-                    {getCustomSchedulePreview(customStartTime, customEndTime)}
-                  </Text>
-                </View>
-
-                <View style={styles.customScheduleActions}>
-                  <Pressable style={styles.cancelButton} onPress={() => setIsCustomScheduleOpen(false)}>
-                    <Text style={styles.cancelText}>Cancel</Text>
-                  </Pressable>
-                  <Pressable style={styles.submitButton} onPress={confirmCustomSchedule}>
-                    <Text style={styles.submitText}>Apply Schedule</Text>
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-          </Modal>
-        ) : null}
-
-        {activeTransactionSelectIndex !== null ? (
-          <Modal transparent animationType="fade" visible onRequestClose={() => setActiveTransactionSelectIndex(null)}>
-            <View style={styles.modalBackdrop}>
-              <Pressable style={styles.modalDismissArea} onPress={() => setActiveTransactionSelectIndex(null)} />
-              <View style={styles.optionSheet}>
-                <View style={styles.sheetHandle} />
-                <Text style={styles.sheetTitle}>Select Transaction Type(s)</Text>
-                <Text style={styles.transactionModalSubtitle}>
-                  Choose one or more transaction types for this request entry.
-                </Text>
-                {transactionOptions.map((option) => {
-                  const currentTransStr = entries[activeTransactionSelectIndex]?.transaction || '';
-                  const currentSelectedKeys = parseEntryTransactions(currentTransStr);
-                  const selected = currentSelectedKeys.includes(option.key);
-                  const isOtDisabled = option.key === 'ot' && !isOvertimeAllowedForPayroll(payrollClass);
-                  const isConflictDisabled = !selected && isTransactionDisabled(option.key, currentSelectedKeys);
-                  const disabled = isOtDisabled || isConflictDisabled;
-
-                  return (
-                    <Pressable
-                      key={option.key}
-                      disabled={disabled}
-                      style={[
-                        styles.optionRow,
-                        selected ? styles.optionRowActive : null,
-                        disabled ? styles.transactionOptionDisabled : null,
-                      ]}
-                      onPress={() => {
-                        let newKeys: string[];
-                        if (selected) {
-                          newKeys = currentSelectedKeys.filter((k) => k !== option.key);
-                        } else {
-                          newKeys = [...currentSelectedKeys, option.key];
-                        }
-                        updateEntry(activeTransactionSelectIndex, { transaction: newKeys.join(',') });
-                        setValidationErrors((current) => ({
-                          ...current,
-                          [`entry_${activeTransactionSelectIndex}_transaction`]: undefined,
-                        }));
-                      }}
-                    >
-                      <View style={styles.transactionOptionCheckRow}>
-                        <View style={[styles.checkbox, selected ? styles.checkboxActive : null]}>
-                          {selected ? <Check size={14} color="#0f172a" strokeWidth={3} /> : null}
-                        </View>
-                        <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>
-                          {option.label}
-                        </Text>
+                <View style={styles.notesList}>
+                  {submissionNotes.map((note, index) => (
+                    <View key={note} style={styles.timelineNoteRow}>
+                      <View style={styles.timelineMarkerColumn}>
+                        <View style={styles.timelineDot} />
+                        {index < submissionNotes.length - 1 ? <View style={styles.timelineLine} /> : null}
                       </View>
-                    </Pressable>
-                  );
-                })}
-                <Pressable
-                  style={styles.transactionDoneButton}
-                  onPress={() => setActiveTransactionSelectIndex(null)}
-                >
-                  <Text style={styles.submitText}>Done</Text>
-                </Pressable>
+                      <Text style={styles.timelineNoteText}>{note}</Text>
+                    </View>
+                  ))}
+                  <View style={styles.deadlineNote}>
+                    <CalendarDays size={16} color="#b45309" strokeWidth={2.7} />
+                    <Text style={styles.deadlineNoteText}>
+                      Submit approved ESARF forms on or before the <Text style={styles.deadlineStrong}>5th</Text> and{' '}
+                      <Text style={styles.deadlineStrong}>20th</Text>.
+                    </Text>
+                  </View>
+                </View>
               </View>
             </View>
           </Modal>
-        ) : null}
-
-        {activeDateChoiceIndex !== null ? (
-          <DateRangePickerModal
-            visible
-            initialStartDate={entries[activeDateChoiceIndex]?.dateFrom || ''}
-            initialEndDate={entries[activeDateChoiceIndex]?.dateTo || ''}
-            onApply={(startYMD, endYMD) => {
-              const idx = activeDateChoiceIndex;
-              updateEntry(idx, { dateFrom: startYMD, dateTo: endYMD });
-              setActiveDateChoiceIndex(null);
-            }}
-            onClose={() => setActiveDateChoiceIndex(null)}
-          />
-        ) : null}
-
-        {activeScrollableTimePicker !== null ? (
-          <ScrollableTimePickerModal
-            visible
-            title={activeScrollableTimePicker.field === 'time_from' ? 'Set Time From' : 'Set Time To'}
-            initialTime={
-              activeScrollableTimePicker.field === 'time_from'
-                ? entries[activeScrollableTimePicker.index]?.timeFrom || '09:00'
-                : entries[activeScrollableTimePicker.index]?.timeTo || '18:00'
-            }
-            onConfirm={(time24) => {
-              const idx = activeScrollableTimePicker.index;
-              if (activeScrollableTimePicker.field === 'time_from') {
-                updateEntry(idx, { timeFrom: time24 });
-              } else {
-                updateEntry(idx, { timeTo: time24 });
-              }
-              setActiveScrollableTimePicker(null);
-            }}
-            onCancel={() => setActiveScrollableTimePicker(null)}
-          />
-        ) : null}
-
-        <Modal
-          transparent
-          animationType="fade"
-          visible={showSubmissionNotes}
-          onRequestClose={() => setShowSubmissionNotes(false)}
-        >
-          <View style={styles.notesBackdrop}>
-            <View style={styles.notesPanel}>
-              <View style={styles.notesHeader}>
-                <View>
-                  <Text style={styles.notesTitle}>Submission Notes</Text>
-                  <Text style={styles.notesSubtitle}>Review before sending your ESARF.</Text>
-                </View>
-                <Pressable style={styles.notesCloseButton} onPress={() => setShowSubmissionNotes(false)}>
-                  <X size={18} color={colors.text} strokeWidth={2.7} />
-                </Pressable>
-              </View>
-
-              <View style={styles.notesList}>
-                {submissionNotes.map((note, index) => (
-                  <View key={note} style={styles.timelineNoteRow}>
-                    <View style={styles.timelineMarkerColumn}>
-                      <View style={styles.timelineDot} />
-                      {index < submissionNotes.length - 1 ? <View style={styles.timelineLine} /> : null}
-                    </View>
-                    <Text style={styles.timelineNoteText}>{note}</Text>
-                  </View>
-                ))}
-                <View style={styles.deadlineNote}>
-                  <CalendarDays size={16} color="#b45309" strokeWidth={2.7} />
-                  <Text style={styles.deadlineNoteText}>
-                    Submit approved ESARF forms on or before the <Text style={styles.deadlineStrong}>5th</Text> and{' '}
-                    <Text style={styles.deadlineStrong}>20th</Text>.
-                  </Text>
-                </View>
-              </View>
-            </View>
-          </View>
-        </Modal>
 
 
-      </ScrollView>
+        </ScrollView>
       </KeyboardAvoidingView>
       <ActiveReviewLockModal
         visible={Boolean(activeLockInfo)}
@@ -2092,13 +2328,13 @@ function hasSectionError(errors: Partial<Record<ValidationKey, string>>, section
       : section === 'transactions'
         ? { transactions: errors.transactions }
         : {
-            dateFrom: errors.dateFrom,
-            dateTo: errors.dateTo,
-            timeFrom: errors.timeFrom,
-            timeTo: errors.timeTo,
-            totalHours: errors.totalHours,
-            reason: errors.reason,
-          },
+          dateFrom: errors.dateFrom,
+          dateTo: errors.dateTo,
+          timeFrom: errors.timeFrom,
+          timeTo: errors.timeTo,
+          totalHours: errors.totalHours,
+          reason: errors.reason,
+        },
   ) !== null;
 }
 
@@ -2376,6 +2612,38 @@ const styles = StyleSheet.create({
     backgroundColor: '#eab308',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  addEntryBelowButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: '#eab308',
+    backgroundColor: 'rgba(234, 179, 8, 0.08)',
+    marginTop: 4,
+    marginBottom: spacing.sm,
+  },
+  addEntryBelowButtonPressed: {
+    backgroundColor: 'rgba(234, 179, 8, 0.18)',
+    transform: [{ scale: 0.99 }],
+  },
+  addEntryBelowIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    backgroundColor: '#eab308',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addEntryBelowText: {
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
   },
   entryCard: {
     width: '100%',

@@ -15,7 +15,10 @@
     },
     "ios": {
       "buildNumber": "18",
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow HYG Portal to access your camera for employee photo proof."
+      }
     },
     "android": {
       "package": "com.hyg.portal",
@@ -24,7 +27,8 @@
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.REQUEST_INSTALL_PACKAGES"
+        "android.permission.REQUEST_INSTALL_PACKAGES",
+        "android.permission.CAMERA"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/hygapplogo-adaptive.png",
@@ -51,7 +55,13 @@
       "expo-local-authentication",
       "expo-notifications",
       "expo-sharing",
-      "expo-status-bar"
+      "expo-status-bar",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow HYG Portal to access your camera for employee photo proof."
+        }
+      ]
     ],
     "extra": {
       "eas": {

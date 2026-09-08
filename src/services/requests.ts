@@ -49,8 +49,16 @@ export type MyRequest = {
 
 import { isAutoApprovedBirthdayGrant } from './birthdayLeave';
 
-export async function loadMyRequests() {
+export async function loadMyRequests(forceRefresh = false) {
   const cacheKey = 'my_requests_v1';
+  if (forceRefresh) {
+    try {
+      await removeCacheItem(cacheKey);
+    } catch {
+      // ignore
+    }
+  }
+
   const { data, error } = await supabase.rpc('get_my_requests');
 
   if (error) {
@@ -62,6 +70,43 @@ export async function loadMyRequests() {
   }
 
   let items = (data ?? []) as MyRequest[];
+
+  // Normalize request status from database
+  items = items.map((req) => {
+    const rawLower = (req.status || '').toLowerCase().trim();
+    // If validated in database, preserve it
+    if (rawLower.includes('validat')) {
+      return { ...req, status: req.status || 'validated' };
+    }
+    // If final_approved_at is present and request is not rejected, ensure status is marked as approved
+    if (req.final_approved_at && !rawLower.includes('reject') && !rawLower.includes('denied')) {
+      return { ...req, status: 'approved' };
+    }
+    // If all required approval steps are approved
+    if (
+      (rawLower === 'pending' || rawLower === 'submitted' || !rawLower) &&
+      req.approval_summary &&
+      req.approval_summary.length > 0
+    ) {
+      const isLeave = req.request_type_code === 'leave';
+      const isUseOffset =
+        req.request_type_code === 'use_offset' ||
+        (req.transaction_type || '').toLowerCase().includes('use offset') ||
+        (req.reason || '').toLowerCase().includes('use offset');
+      const isSingleApprover = isLeave || isUseOffset;
+      const relevantSteps = req.approval_summary.filter(
+        (s) => !isSingleApprover || s.step_order === 1 || s.required_level === 1,
+      );
+      if (
+        relevantSteps.length > 0 &&
+        relevantSteps.every((s) => (s.status || '').toLowerCase().includes('approved'))
+      ) {
+        return { ...req, status: 'approved' };
+      }
+    }
+    return req;
+  });
+
   const cached = await getCacheJSON<MyRequest[]>(cacheKey);
 
   // Preserve any locally auto-approved Birthday Leave grants that aren't returned by RPC yet
@@ -92,6 +137,7 @@ export async function loadMyRequestsCached() {
   const cacheKey = 'my_requests_v1';
   return (await getCacheJSON<MyRequest[]>(cacheKey)) ?? [];
 }
+
 
 export type UpdatePendingRequestParams = {
   requestId: string;

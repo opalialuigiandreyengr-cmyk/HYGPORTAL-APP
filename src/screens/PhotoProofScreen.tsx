@@ -16,7 +16,7 @@ import { StatusBar } from 'expo-status-bar';
 import { ChevronLeft, Info, RefreshCw, SwitchCamera, X, Check, Eye, Pencil, MapPin, Images } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
-import { CameraView } from 'expo-camera';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fontWeights, radius, spacing } from '../theme';
 import {
@@ -60,11 +60,48 @@ export function PhotoProofScreen({
   // Real-time clock
   const [currentTimestamp, setCurrentTimestamp] = useState(formatProofTimestamp());
 
+  // Zoom level: 0 (1x normal), 0.12 (2x), 0.25 (3x)
+  const [zoom, setZoom] = useState(0);
+
+  const handleSetPreset = (targetZoom: number) => {
+    setZoom(targetZoom);
+  };
+
+  // Camera permissions hook for native iOS/Android builds
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' && cameraPermission && !cameraPermission.granted && cameraPermission.canAskAgain) {
+      void requestCameraPermission();
+    }
+  }, [cameraPermission, requestCameraPermission]);
+
   // Web camera video element ref & Native Camera ref
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const nativeCameraRef = useRef<any>(null);
   const [isWebCameraReady, setIsWebCameraReady] = useState(false);
+
+  // Auto-dismiss timer for saved confirmation modal
+  const savedModalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showTemporarySavedModal = () => {
+    setShowSavedModal(true);
+    if (savedModalTimerRef.current) {
+      clearTimeout(savedModalTimerRef.current);
+    }
+    savedModalTimerRef.current = setTimeout(() => {
+      setShowSavedModal(false);
+    }, 1200);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (savedModalTimerRef.current) {
+        clearTimeout(savedModalTimerRef.current);
+      }
+    };
+  }, []);
 
   // Shutter flash animation
   const flashAnim = useRef(new Animated.Value(0)).current;
@@ -133,7 +170,7 @@ export function PhotoProofScreen({
             setCoordinates({ lat: latitude, lon: longitude });
           }
         },
-        () => {},
+        () => { },
         { enableHighAccuracy: true, maximumAge: 10000 },
       );
     }
@@ -168,7 +205,7 @@ export function PhotoProofScreen({
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play().catch(() => {});
+        videoRef.current.play().catch(() => { });
         setIsWebCameraReady(true);
       }
     } catch (err) {
@@ -213,14 +250,25 @@ export function PhotoProofScreen({
       let finalPhotoUri = '';
 
       if (Platform.OS === 'web' && videoRef.current && isWebCameraReady) {
-        // Capture frame directly from HTML5 video feed
+        // Capture frame directly from HTML5 video feed with zoom crop if applied
         const video = videoRef.current;
         const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth || 720;
-        canvas.height = video.videoHeight || 1280;
+        const vWidth = video.videoWidth || 720;
+        const vHeight = video.videoHeight || 1280;
+        canvas.width = vWidth;
+        canvas.height = vHeight;
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          if (zoom > 0) {
+            const scale = 1 + zoom * 2.5;
+            const sw = vWidth / scale;
+            const sh = vHeight / scale;
+            const sx = (vWidth - sw) / 2;
+            const sy = (vHeight - sh) / 2;
+            ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+          } else {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          }
           finalPhotoUri = canvas.toDataURL('image/jpeg', 0.88);
         }
       } else if (nativeCameraRef.current) {
@@ -275,13 +323,13 @@ export function PhotoProofScreen({
       await savePhotoProof(newItem);
       console.log('[PhotoProof] Photo proof saved and synced!');
       setLastSavedItem(newItem);
-      setShowSavedModal(true);
+      showTemporarySavedModal();
     } catch (err: any) {
       console.error('Failed to capture and save photo proof:', err);
       Alert.alert('Capture Warning', `Photo saved locally, but cloud sync logged an issue: ${err?.message || err}`);
       if (newItem) {
         setLastSavedItem(newItem);
-        setShowSavedModal(true);
+        showTemporarySavedModal();
       }
     } finally {
       setIsCapturing(false);
@@ -289,6 +337,9 @@ export function PhotoProofScreen({
   };
 
   const handleRetake = () => {
+    if (savedModalTimerRef.current) {
+      clearTimeout(savedModalTimerRef.current);
+    }
     setCapturedPhotoUri(null);
     setShowSavedModal(false);
     if (Platform.OS === 'web') {
@@ -342,7 +393,7 @@ export function PhotoProofScreen({
                   videoRef.current = el;
                   if (el && streamRef.current && !el.srcObject) {
                     el.srcObject = streamRef.current;
-                    el.play().catch(() => {});
+                    el.play().catch(() => { });
                   }
                 }}
                 autoPlay
@@ -352,6 +403,8 @@ export function PhotoProofScreen({
                   width: '100%',
                   height: '100%',
                   objectFit: 'cover',
+                  transform: zoom > 0 ? `scale(${1 + zoom * 2.5})` : 'none',
+                  transformOrigin: 'center center',
                 }}
               />
             </div>
@@ -363,18 +416,24 @@ export function PhotoProofScreen({
             ref={nativeCameraRef}
             facing={facingMode === 'user' ? 'front' : 'back'}
             style={styles.viewfinderMedia}
+            zoom={zoom}
+            animateShutter={true}
           />
         )}
 
-        {/* Viewfinder Top Controls */}
-        <View style={styles.viewfinderTopBar}>
-          <Pressable style={styles.glassButton} onPress={() => void refreshLocation()} disabled={isRefreshingLocation}>
-            <RefreshCw size={18} color="#ffffff" strokeWidth={2.2} />
-          </Pressable>
-          <Pressable style={styles.glassButton} onPress={toggleFacingMode}>
-            <SwitchCamera size={20} color="#ffffff" strokeWidth={2.2} />
-          </Pressable>
-        </View>
+        {/* Viewfinder Top Controls - only visible during live capture, hidden in preview */}
+        {!capturedPhotoUri && (
+          <View style={styles.viewfinderTopBar}>
+            <Pressable style={styles.glassButton} onPress={() => void refreshLocation()} disabled={isRefreshingLocation}>
+              <RefreshCw size={18} color="#ffffff" strokeWidth={2.2} />
+            </Pressable>
+            <Pressable style={styles.glassButton} onPress={toggleFacingMode}>
+              <SwitchCamera size={20} color="#ffffff" strokeWidth={2.2} />
+            </Pressable>
+          </View>
+        )}
+
+
 
         {/* Live Watermark Overlay (Bottom Left) */}
         <View style={styles.watermarkContainer}>
@@ -422,8 +481,8 @@ export function PhotoProofScreen({
         style={[
           styles.bottomBar,
           {
-            paddingBottom: Platform.OS === 'web' ? 10 : Math.max(insets.bottom, 12),
-            minHeight: Platform.OS === 'web' ? 110 : Math.max(90 + insets.bottom, 110),
+            paddingBottom: Platform.OS === 'web' ? 12 : Math.max(insets.bottom, 12),
+            minHeight: Platform.OS === 'web' ? 140 : Math.max(120 + insets.bottom, 140),
           },
         ]}
       >
@@ -431,44 +490,73 @@ export function PhotoProofScreen({
           <View style={styles.capturedControlsRow}>
             <Pressable style={styles.retakeButton} onPress={handleRetake}>
               <RefreshCw size={20} color="#0f172a" strokeWidth={2.4} />
-              <Text style={styles.retakeText}>Retake</Text>
+              <Text style={styles.retakeText}>Take Another</Text>
             </Pressable>
             <Pressable style={styles.viewLogsButton} onPress={onOpenPhotoLog}>
               <Eye size={20} color="#ffffff" strokeWidth={2.4} />
-              <Text style={styles.viewLogsText}>View Logs</Text>
+              <Text style={styles.viewLogsText}>View Photo Log</Text>
             </Pressable>
           </View>
         ) : (
-          <View style={styles.shutterRow}>
-            {/* Left balance spacer so center button remains precisely centered */}
-            <View style={styles.shutterSideSlot} />
+          <View style={styles.shutterColumn}>
+            {/* Quick Zoom Presets directly at the top of the capture button */}
+            <View style={styles.zoomPresetsContainer}>
+              {[
+                { label: '1x', val: 0 },
+                { label: '2x', val: 0.12 },
+                { label: '3x', val: 0.25 },
+              ].map((item) => {
+                const isActive = Math.abs(zoom - item.val) < 0.04;
+                return (
+                  <Pressable
+                    key={item.label}
+                    style={({ pressed }) => [
+                      styles.zoomPill,
+                      isActive ? styles.zoomPillActive : null,
+                      pressed ? styles.zoomButtonPressed : null,
+                    ]}
+                    onPress={() => handleSetPreset(item.val)}
+                    hitSlop={6}
+                  >
+                    <Text style={[styles.zoomPillText, isActive ? styles.zoomPillTextActive : null]}>
+                      {item.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
 
-            {/* Shutter Capture Button */}
-            <Pressable
-              style={({ pressed }) => [
-                styles.shutterButtonOuter,
-                pressed ? styles.shutterButtonPressed : null,
-              ]}
-              onPress={handleCapture}
-              disabled={isCapturing}
-              hitSlop={8}
-            >
-              <View style={styles.shutterButtonInner} />
-            </Pressable>
+            <View style={styles.shutterRow}>
+              {/* Left balance spacer so center button remains precisely centered */}
+              <View style={styles.shutterSideSlot} />
 
-            {/* Photo Log Button on the right side */}
-            <View style={styles.shutterSideSlot}>
+              {/* Shutter Capture Button */}
               <Pressable
                 style={({ pressed }) => [
-                  styles.shutterSideButton,
-                  pressed ? styles.shutterSideButtonPressed : null,
+                  styles.shutterButtonOuter,
+                  pressed ? styles.shutterButtonPressed : null,
                 ]}
-                onPress={onOpenPhotoLog}
-                hitSlop={12}
-                accessibilityLabel="Photo Log"
+                onPress={handleCapture}
+                disabled={isCapturing}
+                hitSlop={8}
               >
-                <Images size={28} color="#0f172a" strokeWidth={2} />
+                <View style={styles.shutterButtonInner} />
               </Pressable>
+
+              {/* Photo Log Button on the right side */}
+              <View style={styles.shutterSideSlot}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.shutterSideButton,
+                    pressed ? styles.shutterSideButtonPressed : null,
+                  ]}
+                  onPress={onOpenPhotoLog}
+                  hitSlop={12}
+                  accessibilityLabel="Photo Log"
+                >
+                  <Images size={28} color="#0f172a" strokeWidth={2} />
+                </Pressable>
+              </View>
             </View>
           </View>
         )}
@@ -554,42 +642,21 @@ export function PhotoProofScreen({
         </View>
       </Modal>
 
-      {/* Saved Success Modal */}
+      {/* Saved Success Confirmation Modal (Auto-dismisses in 1.2s to reveal photo preview) */}
       <Modal
         visible={showSavedModal}
         transparent
         animationType="fade"
         onRequestClose={() => setShowSavedModal(false)}
       >
-        <View style={styles.modalOverlay}>
+        <Pressable style={styles.modalOverlay} onPress={() => setShowSavedModal(false)}>
           <View style={styles.savedModalCard}>
             <View style={styles.savedCheckCircle}>
               <Check size={28} color="#16a34a" strokeWidth={3} />
             </View>
             <Text style={styles.savedTitle}>Photo Proof Saved!</Text>
-            <Text style={styles.savedSubtitle}>
-              Logged at {lastSavedItem?.timeDigits} {lastSavedItem?.timePeriod} •{' '}
-              {lastSavedItem?.locationText}
-            </Text>
-            <View style={styles.savedActionsRow}>
-              <Pressable
-                style={styles.savedSecondaryBtn}
-                onPress={handleRetake}
-              >
-                <Text style={styles.savedSecondaryText}>Take Another</Text>
-              </Pressable>
-              <Pressable
-                style={styles.savedPrimaryBtn}
-                onPress={() => {
-                  setShowSavedModal(false);
-                  onOpenPhotoLog();
-                }}
-              >
-                <Text style={styles.savedPrimaryText}>View Photo Log</Text>
-              </Pressable>
-            </View>
           </View>
-        </View>
+        </Pressable>
       </Modal>
     </View>
   );
@@ -811,10 +878,10 @@ const styles = StyleSheet.create({
     color: '#ffffff',
   },
   bottomBar: {
-    height: 110,
     backgroundColor: '#ffffff',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingTop: 10,
     paddingBottom: Platform.OS === 'ios' ? 20 : 10,
   },
   shutterButtonOuter: {
@@ -948,10 +1015,11 @@ const styles = StyleSheet.create({
   },
   savedModalCard: {
     width: '100%',
-    maxWidth: 360,
+    maxWidth: 280,
     backgroundColor: '#ffffff',
-    borderRadius: radius.md,
-    padding: spacing.lg,
+    borderRadius: radius.lg,
+    paddingVertical: spacing.lg + 4,
+    paddingHorizontal: spacing.lg,
     alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
@@ -966,48 +1034,56 @@ const styles = StyleSheet.create({
     backgroundColor: '#dcfce7',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm + 2,
   },
   savedTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: fontWeights.heavy,
     color: '#0f172a',
-    marginBottom: 6,
-  },
-  savedSubtitle: {
-    fontSize: 13,
-    lineHeight: 18,
-    color: '#64748b',
     textAlign: 'center',
-    marginBottom: spacing.lg,
   },
-  savedActionsRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
+  shutterColumn: {
     width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  savedSecondaryBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: radius.md,
+  zoomPresetsContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: '#f1f5f9',
+    borderRadius: 20,
+    padding: 3,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  zoomPill: {
+    paddingHorizontal: 13,
+    paddingVertical: 4,
+    borderRadius: 16,
+    minWidth: 42,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  savedSecondaryText: {
-    fontSize: 14,
-    fontWeight: fontWeights.bold,
-    color: '#0f172a',
-  },
-  savedPrimaryBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: radius.md,
+  zoomPillActive: {
     backgroundColor: '#0f172a',
-    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 2,
+    elevation: 2,
   },
-  savedPrimaryText: {
-    fontSize: 14,
+  zoomButtonPressed: {
+    opacity: 0.7,
+    transform: [{ scale: 0.94 }],
+  },
+  zoomPillText: {
+    fontSize: 12,
     fontWeight: fontWeights.bold,
+    color: '#64748b',
+  },
+  zoomPillTextActive: {
     color: '#ffffff',
   },
 });

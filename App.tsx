@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, BackHandler, DeviceEventEmitter, Dimensions, Image, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, useWindowDimensions, View } from 'react-native';
+import { Alert, Animated, AppState, type AppStateStatus, BackHandler, DeviceEventEmitter, Dimensions, Image, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, useWindowDimensions, View } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Notifications from 'expo-notifications';
@@ -181,6 +181,8 @@ export default function App() {
     pending_approvals: 0,
     offset_balance: 0,
     leave_credit_remaining: 7,
+    annual_credit_days: 7,
+    leave_used_days: 0,
     hyg_points_balance: 0,
   });
   const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
@@ -428,6 +430,9 @@ export default function App() {
       setActiveTab('perks');
     } else if (activeTab === 'my_team' && !canUseMyTeam) {
       setActiveTab('home');
+    }
+    if (activeTab === 'requests') {
+      setRequestsRefreshKey((k) => k + 1);
     }
   }, [activeTab, canUseApprovals, canUseMyTeam]);
 
@@ -695,20 +700,28 @@ export default function App() {
     }
   }
 
-  async function refreshDashboard() {
-    setDashboardStatus('Refreshing dashboard...');
+  async function refreshDashboard(silent = false) {
+    if (!silent) {
+      setDashboardStatus('Refreshing dashboard...');
+    }
     try {
       const cacheKey = signedInUser ? `dashboard_summary_v2:${signedInUser.id}` : 'dashboard_summary_v2';
-      const cached = await getCacheJSON<DashboardSummary>(cacheKey);
-      if (cached) {
-        setDashboardSummary(cached);
+      if (!silent) {
+        const cached = await getCacheJSON<DashboardSummary>(cacheKey);
+        if (cached) {
+          setDashboardSummary(cached);
+        }
       }
       const employeeId = profileResult?.status === 'linked' ? profileResult.profile.employeeId : undefined;
       const summary = await loadDashboardSummary(signedInUser?.id, employeeId);
       setDashboardSummary(summary);
-      setDashboardStatus('');
+      if (!silent) {
+        setDashboardStatus('');
+      }
     } catch (error) {
-      setDashboardStatus(error instanceof Error ? error.message : 'Unable to refresh dashboard.');
+      if (!silent) {
+        setDashboardStatus(error instanceof Error ? error.message : 'Unable to refresh dashboard.');
+      }
     }
   }
 
@@ -988,6 +1001,86 @@ export default function App() {
     };
   }, []);
 
+  // Real-time synchronization for leave balance & dashboard metrics
+  useEffect(() => {
+    if (!signedInUser) return;
+
+    // 1. Silent sync on app resume/focus (just like admin desktop)
+    const appStateSub = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active') {
+        void refreshDashboard(true);
+      }
+    });
+
+    // 2. Periodic background refresh every 12 seconds (matching admin desktop interval)
+    const pollInterval = setInterval(() => {
+      void refreshDashboard(true);
+    }, 12000);
+
+    // 3. Supabase Realtime channel subscription on leave_balances & requests tables
+    const employeeId = profileResult?.status === 'linked' ? profileResult.profile.employeeId : undefined;
+    let leaveChannel: any = null;
+    let requestsChannel: any = null;
+
+    if (isSupabaseConfigured && employeeId) {
+      leaveChannel = supabase
+        .channel(`realtime_leave_balances_${employeeId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'leave_balances',
+            filter: `employee_id=eq.${employeeId}`,
+          },
+          () => {
+            void refreshDashboard(true);
+          },
+        )
+        .subscribe();
+
+      requestsChannel = supabase
+        .channel(`realtime_requests_${employeeId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'requests',
+            filter: `submitted_by_employee_id=eq.${employeeId}`,
+          },
+          () => {
+            void refreshDashboard(true);
+            setRequestsRefreshKey((k) => k + 1);
+          },
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'request_approval_steps',
+          },
+          () => {
+            void refreshDashboard(true);
+            setRequestsRefreshKey((k) => k + 1);
+          },
+        )
+        .subscribe();
+    }
+
+    return () => {
+      appStateSub.remove();
+      clearInterval(pollInterval);
+      if (leaveChannel) {
+        void supabase.removeChannel(leaveChannel);
+      }
+      if (requestsChannel) {
+        void supabase.removeChannel(requestsChannel);
+      }
+    };
+  }, [signedInUser, profileResult?.status, profileResult?.status === 'linked' ? profileResult.profile.employeeId : undefined]);
+
   if (signedInUser) {
     const currentUsername =
       profileResult?.status === 'linked'
@@ -1072,7 +1165,7 @@ export default function App() {
       setActiveQuickRequestScreen(null);
       setAssistantDraft(null);
       setPassword('');
-      setDashboardSummary({ pending_requests: 0, pending_approvals: 0, offset_balance: 0, leave_credit_remaining: 7, hyg_points_balance: 0 });
+      setDashboardSummary({ pending_requests: 0, pending_approvals: 0, offset_balance: 0, leave_credit_remaining: 7, annual_credit_days: 7, leave_used_days: 0, hyg_points_balance: 0 });
       setPendingApprovalCount(0);
       setNotificationUnreadCount(0);
     };
@@ -1512,6 +1605,7 @@ export default function App() {
             onSubmitted={async () => {
               closeQuickRequest();
               setActiveTab('requests');
+              setRequestsRefreshKey((k) => k + 1);
               await refreshDashboard();
             }}
           />
