@@ -13,7 +13,7 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { ChevronLeft, Info, RefreshCw, SwitchCamera, X, Check, Eye, Pencil, MapPin, Images } from 'lucide-react-native';
+import { ChevronLeft, Info, RefreshCw, SwitchCamera, FlipHorizontal, X, Check, Eye, Pencil, MapPin, Images } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -46,6 +46,7 @@ export function PhotoProofScreen({
 }: Props) {
   const insets = useSafeAreaInsets();
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
+  const [isMirrored, setIsMirrored] = useState(false);
   const [capturedPhotoUri, setCapturedPhotoUri] = useState<string | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
   const [isRefreshingLocation, setIsRefreshingLocation] = useState(false);
@@ -197,8 +198,6 @@ export function PhotoProofScreen({
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: facing,
-          width: { ideal: 1280 },
-          height: { ideal: 1920 },
         },
         audio: false,
       });
@@ -209,7 +208,7 @@ export function PhotoProofScreen({
         setIsWebCameraReady(true);
       }
     } catch (err) {
-      console.warn('Camera live feed error on web, falling back to image capture:', err);
+      console.warn('Web camera stream failed:', err);
     }
   }, []);
 
@@ -228,6 +227,11 @@ export function PhotoProofScreen({
   const toggleFacingMode = () => {
     const nextMode = facingMode === 'environment' ? 'user' : 'environment';
     setFacingMode(nextMode);
+    setIsMirrored(nextMode === 'user');
+  };
+
+  const toggleMirror = () => {
+    setIsMirrored((prev) => !prev);
   };
 
   const triggerFlash = () => {
@@ -250,7 +254,7 @@ export function PhotoProofScreen({
       let finalPhotoUri = '';
 
       if (Platform.OS === 'web' && videoRef.current && isWebCameraReady) {
-        // Capture frame directly from HTML5 video feed with zoom crop if applied
+        // Capture frame directly from HTML5 video feed with zoom crop and mirror if applied
         const video = videoRef.current;
         const canvas = document.createElement('canvas');
         const vWidth = video.videoWidth || 720;
@@ -259,6 +263,12 @@ export function PhotoProofScreen({
         canvas.height = vHeight;
         const ctx = canvas.getContext('2d');
         if (ctx) {
+          ctx.save();
+          if (isMirrored) {
+            // Flip canvas horizontally so captured photo matches mirrored preview
+            ctx.translate(vWidth, 0);
+            ctx.scale(-1, 1);
+          }
           if (zoom > 0) {
             const scale = 1 + zoom * 2.5;
             const sw = vWidth / scale;
@@ -269,6 +279,7 @@ export function PhotoProofScreen({
           } else {
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           }
+          ctx.restore();
           finalPhotoUri = canvas.toDataURL('image/jpeg', 0.88);
         }
       } else if (nativeCameraRef.current) {
@@ -403,7 +414,7 @@ export function PhotoProofScreen({
                   width: '100%',
                   height: '100%',
                   objectFit: 'cover',
-                  transform: zoom > 0 ? `scale(${1 + zoom * 2.5})` : 'none',
+                  transform: `${isMirrored ? 'scaleX(-1)' : 'scaleX(1)'} ${zoom > 0 ? `scale(${1 + zoom * 2.5})` : ''}`.trim(),
                   transformOrigin: 'center center',
                 }}
               />
@@ -424,6 +435,15 @@ export function PhotoProofScreen({
         {/* Viewfinder Top Controls - only visible during live capture, hidden in preview */}
         {!capturedPhotoUri && (
           <View style={styles.viewfinderTopBar}>
+            {Platform.OS === 'web' && (
+              <Pressable
+                style={[styles.glassButton, isMirrored ? styles.glassButtonActive : null]}
+                onPress={toggleMirror}
+                hitSlop={8}
+              >
+                <FlipHorizontal size={18} color={isMirrored ? '#facc15' : '#ffffff'} strokeWidth={2.2} />
+              </Pressable>
+            )}
             <Pressable style={styles.glassButton} onPress={() => void refreshLocation()} disabled={isRefreshingLocation}>
               <RefreshCw size={18} color="#ffffff" strokeWidth={2.2} />
             </Pressable>
@@ -724,6 +744,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  glassButtonActive: {
+    backgroundColor: 'rgba(2, 132, 199, 0.65)',
+    borderColor: '#38bdf8',
   },
   watermarkContainer: {
     position: 'absolute',
