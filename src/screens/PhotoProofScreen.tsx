@@ -116,8 +116,9 @@ export function PhotoProofScreen({
     };
   }, []);
 
-  // Shutter flash animation
-  const flashAnim = useRef(new Animated.Value(0)).current;
+  // Full-screen native-style screen flash animation & subtle camera shutter click animation
+  const screenFlashAnim = useRef(new Animated.Value(0)).current;
+  const shutterAnim = useRef(new Animated.Value(0)).current;
 
   // 1. Live Clock update every second
   useEffect(() => {
@@ -236,25 +237,6 @@ export function PhotoProofScreen({
     };
   }, [facingMode, startWebCamera]);
 
-  // Web torch / flashlight support when flashMode is enabled on compatible mobile browsers
-  useEffect(() => {
-    if (Platform.OS === 'web' && streamRef.current) {
-      const track = streamRef.current.getVideoTracks()[0];
-      if (track) {
-        try {
-          const capabilities = (track.getCapabilities?.() || {}) as any;
-          if (capabilities.torch) {
-            void track.applyConstraints({
-              advanced: [{ torch: flashMode === 'on' } as any],
-            } as any).catch(() => {});
-          }
-        } catch {
-          // ignore
-        }
-      }
-    }
-  }, [flashMode]);
-
   const toggleFacingMode = () => {
     const nextMode = facingMode === 'environment' ? 'user' : 'environment';
     setFacingMode(nextMode);
@@ -265,12 +247,37 @@ export function PhotoProofScreen({
     setIsMirrored((prev) => !prev);
   };
 
-  const triggerFlash = () => {
-    flashAnim.setValue(1);
-    Animated.timing(flashAnim, {
+  // Helper to detect if ambient webcam scene is low-light / dark (for Auto flash on web)
+  const checkIsWebLowLight = (video: HTMLVideoElement): boolean => {
+    try {
+      const sampleCanvas = document.createElement('canvas');
+      sampleCanvas.width = 32;
+      sampleCanvas.height = 32;
+      const ctx = sampleCanvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return false;
+      ctx.drawImage(video, 0, 0, 32, 32);
+      const imgData = ctx.getImageData(0, 0, 32, 32).data;
+      let totalLuminance = 0;
+      const step = 16; // Sample every 4th pixel for high speed
+      let count = 0;
+      for (let i = 0; i < imgData.length; i += step) {
+        totalLuminance += 0.299 * imgData[i] + 0.587 * imgData[i + 1] + 0.114 * imgData[i + 2];
+        count++;
+      }
+      const avg = totalLuminance / (count || 1);
+      // Low light threshold (scale 0-255, < 95 is dim/dark environment)
+      return avg < 95;
+    } catch {
+      return false;
+    }
+  };
+
+  const triggerShutter = () => {
+    shutterAnim.setValue(0.45);
+    Animated.timing(shutterAnim, {
       toValue: 0,
-      duration: 350,
-      useNativeDriver: true,
+      duration: 120,
+      useNativeDriver: Platform.OS !== 'web',
     }).start();
   };
 
@@ -278,15 +285,58 @@ export function PhotoProofScreen({
     if (isCapturing) return;
     setIsCapturing(true);
 
-    triggerFlash();
+    // Determine whether flash should fire (matches native Android/iOS CameraView behavior)
+    let shouldFlash = false;
+    if (flashMode === 'on') {
+      shouldFlash = true;
+    } else if (flashMode === 'auto') {
+      if (Platform.OS === 'web' && videoRef.current) {
+        shouldFlash = checkIsWebLowLight(videoRef.current);
+      } else {
+        shouldFlash = true;
+      }
+    }
+
+    // Trigger visual capture feedback
+    if (shouldFlash) {
+      // Screen Flash: Instantly illuminate full screen bright white
+      screenFlashAnim.setValue(1);
+    } else {
+      triggerShutter();
+    }
 
     let newItem: PhotoProofItem | null = null;
+    let didEnableTorch = false;
+    let activeTorchTrack: MediaStreamTrack | null = null;
     try {
       let finalPhotoUri = '';
 
       if (Platform.OS === 'web' && videoRef.current && isWebCameraReady) {
-        // Capture frame directly from HTML5 video feed with zoom crop and mirror if applied
         const video = videoRef.current;
+
+        // If flash is triggered on web, strobe rear hardware torch (if supported) or hold screen flash
+        if (shouldFlash) {
+          if (streamRef.current && facingMode === 'environment') {
+            const track = streamRef.current.getVideoTracks()[0];
+            if (track) {
+              try {
+                const caps = (track.getCapabilities?.() || {}) as any;
+                if (caps.torch) {
+                  activeTorchTrack = track;
+                  await track.applyConstraints({ advanced: [{ torch: true } as any] });
+                  didEnableTorch = true;
+                }
+              } catch {
+                // Torch not available
+              }
+            }
+          }
+
+          // Allow the screen flash or torch light to physically illuminate the scene and webcam sensor
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+
+        // Capture frame directly from HTML5 video feed with zoom crop and mirror if applied
         const canvas = document.createElement('canvas');
         const vWidth = video.videoWidth || 720;
         const vHeight = video.videoHeight || 1280;
@@ -300,9 +350,9 @@ export function PhotoProofScreen({
             ctx.translate(vWidth, 0);
             ctx.scale(-1, 1);
           }
-          if (flashMode === 'on') {
-            // Enhance low-light brightness and contrast for night capture on web
-            ctx.filter = 'brightness(1.22) contrast(1.08)';
+          if (shouldFlash) {
+            // Enhance low-light brightness and contrast for flash photography on web
+            ctx.filter = 'brightness(1.26) contrast(1.10) saturate(1.04)';
           }
           if (zoom > 0) {
             const scale = 1 + zoom * 2.5;
@@ -316,6 +366,24 @@ export function PhotoProofScreen({
           }
           ctx.restore();
           finalPhotoUri = canvas.toDataURL('image/jpeg', 0.88);
+        }
+
+        // Immediately turn off torch if it was active
+        if (didEnableTorch && activeTorchTrack) {
+          try {
+            await activeTorchTrack.applyConstraints({ advanced: [{ torch: false } as any] });
+          } catch {
+            // ignore
+          }
+        }
+
+        // Smoothly fade out the screen flash
+        if (shouldFlash) {
+          Animated.timing(screenFlashAnim, {
+            toValue: 0,
+            duration: 320,
+            useNativeDriver: Platform.OS !== 'web',
+          }).start();
         }
       } else if (nativeCameraRef.current) {
         // Capture directly from live embedded CameraView on native mobile
@@ -401,6 +469,7 @@ export function PhotoProofScreen({
       setLastSavedItem(newItem);
       showTemporarySavedModal();
     } catch (err: any) {
+      screenFlashAnim.setValue(0);
       console.error('Failed to capture and save photo proof:', err);
       Alert.alert('Capture Warning', `Photo saved locally, but cloud sync logged an issue: ${err?.message || err}`);
       if (newItem) {
@@ -408,6 +477,11 @@ export function PhotoProofScreen({
         showTemporarySavedModal();
       }
     } finally {
+      if (didEnableTorch && activeTorchTrack) {
+        try {
+          void activeTorchTrack.applyConstraints({ advanced: [{ torch: false } as any] });
+        } catch {}
+      }
       setIsCapturing(false);
     }
   };
@@ -606,13 +680,13 @@ export function PhotoProofScreen({
           </Pressable>
         </View>
 
-        {/* Shutter Flash Animation Layer */}
+        {/* Shutter Click Darkening Layer */}
         <Animated.View
           pointerEvents="none"
           style={[
-            styles.flashOverlay,
+            styles.shutterOverlay,
             {
-              opacity: flashAnim,
+              opacity: shutterAnim,
             },
           ]}
         />
@@ -812,6 +886,16 @@ export function PhotoProofScreen({
           </View>
         </Pressable>
       </Modal>
+      {/* Full-Screen Native-Style Screen Flash Overlay (Illuminates entire display for true Retina / Screen Flash) */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.fullScreenFlashOverlay,
+          {
+            opacity: screenFlashAnim,
+          },
+        ]}
+      />
     </View>
   );
 }
@@ -1028,10 +1112,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  flashOverlay: {
+  shutterOverlay: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: '#000000',
+    zIndex: 20,
+  },
+  fullScreenFlashOverlay: {
     ...StyleSheet.absoluteFill,
     backgroundColor: '#ffffff',
-    zIndex: 20,
+    zIndex: 9999,
   },
   editModalCard: {
     width: '100%',
