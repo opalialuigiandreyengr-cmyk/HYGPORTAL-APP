@@ -40,7 +40,7 @@ import { loadMyFlexibleSchedule } from '../services/team';
 import { updateMyPendingRequest, type MyRequest } from '../services/requests';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
-import { parseEsarfEntries } from '../components/EsarfDetailsView';
+import { formatEsarfDateRange, parseEsarfEntries } from '../components/EsarfDetailsView';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { platformAlert } from '../utils/platformAlert';
 import { withTimeout } from '../utils/withTimeout';
@@ -2081,40 +2081,6 @@ function parseTransactionStringToKeys(rawStr?: string | null, requestTypeCode?: 
   if (requestTypeCode === 'overtime') return 'ot';
 
   return rawStr;
-}
-
-export function formatEsarfDateRange(dateFromStr?: string | null, dateToStr?: string | null): string {
-  if (!dateFromStr) return 'mm/dd-dd/yyyy';
-
-  const fromParts = dateFromStr.split('-').map(Number);
-  if (fromParts.length !== 3 || fromParts.some(Number.isNaN)) return 'mm/dd-dd/yyyy';
-
-  const [y1, m1, d1] = fromParts;
-  const m1Str = String(m1).padStart(2, '0');
-  const d1Str = String(d1).padStart(2, '0');
-  const y1Short = String(y1).slice(-2);
-
-  const actualDateTo = dateToStr || dateFromStr;
-  const toParts = actualDateTo.split('-').map(Number);
-
-  if (toParts.length !== 3 || toParts.some(Number.isNaN)) {
-    return `${m1Str}/${d1Str}-${d1Str}/${y1Short}`;
-  }
-
-  const [y2, m2, d2] = toParts;
-  const m2Str = String(m2).padStart(2, '0');
-  const d2Str = String(d2).padStart(2, '0');
-  const y2Short = String(y2).slice(-2);
-
-  if (y1 === y2 && m1 === m2) {
-    return `${m1Str}/${d1Str}-${d2Str}/${y1Short}`;
-  }
-
-  if (y1 === y2) {
-    return `${m1Str}/${d1Str}-${m2Str}/${d2Str}/${y1Short}`;
-  }
-
-  return `${m1Str}/${d1Str}/${y1Short}-${m2Str}/${d2Str}/${y2Short}`;
 }
 
 function getConflictingTransactions(key: string) {

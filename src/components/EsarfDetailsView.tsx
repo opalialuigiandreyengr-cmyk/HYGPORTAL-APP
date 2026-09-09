@@ -2,7 +2,40 @@ import React from 'react';
 import { View, Text, StyleSheet, Pressable, TextInput } from 'react-native';
 import { CalendarDays, Check, Clock3, Edit3, FileText, Users, X } from 'lucide-react-native';
 import { colors, radius, fontWeights, spacing } from '../theme';
-import { formatEsarfDateRange } from '../screens/ApplyEsarfScreen';
+
+export function formatEsarfDateRange(dateFromStr?: string | null, dateToStr?: string | null): string {
+  if (!dateFromStr) return 'mm/dd-dd/yyyy';
+
+  const fromParts = dateFromStr.split('-').map(Number);
+  if (fromParts.length !== 3 || fromParts.some(Number.isNaN)) return 'mm/dd-dd/yyyy';
+
+  const [y1, m1, d1] = fromParts;
+  const m1Str = String(m1).padStart(2, '0');
+  const d1Str = String(d1).padStart(2, '0');
+  const y1Short = String(y1).slice(-2);
+
+  const actualDateTo = dateToStr || dateFromStr;
+  const toParts = actualDateTo.split('-').map(Number);
+
+  if (toParts.length !== 3 || toParts.some(Number.isNaN)) {
+    return `${m1Str}/${d1Str}-${d1Str}/${y1Short}`;
+  }
+
+  const [y2, m2, d2] = toParts;
+  const m2Str = String(m2).padStart(2, '0');
+  const d2Str = String(d2).padStart(2, '0');
+  const y2Short = String(y2).slice(-2);
+
+  if (y1 === y2 && m1 === m2) {
+    return `${m1Str}/${d1Str}-${d2Str}/${y1Short}`;
+  }
+
+  if (y1 === y2) {
+    return `${m1Str}/${d1Str}-${m2Str}/${d2Str}/${y1Short}`;
+  }
+
+  return `${m1Str}/${d1Str}/${y1Short}-${m2Str}/${d2Str}/${y2Short}`;
+}
 
 export type ParsedEsarfEntry = {
   index: number;

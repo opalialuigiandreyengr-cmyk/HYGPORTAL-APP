@@ -4,6 +4,7 @@ import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system/legacy';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { supabase } from '../lib/supabase';
+import { env } from '../lib/env';
 
 export type PhotoProofItem = {
   id: string;
@@ -111,6 +112,63 @@ async function getOrCreateDriveFolderClient(token: string, name: string, parentI
   } catch {
     return parentId;
   }
+}
+
+export async function uploadViaGoogleAppsScript(
+  item: PhotoProofItem,
+  base64Data?: string,
+): Promise<{ driveFileId: string; driveWebViewLink: string; photoUrl: string } | null> {
+  const scriptUrl = env.photoProofScriptUrl;
+  if (!scriptUrl) return null;
+
+  try {
+    let cleanBase64 = base64Data || item.photoUri;
+    if (Platform.OS !== 'web' && cleanBase64.startsWith('file://')) {
+      try {
+        cleanBase64 = await FileSystem.readAsStringAsync(cleanBase64, {
+          encoding: FileSystem.EncodingType?.Base64 || 'base64',
+        });
+      } catch (readErr) {
+        console.warn('Failed to read file as base64 for Google Apps Script:', readErr);
+      }
+    }
+
+    if (cleanBase64.includes(',')) {
+      cleanBase64 = cleanBase64.split(',')[1];
+    }
+
+    console.log('[PhotoProofGDrive] Uploading photo via Google Apps Script...');
+    const payload = JSON.stringify({
+      photoBase64: cleanBase64,
+      employeeName: item.employeeName || 'Employee',
+      storeName: item.storeName || item.userEmail || 'General',
+      dateFormatted: item.dateFormatted,
+      timeDigits: item.timeDigits,
+      timePeriod: item.timePeriod,
+    });
+
+    const response = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8',
+      },
+      body: payload,
+    });
+
+    const json = await response.json().catch(() => null);
+    console.log('[PhotoProofGDrive] Google Apps Script response:', json);
+
+    if (json?.success && json?.driveFileId) {
+      return {
+        driveFileId: json.driveFileId,
+        driveWebViewLink: json.driveWebViewLink || `https://drive.google.com/file/d/${json.driveFileId}/view`,
+        photoUrl: json.photoUrl || `https://lh3.googleusercontent.com/d/${json.driveFileId}`,
+      };
+    }
+  } catch (err) {
+    console.warn('[PhotoProofGDrive] Google Apps Script upload exception:', err);
+  }
+  return null;
 }
 
 export async function uploadDirectToGoogleDrive(
@@ -392,8 +450,11 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
 
   const isUUID = resolvedEmployeeId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(resolvedEmployeeId);
 
-  // 2. Attempt Direct Google Drive Upload first
-  let driveResult = await uploadDirectToGoogleDrive(item, base64Photo);
+  // 2. Attempt Google Apps Script Upload first (100% free, uses personal Drive storage)
+  let driveResult = await uploadViaGoogleAppsScript(item, base64Photo);
+  if (!driveResult) {
+    driveResult = await uploadDirectToGoogleDrive(item, base64Photo);
+  }
   let cloudRecordId: string | null = null;
 
   // 3. Fallback to Supabase Edge Function if direct upload failed

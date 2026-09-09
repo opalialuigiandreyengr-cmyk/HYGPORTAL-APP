@@ -13,10 +13,11 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { ChevronLeft, Info, RefreshCw, SwitchCamera, FlipHorizontal, X, Check, Eye, Pencil, MapPin, Images } from 'lucide-react-native';
+import { ChevronLeft, Info, RefreshCw, SwitchCamera, FlipHorizontal, X, Check, Eye, Pencil, MapPin, Images, Zap, ZapOff } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import { manipulateAsync, FlipType, SaveFormat } from 'expo-image-manipulator';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fontWeights, radius, spacing } from '../theme';
 import {
@@ -63,6 +64,17 @@ export function PhotoProofScreen({
 
   // Zoom level: 0 (1x normal), 0.12 (2x), 0.25 (3x)
   const [zoom, setZoom] = useState(0);
+
+  // Camera Flash mode: 'off' | 'on' | 'auto' for night / low-light capture
+  const [flashMode, setFlashMode] = useState<'off' | 'on' | 'auto'>('off');
+
+  const toggleFlashMode = () => {
+    setFlashMode((prev) => {
+      if (prev === 'off') return 'on';
+      if (prev === 'on') return 'auto';
+      return 'off';
+    });
+  };
 
   const handleSetPreset = (targetZoom: number) => {
     setZoom(targetZoom);
@@ -224,6 +236,25 @@ export function PhotoProofScreen({
     };
   }, [facingMode, startWebCamera]);
 
+  // Web torch / flashlight support when flashMode is enabled on compatible mobile browsers
+  useEffect(() => {
+    if (Platform.OS === 'web' && streamRef.current) {
+      const track = streamRef.current.getVideoTracks()[0];
+      if (track) {
+        try {
+          const capabilities = (track.getCapabilities?.() || {}) as any;
+          if (capabilities.torch) {
+            void track.applyConstraints({
+              advanced: [{ torch: flashMode === 'on' } as any],
+            } as any).catch(() => {});
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }, [flashMode]);
+
   const toggleFacingMode = () => {
     const nextMode = facingMode === 'environment' ? 'user' : 'environment';
     setFacingMode(nextMode);
@@ -269,6 +300,10 @@ export function PhotoProofScreen({
             ctx.translate(vWidth, 0);
             ctx.scale(-1, 1);
           }
+          if (flashMode === 'on') {
+            // Enhance low-light brightness and contrast for night capture on web
+            ctx.filter = 'brightness(1.22) contrast(1.08)';
+          }
           if (zoom > 0) {
             const scale = 1 + zoom * 2.5;
             const sw = vWidth / scale;
@@ -289,7 +324,22 @@ export function PhotoProofScreen({
           base64: true,
         });
         if (photo?.uri) {
-          finalPhotoUri = photo.uri;
+          let photoUri = photo.uri;
+          if (isMirrored) {
+            try {
+              const manip = await manipulateAsync(
+                photo.uri,
+                [{ flip: FlipType.Horizontal }],
+                { compress: 0.88, format: SaveFormat.JPEG, base64: true },
+              );
+              if (manip?.uri) {
+                photoUri = manip.uri;
+              }
+            } catch (flipErr) {
+              console.warn('[PhotoProof] Image flip failed:', flipErr);
+            }
+          }
+          finalPhotoUri = photoUri;
         }
       } else {
         // Fallback to ImagePicker launchCameraAsync if CameraView not bound
@@ -301,7 +351,22 @@ export function PhotoProofScreen({
         });
 
         if (!result.canceled && result.assets[0]) {
-          finalPhotoUri = result.assets[0].uri;
+          let photoUri = result.assets[0].uri;
+          if (isMirrored) {
+            try {
+              const manip = await manipulateAsync(
+                photoUri,
+                [{ flip: FlipType.Horizontal }],
+                { compress: 0.88, format: SaveFormat.JPEG, base64: true },
+              );
+              if (manip?.uri) {
+                photoUri = manip.uri;
+              }
+            } catch (flipErr) {
+              console.warn('[PhotoProof] Image flip failed:', flipErr);
+            }
+          }
+          finalPhotoUri = photoUri;
         }
       }
 
@@ -357,6 +422,8 @@ export function PhotoProofScreen({
       void startWebCamera(facingMode);
     }
   };
+
+  const shouldFlipNativeView = facingMode === 'user' ? !isMirrored : isMirrored;
 
   return (
     <View style={styles.container}>
@@ -426,29 +493,84 @@ export function PhotoProofScreen({
           <CameraView
             ref={nativeCameraRef}
             facing={facingMode === 'user' ? 'front' : 'back'}
-            style={styles.viewfinderMedia}
+            style={[
+              styles.viewfinderMedia,
+              shouldFlipNativeView ? { transform: [{ scaleX: -1 }] } : null,
+            ]}
             zoom={zoom}
+            flash={
+              facingMode === 'user' && flashMode === 'on'
+                ? (Platform.OS === 'android' ? 'screen' : 'on')
+                : flashMode
+            }
             animateShutter={true}
           />
+        )}
+
+        {/* Viewfinder Top Left Controls - Flash button for night photography */}
+        {!capturedPhotoUri && (
+          <View style={styles.viewfinderTopLeftBar}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.glassButton,
+                flashMode === 'on' ? styles.glassButtonFlashOn : null,
+                flashMode === 'auto' ? styles.glassButtonFlashAuto : null,
+                pressed ? styles.glassButtonPressed : null,
+              ]}
+              onPress={toggleFlashMode}
+              hitSlop={8}
+              accessibilityLabel={`Flash mode: ${flashMode}`}
+              accessibilityRole="button"
+            >
+              {flashMode === 'off' && (
+                <ZapOff size={20} color="#ffffff" strokeWidth={2.2} />
+              )}
+              {flashMode === 'on' && (
+                <Zap size={20} color="#facc15" fill="#facc15" strokeWidth={2.2} />
+              )}
+              {flashMode === 'auto' && (
+                <View style={styles.flashAutoIconWrap}>
+                  <Zap size={18} color="#38bdf8" strokeWidth={2.2} />
+                  <Text style={styles.flashAutoLetter}>A</Text>
+                </View>
+              )}
+            </Pressable>
+
+            {/* Flash state pill indicator */}
+            {flashMode !== 'off' && (
+              <Pressable
+                style={[
+                  styles.flashBadge,
+                  flashMode === 'on' ? styles.flashBadgeOn : styles.flashBadgeAuto,
+                ]}
+                onPress={toggleFlashMode}
+                hitSlop={6}
+              >
+                <Text
+                  style={[
+                    styles.flashBadgeText,
+                    flashMode === 'on' ? styles.flashBadgeTextOn : styles.flashBadgeTextAuto,
+                  ]}
+                >
+                  {flashMode === 'on' ? 'FLASH ON' : 'AUTO'}
+                </Text>
+              </Pressable>
+            )}
+          </View>
         )}
 
         {/* Viewfinder Top Controls - only visible during live capture, hidden in preview */}
         {!capturedPhotoUri && (
           <View style={styles.viewfinderTopBar}>
-            {Platform.OS === 'web' && (
-              <Pressable
-                style={[styles.glassButton, isMirrored ? styles.glassButtonActive : null]}
-                onPress={toggleMirror}
-                hitSlop={8}
-              >
-                <FlipHorizontal size={18} color={isMirrored ? '#facc15' : '#ffffff'} strokeWidth={2.2} />
-              </Pressable>
-            )}
+            <Pressable
+              style={[styles.glassButton, isMirrored ? styles.glassButtonActive : null]}
+              onPress={toggleMirror}
+              hitSlop={8}
+            >
+              <FlipHorizontal size={18} color={isMirrored ? '#facc15' : '#ffffff'} strokeWidth={2.2} />
+            </Pressable>
             <Pressable style={styles.glassButton} onPress={() => void refreshLocation()} disabled={isRefreshingLocation}>
               <RefreshCw size={18} color="#ffffff" strokeWidth={2.2} />
-            </Pressable>
-            <Pressable style={styles.glassButton} onPress={toggleFacingMode}>
-              <SwitchCamera size={20} color="#ffffff" strokeWidth={2.2} />
             </Pressable>
           </View>
         )}
@@ -547,8 +669,20 @@ export function PhotoProofScreen({
             </View>
 
             <View style={styles.shutterRow}>
-              {/* Left balance spacer so center button remains precisely centered */}
-              <View style={styles.shutterSideSlot} />
+              {/* Photo Log Button on the left side */}
+              <View style={styles.shutterSideSlot}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.shutterSideButton,
+                    pressed ? styles.shutterSideButtonPressed : null,
+                  ]}
+                  onPress={onOpenPhotoLog}
+                  hitSlop={12}
+                  accessibilityLabel="Photo Log"
+                >
+                  <Images size={28} color="#0f172a" strokeWidth={2} />
+                </Pressable>
+              </View>
 
               {/* Shutter Capture Button */}
               <Pressable
@@ -563,18 +697,18 @@ export function PhotoProofScreen({
                 <View style={styles.shutterButtonInner} />
               </Pressable>
 
-              {/* Photo Log Button on the right side */}
+              {/* Swap Camera Button on the right side */}
               <View style={styles.shutterSideSlot}>
                 <Pressable
                   style={({ pressed }) => [
                     styles.shutterSideButton,
                     pressed ? styles.shutterSideButtonPressed : null,
                   ]}
-                  onPress={onOpenPhotoLog}
+                  onPress={toggleFacingMode}
                   hitSlop={12}
-                  accessibilityLabel="Photo Log"
+                  accessibilityLabel="Swap Camera"
                 >
-                  <Images size={28} color="#0f172a" strokeWidth={2} />
+                  <SwitchCamera size={28} color="#0f172a" strokeWidth={2} />
                 </Pressable>
               </View>
             </View>
@@ -735,6 +869,15 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     zIndex: 5,
   },
+  viewfinderTopLeftBar: {
+    position: 'absolute',
+    top: 16,
+    left: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs + 2,
+    zIndex: 5,
+  },
   glassButton: {
     width: 42,
     height: 42,
@@ -748,6 +891,63 @@ const styles = StyleSheet.create({
   glassButtonActive: {
     backgroundColor: 'rgba(2, 132, 199, 0.65)',
     borderColor: '#38bdf8',
+  },
+  glassButtonFlashOn: {
+    backgroundColor: 'rgba(234, 179, 8, 0.3)',
+    borderColor: '#facc15',
+    borderWidth: 1.5,
+  },
+  glassButtonFlashAuto: {
+    backgroundColor: 'rgba(2, 132, 199, 0.3)',
+    borderColor: '#38bdf8',
+    borderWidth: 1.5,
+  },
+  glassButtonPressed: {
+    opacity: 0.8,
+    transform: [{ scale: 0.94 }],
+  },
+  flashAutoIconWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    width: 22,
+    height: 22,
+  },
+  flashAutoLetter: {
+    position: 'absolute',
+    bottom: -2,
+    right: -5,
+    fontSize: 9,
+    fontWeight: fontWeights.heavy,
+    color: '#38bdf8',
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    borderRadius: 3,
+    paddingHorizontal: 1,
+    lineHeight: 11,
+  },
+  flashBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    borderWidth: 1,
+  },
+  flashBadgeOn: {
+    borderColor: 'rgba(250, 204, 21, 0.5)',
+  },
+  flashBadgeAuto: {
+    borderColor: 'rgba(56, 189, 248, 0.5)',
+  },
+  flashBadgeText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    letterSpacing: 0.5,
+  },
+  flashBadgeTextOn: {
+    color: '#facc15',
+  },
+  flashBadgeTextAuto: {
+    color: '#38bdf8',
   },
   watermarkContainer: {
     position: 'absolute',
