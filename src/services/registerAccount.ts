@@ -132,11 +132,32 @@ export async function registerEmployeeLoginAccount({
     password,
   });
 
+  let authUserId = signUpData?.user?.id;
+
   if (signUpError) {
-    throw new Error(readableSignUpError(signUpError));
+    const isAlreadyExists =
+      signUpError.code === 'user_already_exists' ||
+      signUpError.message?.toLowerCase().includes('already registered') ||
+      signUpError.message?.toLowerCase().includes('already exists');
+
+    if (isAlreadyExists) {
+      // User already exists in auth.users (e.g. from a prior registration attempt where linking failed).
+      // Attempt sign-in to recover the auth user ID and complete linking.
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+        email: authEmail,
+        password,
+      });
+
+      if (!signInError && signInData?.user?.id) {
+        authUserId = signInData.user.id;
+      } else {
+        throw new Error(readableSignUpError(signUpError));
+      }
+    } else {
+      throw new Error(readableSignUpError(signUpError));
+    }
   }
 
-  const authUserId = signUpData.user?.id;
   if (!authUserId) {
     throw new Error('Unable to create login account. Please try again.');
   }
@@ -149,6 +170,12 @@ export async function registerEmployeeLoginAccount({
   });
 
   if (error) {
+    // If linking failed, sign out of the auth session to prevent unlinked ghost session state
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // Ignore sign out error
+    }
     throw new Error(errorMessage(error));
   }
 

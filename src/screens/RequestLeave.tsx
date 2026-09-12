@@ -65,7 +65,7 @@ const RequestLeave = ({
   name,
   username,
   photoUrl,
-  leaveCreditRemaining = 7,
+  leaveCreditRemaining = 0,
   initialDraft,
   editingRequest,
   notificationCount = 0,

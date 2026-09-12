@@ -52,17 +52,17 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
   const first = Array.isArray(data) ? data[0] : data;
 
   // Exact real-time leave balance from leave_balances table (matching admin desktop)
-  let annualCreditDays = 7;
+  let annualCreditDays = 0;
   let leaveUsedDays = 0;
-  let leaveCreditRemaining = 7;
+  let leaveCreditRemaining = 0;
 
   if (leaveBalanceRow.data) {
-    annualCreditDays = Number(leaveBalanceRow.data.annual_credit_days ?? 7);
+    annualCreditDays = Number(leaveBalanceRow.data.annual_credit_days ?? 0);
     leaveUsedDays = Number(leaveBalanceRow.data.used_days ?? 0);
     leaveCreditRemaining = Math.max(0, annualCreditDays - leaveUsedDays);
   } else if (first?.leave_credit_remaining !== undefined && first?.leave_credit_remaining !== null) {
     leaveCreditRemaining = Math.max(0, Number(first.leave_credit_remaining));
-    annualCreditDays = Math.max(7, leaveCreditRemaining);
+    annualCreditDays = leaveCreditRemaining;
     leaveUsedDays = Math.max(0, annualCreditDays - leaveCreditRemaining);
   }
 

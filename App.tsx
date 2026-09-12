@@ -180,8 +180,8 @@ export default function App() {
     pending_requests: 0,
     pending_approvals: 0,
     offset_balance: 0,
-    leave_credit_remaining: 7,
-    annual_credit_days: 7,
+    leave_credit_remaining: 0,
+    annual_credit_days: 0,
     leave_used_days: 0,
     hyg_points_balance: 0,
   });
@@ -1081,7 +1081,7 @@ export default function App() {
     };
   }, [signedInUser, profileResult?.status, profileResult?.status === 'linked' ? profileResult.profile.employeeId : undefined]);
 
-  if (signedInUser) {
+  if (signedInUser && publicScreen !== 'register_account' && publicScreen !== 'create_profile') {
     const currentUsername =
       profileResult?.status === 'linked'
         ? profileResult.profile.username || email || savedUsername || signedInUser.email
@@ -1165,7 +1165,7 @@ export default function App() {
       setActiveQuickRequestScreen(null);
       setAssistantDraft(null);
       setPassword('');
-      setDashboardSummary({ pending_requests: 0, pending_approvals: 0, offset_balance: 0, leave_credit_remaining: 7, annual_credit_days: 7, leave_used_days: 0, hyg_points_balance: 0 });
+      setDashboardSummary({ pending_requests: 0, pending_approvals: 0, offset_balance: 0, leave_credit_remaining: 0, annual_credit_days: 0, leave_used_days: 0, hyg_points_balance: 0 });
       setPendingApprovalCount(0);
       setNotificationUnreadCount(0);
     };
