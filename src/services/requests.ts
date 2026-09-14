@@ -314,3 +314,73 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
     // ignore
   }
 }
+
+export async function deleteMyPendingRequest(requestId: string, isPerk = false) {
+  if (!requestId) {
+    throw new Error('Missing Request ID.');
+  }
+
+  const lockInfo = await checkApproverActiveViewing(requestId);
+  if (lockInfo.isLocked) {
+    throw new Error(
+      `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Deleting is temporarily disabled while they are viewing it to prevent data conflicts.`,
+    );
+  }
+
+  let rpcSuccess = false;
+  try {
+    const { error: rpcErr } = await supabase.rpc('delete_my_pending_request', {
+      p_request_id: requestId,
+      p_is_perk: isPerk,
+    });
+    if (!rpcErr) {
+      rpcSuccess = true;
+    }
+  } catch {
+    rpcSuccess = false;
+  }
+
+  if (!rpcSuccess) {
+    try {
+      const { error: adminErr } = await supabase.rpc('admin_delete_request', {
+        p_request_id: requestId,
+        p_is_perk: isPerk,
+      });
+      if (!adminErr) {
+        rpcSuccess = true;
+      }
+    } catch {
+      rpcSuccess = false;
+    }
+  }
+
+  if (!rpcSuccess) {
+    if (isPerk) {
+      const { error } = await supabase
+        .from('employee_perk_requests')
+        .delete()
+        .eq('id', requestId);
+      if (error) {
+        throw new Error(error.message);
+      }
+    } else {
+      await supabase.from('approval_push_outbox').delete().eq('request_id', requestId);
+      await supabase.from('offset_transactions').delete().eq('request_id', requestId);
+      await supabase.from('leave_transactions').delete().eq('request_id', requestId);
+      await supabase.from('time_request_details').delete().eq('request_id', requestId);
+      await supabase.from('leave_request_details').delete().eq('request_id', requestId);
+      await supabase.from('request_approval_steps').delete().eq('request_id', requestId);
+      const { error } = await supabase.from('requests').delete().eq('id', requestId);
+      if (error) {
+        throw new Error(error.message);
+      }
+    }
+  }
+
+  try {
+    await removeCacheItem('my_requests_v1');
+  } catch {
+    // ignore
+  }
+}
+

@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AppState, type AppStateStatus, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, AppState, type AppStateStatus, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
-import { CalendarDays, Clock3, Eye, FileText, Funnel, Pencil, RefreshCcw, Search, Users, X } from 'lucide-react-native';
+import { CalendarDays, Clock3, Eye, FileText, Funnel, Pencil, RefreshCcw, Search, Trash2, Users, X } from 'lucide-react-native';
 
 import { colors, fontWeights, spacing, radius } from '../theme';
 import { Avatar } from '../components/Avatar';
 import { TopBar } from '../components/TopBar';
-import { loadMyRequests, loadMyRequestsCached, type MyRequest } from '../services/requests';
+import { deleteMyPendingRequest, loadMyRequests, loadMyRequestsCached, type MyRequest } from '../services/requests';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { isAutoApprovedBirthdayGrant } from '../services/birthdayLeave';
@@ -69,6 +69,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
   const [selectedRequest, setSelectedRequest] = useState<{ item: MyRequest; sequence: number } | null>(null);
   const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
 
   async function handleEditRequest(item: MyRequest) {
@@ -82,6 +83,60 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
       return;
     }
     onEditRequest(item);
+  }
+
+  async function handleDeleteRequest(item: MyRequest) {
+    const isPerk = isPerkRequest(item);
+    const typeName = isPerk ? 'Perks' : formatRequestType(item);
+
+    const confirmTitle = 'Delete Request';
+    const confirmMessage = `Are you sure you want to delete this pending ${typeName} request? This action cannot be undone.`;
+
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      if (window.confirm(confirmMessage)) {
+        await executeDelete(item, isPerk);
+      }
+    } else {
+      Alert.alert(confirmTitle, confirmMessage, [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            void executeDelete(item, isPerk);
+          },
+        },
+      ]);
+    }
+  }
+
+  async function executeDelete(item: MyRequest, isPerk: boolean) {
+    setDeletingId(item.request_id);
+    try {
+      const lockInfo = await checkApproverActiveViewing(item.request_id);
+      if (lockInfo.isLocked) {
+        if (selectedRequest) {
+          setSelectedRequest(null);
+        }
+        setActiveLockInfo(lockInfo);
+        return;
+      }
+
+      await deleteMyPendingRequest(item.request_id, isPerk);
+      if (selectedRequest?.item.request_id === item.request_id) {
+        setSelectedRequest(null);
+      }
+      await refresh(true);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unable to delete request.';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(msg);
+      } else {
+        Alert.alert('Delete Failed', msg);
+      }
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   async function refresh(forceRefresh = true) {
@@ -420,8 +475,10 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
             item={item}
             profile={profile}
             sequence={sequence}
+            isDeleting={deletingId === item.request_id}
             onView={() => setSelectedRequest({ item, sequence })}
             onEdit={onEditRequest ? () => void handleEditRequest(item) : undefined}
+            onDelete={() => void handleDeleteRequest(item)}
           />
           );
         })}
@@ -465,8 +522,10 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
       <RequestDetailsSheet
         request={selectedRequest}
         profile={profile}
+        isDeleting={Boolean(selectedRequest && deletingId === selectedRequest.item.request_id)}
         onClose={() => setSelectedRequest(null)}
         onEdit={onEditRequest ? (req) => void handleEditRequest(req) : undefined}
+        onDelete={(req) => void handleDeleteRequest(req)}
       />
 
       <ActiveReviewLockModal
@@ -483,19 +542,24 @@ function RequestCard({
   item,
   profile,
   sequence,
+  isDeleting,
   onView,
   onEdit,
+  onDelete,
 }: {
   item: MyRequest;
   profile: EmployeeProfileSummary | null;
   sequence: number;
+  isDeleting?: boolean;
   onView: () => void;
   onEdit?: () => void;
+  onDelete?: () => void;
 }) {
   const statusKey = normalizeStatus(item.status, item);
   const requestDate = getRequestDate(item);
   const displayName = formatEmployeeDisplayName(profile);
   const department = formatProfileWorkUnit(profile);
+  const isPerk = isPerkRequest(item);
 
   return (
     <View style={styles.cardOuter}>
@@ -539,11 +603,25 @@ function RequestCard({
             <View style={styles.typePill}>
               <Text style={styles.typePillText}>{formatRequestType(item)}</Text>
             </View>
-            {statusKey === 'pending' && onEdit ? (
-              <Pressable style={styles.editButton} onPress={onEdit}>
-                <Pencil size={14} color="#92400e" strokeWidth={2.3} />
-                <Text style={styles.editText}>Edit</Text>
-              </Pressable>
+            {statusKey === 'pending' ? (
+              <>
+                {!isPerk && onEdit ? (
+                  <Pressable style={styles.editButton} onPress={onEdit}>
+                    <Pencil size={14} color="#92400e" strokeWidth={2.3} />
+                    <Text style={styles.editText}>Edit</Text>
+                  </Pressable>
+                ) : null}
+                {onDelete ? (
+                  <Pressable
+                    disabled={isDeleting}
+                    style={[styles.deleteButton, isDeleting ? { opacity: 0.6 } : null]}
+                    onPress={onDelete}
+                  >
+                    <Trash2 size={14} color={colors.semantic.danger} strokeWidth={2.3} />
+                    <Text style={styles.deleteText}>{isDeleting ? '...' : 'Delete'}</Text>
+                  </Pressable>
+                ) : null}
+              </>
             ) : null}
             <Pressable style={styles.viewButton} onPress={onView}>
               <Eye size={15} color={colors.text} strokeWidth={2.3} />
@@ -559,13 +637,17 @@ function RequestCard({
 function RequestDetailsSheet({
   request,
   profile,
+  isDeleting,
   onClose,
   onEdit,
+  onDelete,
 }: {
   request: { item: MyRequest; sequence: number } | null;
   profile: EmployeeProfileSummary | null;
+  isDeleting?: boolean;
   onClose: () => void;
   onEdit?: (request: MyRequest) => void;
+  onDelete?: (request: MyRequest) => void;
 }) {
   if (!request) return null;
 
@@ -745,22 +827,44 @@ function RequestDetailsSheet({
             )}
           </ScrollView>
           <View style={styles.sheetFooter}>
-            {itemStatusKey === 'pending' && onEdit ? (
-              <Pressable
-                style={styles.sheetEditButton}
-                onPress={() => {
-                  const itemToEdit = item;
-                  onClose();
-                  if (onEdit) {
-                    setTimeout(() => {
-                      onEdit(itemToEdit);
-                    }, 50);
-                  }
-                }}
-              >
-                <Pencil size={15} color="#92400e" strokeWidth={2.4} />
-                <Text style={styles.sheetEditText}>Edit Request</Text>
-              </Pressable>
+            {itemStatusKey === 'pending' ? (
+              <>
+                {!isPerk && onEdit ? (
+                  <Pressable
+                    style={styles.sheetEditButton}
+                    onPress={() => {
+                      const itemToEdit = item;
+                      onClose();
+                      if (onEdit) {
+                        setTimeout(() => {
+                          onEdit(itemToEdit);
+                        }, 50);
+                      }
+                    }}
+                  >
+                    <Pencil size={15} color="#92400e" strokeWidth={2.4} />
+                    <Text style={styles.sheetEditText}>Edit Request</Text>
+                  </Pressable>
+                ) : null}
+                {onDelete ? (
+                  <Pressable
+                    disabled={isDeleting}
+                    style={[styles.sheetDeleteButton, isDeleting ? { opacity: 0.6 } : null]}
+                    onPress={() => {
+                      const itemToDelete = item;
+                      onClose();
+                      if (onDelete) {
+                        setTimeout(() => {
+                          onDelete(itemToDelete);
+                        }, 50);
+                      }
+                    }}
+                  >
+                    <Trash2 size={15} color={colors.semantic.danger} strokeWidth={2.4} />
+                    <Text style={styles.sheetDeleteText}>{isDeleting ? 'Deleting...' : 'Delete Request'}</Text>
+                  </Pressable>
+                ) : null}
+              </>
             ) : null}
             <Pressable style={styles.sheetCloseButton} onPress={onClose}>
               <Text style={styles.sheetCloseText}>Close</Text>
@@ -2159,7 +2263,24 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.bold,
     color: '#92400e',
   },
+  deleteButton: {
+    minHeight: 26,
+    borderRadius: radius.sm,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    paddingHorizontal: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  deleteText: {
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+    color: colors.semantic.danger,
+  },
   sheetEditButton: {
+    flex: 1,
     minHeight: 44,
     borderRadius: 22,
     backgroundColor: '#fef3c7',
@@ -2174,5 +2295,22 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: fontWeights.bold,
     color: '#92400e',
+  },
+  sheetDeleteButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 22,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
+  },
+  sheetDeleteText: {
+    fontSize: 15,
+    fontWeight: fontWeights.bold,
+    color: colors.semantic.danger,
   },
 });

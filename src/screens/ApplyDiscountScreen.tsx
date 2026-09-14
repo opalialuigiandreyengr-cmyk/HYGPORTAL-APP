@@ -95,11 +95,10 @@ export function ApplyDiscountScreen({
     const purchaseAmount = productLines.reduce((sum, line) => {
       return sum + parseAmount(line.quantity) * parseAmount(line.unitPrice);
     }, 0);
-    const creditDiscountApplies = mode === 'charge' && !usage?.creditFirstDiscountUsed;
-    const discountAmount = mode === 'cash' || creditDiscountApplies ? purchaseAmount * 0.15 : 0;
+    const discountAmount = purchaseAmount * 0.15;
     const finalAmount = Math.max(purchaseAmount - discountAmount, 0);
-    return { purchaseAmount, discountAmount, finalAmount, creditDiscountApplies };
-  }, [mode, productLines, usage?.creditFirstDiscountUsed]);
+    return { purchaseAmount, discountAmount, finalAmount };
+  }, [productLines]);
 
   const activeProduct = productLines.find((line) => line.id === activeProductId) ?? null;
   const initialProductLine = {
@@ -405,7 +404,7 @@ export function ApplyDiscountScreen({
                 {mode === 'cash' ? 'Employee Discount (Cash)' : 'Employee Charge (Credit)'}
               </Text>
               <Text style={styles.cardSubtitle}>
-                {mode === 'cash' ? '15% off, PHP 3,000 yearly cap, max 6 transactions' : 'PHP 3,000 yearly cap, first credit gets 15% off'}
+                15% off, PHP 3,000 yearly cap, max 6 transactions
               </Text>
             </View>
           </View>
@@ -575,54 +574,56 @@ export function ApplyDiscountScreen({
 
       {activeProduct ? (
         <Modal transparent animationType="fade" visible onRequestClose={() => setActiveProductId(null)}>
-          <View style={styles.modalBackdrop}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalBackdrop}
+          >
             <Pressable style={styles.modalDismissArea} onPress={() => setActiveProductId(null)} />
-            <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-              keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
-              style={styles.keyboardSheetWrap}
-            >
-              <View style={styles.optionSheet}>
-                <View style={styles.sheetHandle} />
-                <Text style={styles.sheetTitle}>Select product</Text>
-                <TextInput
-                  value={productQuery}
-                  onChangeText={setProductQuery}
-                  placeholder="Search product..."
-                  placeholderTextColor={colors.muted}
-                  style={styles.productSearchInput}
-                  returnKeyType="search"
-                />
-                <ScrollView style={styles.optionList} contentContainerStyle={styles.optionListContent} showsVerticalScrollIndicator={false}>
-                  {filteredProducts.map((option) => {
-                    const selected = activeProduct.productName === option.name;
-                    return (
-                      <Pressable
-                        key={option.name}
-                        style={[styles.optionRow, selected ? styles.optionRowActive : null]}
-                        onPress={() => selectProduct(option)}
-                      >
-                        <View style={styles.optionTextBlock}>
-                          <Text style={[styles.optionText, selected ? styles.optionTextActive : null]} numberOfLines={2}>
-                            {option.name}
-                          </Text>
-                          {option.price > 0 ? <Text style={styles.optionMeta}>PHP {formatMoney(option.price)}</Text> : null}
-                        </View>
-                        {selected ? <Check size={18} color={colors.brand.goldStrong} strokeWidth={3} /> : null}
-                      </Pressable>
-                    );
-                  })}
-                  {!filteredProducts.length && !isLoadingProducts ? (
-                    <View style={styles.optionEmpty}>
-                      <Text style={styles.optionEmptyText}>
-                        {products.length ? 'No products match your search.' : 'No products available from inventory.'}
-                      </Text>
-                    </View>
-                  ) : null}
-                </ScrollView>
-              </View>
-            </KeyboardAvoidingView>
-          </View>
+            <View style={styles.optionSheet}>
+              <View style={styles.sheetHandle} />
+              <Text style={styles.sheetTitle}>Select product</Text>
+              <TextInput
+                value={productQuery}
+                onChangeText={setProductQuery}
+                placeholder="Search product..."
+                placeholderTextColor={colors.muted}
+                style={styles.productSearchInput}
+                returnKeyType="search"
+              />
+              <ScrollView
+                style={styles.optionList}
+                contentContainerStyle={styles.optionListContent}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
+                {filteredProducts.map((option) => {
+                  const selected = activeProduct.productName === option.name;
+                  return (
+                    <Pressable
+                      key={option.name}
+                      style={[styles.optionRow, selected ? styles.optionRowActive : null]}
+                      onPress={() => selectProduct(option)}
+                    >
+                      <View style={styles.optionTextBlock}>
+                        <Text style={[styles.optionText, selected ? styles.optionTextActive : null]} numberOfLines={2}>
+                          {option.name}
+                        </Text>
+                        {option.price > 0 ? <Text style={styles.optionMeta}>PHP {formatMoney(option.price)}</Text> : null}
+                      </View>
+                      {selected ? <Check size={18} color={colors.brand.goldStrong} strokeWidth={3} /> : null}
+                    </Pressable>
+                  );
+                })}
+                {!filteredProducts.length && !isLoadingProducts ? (
+                  <View style={styles.optionEmpty}>
+                    <Text style={styles.optionEmptyText}>
+                      {products.length ? 'No products match your search.' : 'No products available from inventory.'}
+                    </Text>
+                  </View>
+                ) : null}
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
         </Modal>
       ) : null}
     </View>
@@ -657,24 +658,20 @@ function ModeCard({
 }
 
 function UsagePanel({ mode, usage }: { mode: DiscountMode; usage: PerkUsage | null }) {
-  const cashUsed = usage?.cashAmountUsed ?? 0;
-  const cashLimit = usage?.cashAmountLimit ?? 3000;
-  const cashTransactions = usage?.cashTransactionsUsed ?? 0;
-  const cashTransactionLimit = usage?.cashTransactionsLimit ?? 6;
-  const creditUsed = usage?.creditAmountUsed ?? 0;
-  const creditLimit = usage?.creditAmountLimit ?? 3000;
-  const creditTransactions = usage?.creditTransactionsUsed ?? 0;
-  const creditDiscountUsed = usage?.creditFirstDiscountUsed ?? false;
+  const sharedDiscountUsed = usage?.sharedDiscountAmountUsed ?? ((usage?.cashAmountUsed ?? 0) + (usage?.creditAmountUsed ?? 0));
+  const sharedDiscountLimit = usage?.sharedDiscountAmountLimit ?? 3000;
+  const sharedTransactions = usage?.sharedDiscountTransactionsUsed ?? ((usage?.cashTransactionsUsed ?? 0) + (usage?.creditTransactionsUsed ?? 0));
+  const sharedTransactionLimit = usage?.sharedDiscountTransactionsLimit ?? 6;
 
   return (
     <View style={styles.usagePanel}>
       <UsageRow
-        label={mode === 'cash' ? 'Yearly cash cap used' : 'Yearly credit cap used'}
-        value={mode === 'cash' ? `PHP ${formatMoney(cashUsed)} / ${formatMoney(cashLimit)}` : `PHP ${formatMoney(creditUsed)} / ${formatMoney(creditLimit)}`}
+        label="Yearly 15% discount cap used"
+        value={`PHP ${formatMoney(sharedDiscountUsed)} / ${formatMoney(sharedDiscountLimit)}`}
       />
       <UsageRow
-        label={mode === 'cash' ? 'Cash transactions used' : 'First credit discount'}
-        value={mode === 'cash' ? `${cashTransactions} / ${cashTransactionLimit} this year` : `${creditDiscountUsed ? 'Used' : 'Available'} • ${creditTransactions} transaction(s)`}
+        label="Discount transactions used"
+        value={`${sharedTransactions} / ${sharedTransactionLimit} this year`}
       />
     </View>
   );
@@ -1241,10 +1238,10 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.heavy,
   },
   optionSheet: {
-    maxHeight: '82%',
+    maxHeight: '85%',
     backgroundColor: colors.surface,
-    borderTopLeftRadius: 8,
-    borderTopRightRadius: 8,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
     paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
     paddingBottom: spacing.md,
@@ -1281,7 +1278,8 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   optionList: {
-    maxHeight: 420,
+    maxHeight: 360,
+    flexShrink: 1,
   },
   optionListContent: {
     paddingBottom: spacing.xs,
