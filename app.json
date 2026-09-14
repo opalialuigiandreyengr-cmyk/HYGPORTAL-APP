@@ -2,7 +2,7 @@
   "expo": {
     "name": "HYG Portal",
     "slug": "hyg-portal",
-    "version": "1.5.6",
+    "version": "1.5.7",
     "orientation": "portrait",
     "icon": "./assets/hygapplogo.png",
     "userInterfaceStyle": "light",
@@ -22,7 +22,7 @@
     },
     "android": {
       "package": "com.hyg.portal",
-      "versionCode": 20,
+      "versionCode": 23,
       "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
