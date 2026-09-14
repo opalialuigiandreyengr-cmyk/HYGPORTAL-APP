@@ -3509,7 +3509,16 @@ function SettingsTabScreen({
 
   async function handleDownloadUpdate() {
     setAppUpdateState((current) => ({ ...current, status: 'downloading', message: 'Downloading update...' }));
-    setAppUpdateState(await downloadAppUpdate());
+    setAppUpdateState(await downloadAppUpdate((progress) => {
+      setAppUpdateState((current) => ({
+        ...current,
+        status: 'downloading',
+        message: `Downloading update... ${Math.round(progress.percent * 100)}%`,
+        downloadProgress: progress.percent,
+        downloadedBytes: progress.downloadedBytes,
+        totalBytes: progress.totalBytes,
+      }));
+    }));
   }
 
   async function handleRestartForUpdate() {
@@ -3603,6 +3612,30 @@ function SettingsTabScreen({
               </View>
             </View>
             <Text style={styles.settingsBiometricHint}>{appUpdateState.message}</Text>
+            {isDownloadingUpdate ? (
+              <View
+                style={styles.settingsDownloadProgress}
+                accessibilityRole="progressbar"
+                accessibilityValue={{
+                  min: 0,
+                  max: 100,
+                  now: Math.round((appUpdateState.downloadProgress || 0) * 100),
+                }}
+              >
+                <View style={styles.settingsDownloadProgressTrack}>
+                  <View
+                    style={[
+                      styles.settingsDownloadProgressFill,
+                      { width: `${Math.max(0, Math.min(1, appUpdateState.downloadProgress || 0)) * 100}%` },
+                    ]}
+                  />
+                </View>
+                <Text style={styles.settingsDownloadProgressLabel}>
+                  {Math.round((appUpdateState.downloadProgress || 0) * 100)}%
+                  {appUpdateState.totalBytes ? ` • ${formatDownloadSize(appUpdateState.downloadedBytes || 0)} / ${formatDownloadSize(appUpdateState.totalBytes)}` : ''}
+                </Text>
+              </View>
+            ) : null}
             {shouldShowUpdateActions ? (
               <View style={styles.settingsUpdateActions}>
                 <Pressable
@@ -3642,6 +3675,11 @@ function SettingsTabScreen({
       </ScrollView>
     </View>
   );
+}
+
+function formatDownloadSize(bytes: number) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
@@ -8957,6 +8995,26 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     marginTop: spacing.xs,
+  },
+  settingsDownloadProgress: {
+    marginTop: spacing.sm,
+    gap: 4,
+  },
+  settingsDownloadProgressTrack: {
+    height: 8,
+    borderRadius: 4,
+    overflow: 'hidden',
+    backgroundColor: '#dcfce7',
+  },
+  settingsDownloadProgressFill: {
+    height: '100%',
+    borderRadius: 4,
+    backgroundColor: colors.semantic.success,
+  },
+  settingsDownloadProgressLabel: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '700',
   },
   settingsUpdatePill: {
     minWidth: 52,

@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 
-export const NATIVE_APP_VERSION = '1.5.6';
+export const NATIVE_APP_VERSION = '1.5.7';
 
 export type AppUpdateStatus =
   | 'unsupported'
@@ -21,6 +21,9 @@ export type AppUpdateState = {
   currentUpdateId?: string | null;
   channel?: string | null;
   runtimeVersion?: string | null;
+  downloadProgress?: number;
+  downloadedBytes?: number;
+  totalBytes?: number;
 };
 
 export function getInitialAppUpdateState(): AppUpdateState {
@@ -92,7 +95,9 @@ export async function checkForAppUpdate(): Promise<AppUpdateState> {
   }
 }
 
-export async function downloadAppUpdate(): Promise<AppUpdateState> {
+export async function downloadAppUpdate(
+  onProgress?: (progress: { percent: number; downloadedBytes: number; totalBytes: number }) => void,
+): Promise<AppUpdateState> {
   if (Platform.OS !== 'android') {
     return getInitialAppUpdateState();
   }
@@ -114,7 +119,25 @@ export async function downloadAppUpdate(): Promise<AppUpdateState> {
       await FileSystem.deleteAsync(localUri, { idempotent: true });
     }
 
-    const { uri } = await FileSystem.downloadAsync(apkUrl, localUri);
+    const download = FileSystem.createDownloadResumable(
+      apkUrl,
+      localUri,
+      {},
+      (progress) => {
+        const totalBytes = progress.totalBytesExpectedToWrite;
+        const downloadedBytes = progress.totalBytesWritten;
+        onProgress?.({
+          percent: totalBytes > 0 ? downloadedBytes / totalBytes : 0,
+          downloadedBytes,
+          totalBytes,
+        });
+      },
+    );
+    const result = await download.downloadAsync();
+    if (!result) {
+      throw new Error('The APK download was interrupted. Please try again.');
+    }
+    const { uri } = result;
 
     // Validate that the downloaded file is a real binary APK (not an HTML 404 error page)
     const downloadedInfo = await FileSystem.getInfoAsync(uri);
@@ -129,6 +152,9 @@ export async function downloadAppUpdate(): Promise<AppUpdateState> {
       checkedAt: new Date().toISOString(),
       currentUpdateId: uri,
       runtimeVersion: data.version,
+      downloadProgress: 1,
+      downloadedBytes: downloadedInfo.size || 0,
+      totalBytes: downloadedInfo.size || 0,
     };
   } catch (error) {
     return {
