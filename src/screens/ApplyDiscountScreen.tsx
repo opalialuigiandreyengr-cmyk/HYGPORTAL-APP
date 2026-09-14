@@ -63,6 +63,7 @@ export function ApplyDiscountScreen({
   const [mode, setMode] = useState<DiscountMode>(initialDraft?.fields.mode ?? 'cash');
   const [transactionDate, setTransactionDate] = useState(initialDraft?.fields.transactionDate ?? today);
   const [activePicker, setActivePicker] = useState(false);
+  const [showPerksNotes, setShowPerksNotes] = useState(false);
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
   const [activeProductId, setActiveProductId] = useState<string | null>(null);
   const [productQuery, setProductQuery] = useState('');
@@ -355,6 +356,8 @@ export function ApplyDiscountScreen({
         notificationCount={notificationCount}
         onBackHome={() => confirmDiscard(onBack)}
         backTitle="Apply Perks"
+        backAccessory="info"
+        onBackAccessory={() => setShowPerksNotes(true)}
         onMessages={onAssistant ? () => confirmDiscard(onAssistant) : undefined}
         onNotifications={onNotifications ? () => confirmDiscard(onNotifications) : undefined}
       />
@@ -573,6 +576,51 @@ export function ApplyDiscountScreen({
         />
       ) : null}
 
+      {/* Perks Guidelines / Information Notes Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={showPerksNotes}
+        onRequestClose={() => setShowPerksNotes(false)}
+      >
+        <View style={styles.notesBackdrop}>
+          <View style={styles.notesPanel}>
+            <View style={styles.notesHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.notesTitle}>Perks Guidelines</Text>
+                <Text style={styles.notesSubtitle}>Important information for employee discounts & charges.</Text>
+              </View>
+              <Pressable style={styles.notesCloseButton} onPress={() => setShowPerksNotes(false)} hitSlop={8}>
+                <X size={18} color={colors.text} strokeWidth={2.6} />
+              </Pressable>
+            </View>
+
+            <ScrollView style={styles.notesListScroll} showsVerticalScrollIndicator={false}>
+              <View style={styles.notesList}>
+                {perksGuidelinesNotes.map((note, index) => (
+                  <View key={note.title} style={styles.timelineNoteRow}>
+                    <View style={styles.timelineMarkerColumn}>
+                      <View style={styles.timelineDot} />
+                      {index < perksGuidelinesNotes.length - 1 ? <View style={styles.timelineLine} /> : null}
+                    </View>
+                    <View style={styles.timelineNoteContent}>
+                      <Text style={styles.timelineNoteTitle}>{note.title}</Text>
+                      <Text style={styles.timelineNoteText}>{note.description}</Text>
+                    </View>
+                  </View>
+                ))}
+                <View style={styles.deadlineNote}>
+                  <CalendarDays size={16} color="#b45309" strokeWidth={2.6} />
+                  <Text style={styles.deadlineNoteText}>
+                    Employee charge transactions are processed and deducted on the corresponding payroll cutoff period.
+                  </Text>
+                </View>
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
       {activeProduct ? (
         <Modal transparent animationType="fade" visible onRequestClose={() => setActiveProductId(null)}>
           <View style={styles.modalBackdrop}>
@@ -706,6 +754,29 @@ function parseAmount(value: string) {
   const parsed = Number(value.replace(',', '.'));
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
+const perksGuidelinesNotes = [
+  {
+    title: 'Employee Discount (Cash)',
+    description: 'Enjoy 15% discount on store purchases when paying in cash. Limited to a PHP 3,000 yearly discount cap and a maximum of 6 transactions per calendar year.',
+  },
+  {
+    title: 'Employee Charge (Salary Deduction)',
+    description: 'Purchase store items on credit deducted from your upcoming salary. Subject to a PHP 3,000 yearly credit cap. Your first credit transaction of the year also receives a 15% discount!',
+  },
+  {
+    title: 'Approval Code Verification',
+    description: 'Submitting a perk request sends a 6-digit approval code to your company email. Enter the code in the app to immediately authorize and complete the request.',
+  },
+  {
+    title: 'Live Store Inventory',
+    description: 'Select products directly from live store inventory with verified unit prices. You can add multiple product lines in a single transaction.',
+  },
+  {
+    title: 'E-Receipt & Payroll Settlement',
+    description: 'Upon verification, an official e-receipt is generated and emailed to you. Charge purchases are settled through regular payroll deductions.',
+  },
+];
 
 function formatMoney(value: number) {
   return value.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1342,5 +1413,120 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontWeight: fontWeights.medium,
     textAlign: 'center',
+  },
+  notesBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(7, 20, 38, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.md,
+  },
+  notesPanel: {
+    width: '100%',
+    maxWidth: 440,
+    maxHeight: '85%',
+    borderRadius: radius.lg,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.lg,
+  },
+  notesHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  notesTitle: {
+    color: colors.text,
+    fontSize: 20,
+    lineHeight: 25,
+    fontWeight: fontWeights.heavy,
+  },
+  notesSubtitle: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 19,
+    marginTop: 2,
+  },
+  notesCloseButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notesListScroll: {
+    maxHeight: 480,
+  },
+  notesList: {
+    gap: 0,
+    paddingTop: 4,
+  },
+  timelineNoteRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    minHeight: 44,
+  },
+  timelineMarkerColumn: {
+    width: 18,
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    marginRight: 8,
+  },
+  timelineDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: colors.brand.goldStrong,
+    backgroundColor: colors.surface,
+    marginTop: 5,
+  },
+  timelineLine: {
+    flex: 1,
+    width: 1,
+    backgroundColor: '#e2e8f0',
+    marginTop: 3,
+  },
+  timelineNoteContent: {
+    flex: 1,
+    paddingBottom: 14,
+  },
+  timelineNoteTitle: {
+    color: '#0f172a',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: fontWeights.heavy,
+    marginBottom: 2,
+  },
+  timelineNoteText: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: fontWeights.medium,
+  },
+  deadlineNote: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    backgroundColor: '#fffbeb',
+    padding: spacing.md,
+    marginTop: spacing.xs,
+  },
+  deadlineNoteText: {
+    flex: 1,
+    color: '#b45309',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: fontWeights.medium,
+  },
+  deadlineStrong: {
+    fontWeight: fontWeights.heavy,
   },
 });

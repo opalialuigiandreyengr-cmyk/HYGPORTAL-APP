@@ -14,8 +14,110 @@ export function isAutoApprovedBirthdayGrant(item: MyRequest | null | undefined):
     item.reason === 'Auto-approved Birthday Leave Grant' ||
     item.leave_category === 'Birthday Leave Grant' ||
     (item.approval_summary?.[0]?.approver_name === 'HYG Portal System' &&
-      (item.leave_category === 'Birthday Leave' || item.leave_category === 'Birthday Leave Grant'))
+      (item.leave_category === 'Birthday Leave' || item.leave_category === 'Birthday Leave Grant')) ||
+    (item.leave_category === 'Birthday Leave' &&
+      item.status === 'approved' &&
+      (item.total_days === 1 || (item.paid_days === 1 && (item.unpaid_days ?? 0) === 0)))
   );
+}
+
+export type BirthdayVerificationResult = {
+  isVerified: boolean;
+  birthdayThisYear?: string;
+  monthDay?: string;
+  reason?: 'NO_BIRTHDATE' | 'NO_DATE' | 'DATE_MISMATCH' | 'VALID';
+  message?: string;
+};
+
+/**
+ * Accurately extracts the month and day (MM-DD) from a birthDate string.
+ * Supports "YYYY-MM-DD", "YYYY-MM-DDTHH:mm:ss", "MM-DD", etc.
+ */
+export function parseBirthMonthDay(
+  birthDate: string | null | undefined,
+): { month: string; day: string; monthDay: string } | null {
+  if (!birthDate || birthDate.trim().length < 4) return null;
+  const clean = birthDate.trim();
+
+  // Match YYYY-MM-DD
+  const ymdMatch = clean.match(/^\d{4}-(\d{2})-(\d{2})/);
+  if (ymdMatch) {
+    return { month: ymdMatch[1], day: ymdMatch[2], monthDay: `${ymdMatch[1]}-${ymdMatch[2]}` };
+  }
+
+  // Match MM-DD
+  const mdMatch = clean.match(/^(\d{2})-(\d{2})/);
+  if (mdMatch) {
+    return { month: mdMatch[1], day: mdMatch[2], monthDay: `${mdMatch[1]}-${mdMatch[2]}` };
+  }
+
+  // Fallback: Date constructor
+  const d = new Date(clean);
+  if (!isNaN(d.getTime())) {
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return { month: m, day, monthDay: `${m}-${day}` };
+  }
+
+  return null;
+}
+
+/**
+ * Verify whether a chosen date or date range covers the employee's birthday.
+ */
+export function verifyEmployeeBirthday(
+  dateFrom: string,
+  dateTo: string,
+  birthDate: string | null | undefined,
+): BirthdayVerificationResult {
+  const parsed = parseBirthMonthDay(birthDate);
+  if (!parsed) {
+    return {
+      isVerified: false,
+      reason: 'NO_BIRTHDATE',
+      message: 'Birth date is not recorded on your profile. Please contact HR to update your birth date.',
+    };
+  }
+
+  const monthDay = parsed.monthDay;
+  const startYear = dateFrom ? dateFrom.slice(0, 4) : String(new Date().getFullYear());
+  const endYear = dateTo ? dateTo.slice(0, 4) : startYear;
+  const birthdayStartYear = `${startYear}-${monthDay}`;
+  const birthdayEndYear = `${endYear}-${monthDay}`;
+
+  if (!dateFrom || !dateTo) {
+    return {
+      isVerified: false,
+      birthdayThisYear: birthdayStartYear,
+      monthDay,
+      reason: 'NO_DATE',
+      message: 'Please set the date range for your Birthday Leave.',
+    };
+  }
+
+  // Check if birthday falls between dateFrom and dateTo (inclusive)
+  const isCovered =
+    (birthdayStartYear >= dateFrom && birthdayStartYear <= dateTo) ||
+    (birthdayEndYear >= dateFrom && birthdayEndYear <= dateTo) ||
+    dateFrom.slice(5, 10) === monthDay ||
+    dateTo.slice(5, 10) === monthDay;
+
+  if (!isCovered) {
+    return {
+      isVerified: false,
+      birthdayThisYear: birthdayStartYear,
+      monthDay,
+      reason: 'DATE_MISMATCH',
+      message: `Selected date does not cover your birthday (${monthDay}). Birthday Leave must include your birthday.`,
+    };
+  }
+
+  return {
+    isVerified: true,
+    birthdayThisYear: birthdayStartYear,
+    monthDay,
+    reason: 'VALID',
+  };
 }
 
 export async function ensureBirthdayLeaveGrant(
@@ -38,9 +140,9 @@ export async function ensureBirthdayLeaveGrant(
 
   // 2. Format dates using the CURRENT YEAR, not the birth year
   let birthdayThisYearStr = formatDateInput(new Date());
-  if (profile?.birthDate && profile.birthDate.length >= 10) {
-    const monthDay = profile.birthDate.slice(5, 10);
-    birthdayThisYearStr = `${currentYear}-${monthDay}`;
+  const parsed = parseBirthMonthDay(profile?.birthDate);
+  if (parsed) {
+    birthdayThisYearStr = `${currentYear}-${parsed.monthDay}`;
   }
 
   // 3. Create the auto-approved Birthday Leave request object
@@ -97,7 +199,6 @@ export async function ensureBirthdayLeaveGrant(
       p_reason: 'Auto-approved Birthday Leave Grant',
     });
     if (error) {
-      // Ignore if function missing or missing permission, local record persists
       console.warn('Auto Birthday Leave DB sync notice:', error.message);
     }
   } catch (err) {
@@ -118,7 +219,7 @@ export async function getBirthdayLeaveGrantForCurrentYear(
   return getCacheJSON<MyRequest>(recordCacheKey);
 }
 
-async function mergeIntoMyRequestsCache(bdayRequest: MyRequest) {
+export async function mergeIntoMyRequestsCache(bdayRequest: MyRequest) {
   const cachedRequests = (await getCacheJSON<MyRequest[]>(MY_REQUESTS_CACHE_KEY)) ?? [];
   const exists = cachedRequests.some(
     (req) =>

@@ -6,6 +6,7 @@ type DateRangePickerModalProps = {
   visible: boolean;
   initialStartDate?: string; // YYYY-MM-DD
   initialEndDate?: string;   // YYYY-MM-DD
+  allowFutureDates?: boolean;
   onApply: (startDate: string, endDate: string) => void;
   onClose: () => void;
 };
@@ -41,13 +42,14 @@ export function DateRangePickerModal({
   visible,
   initialStartDate = '',
   initialEndDate = '',
+  allowFutureDates = false,
   onApply,
   onClose,
 }: DateRangePickerModalProps) {
   const todayObj = useMemo(() => new Date(), []);
   const todayStr = useMemo(() => formatYMD(todayObj), [todayObj]);
-  const maxYear = todayObj.getFullYear();
-  const maxMonth = todayObj.getMonth();
+  const maxYear = allowFutureDates ? todayObj.getFullYear() + 2 : todayObj.getFullYear();
+  const maxMonth = allowFutureDates ? 11 : todayObj.getMonth();
 
   const initialDateObj = parseYMD(initialStartDate) || todayObj;
   const [currentYear, setCurrentYear] = useState(initialDateObj.getFullYear());
@@ -114,8 +116,8 @@ export function DateRangePickerModal({
 
   const handleDaySelect = (dateStr: string) => {
     setWarningMsg('');
-    // Only past or current days can be selected
-    if (dateStr > todayStr) return;
+    // Only past or current days can be selected if future dates not allowed
+    if (!allowFutureDates && dateStr > todayStr) return;
 
     if (!startDateStr || (startDateStr && endDateStr)) {
       setStartDateStr(dateStr);
@@ -234,6 +236,7 @@ export function DateRangePickerModal({
           <View style={styles.grid}>
             {daysInMonth.map((item, idx) => {
               const isFuture = item.dateStr > todayStr;
+              const isFutureDisabled = !allowFutureDates && isFuture;
               const isStart = item.dateStr === startDateStr;
               const isEnd = item.dateStr === endDateStr;
               const isInRange =
@@ -246,7 +249,7 @@ export function DateRangePickerModal({
               return (
                 <Pressable
                   key={`${item.dateStr}-${idx}`}
-                  disabled={isFuture}
+                  disabled={isFutureDisabled}
                   style={[
                     styles.dayCell,
                     isInRange ? styles.inRangeCell : null,
@@ -265,7 +268,7 @@ export function DateRangePickerModal({
                       style={[
                         styles.dayText,
                         !item.isCurrentMonth ? styles.dimmedText : null,
-                        isFuture ? styles.futureDayText : null,
+                        isFutureDisabled ? styles.futureDayText : null,
                         isToday && !isStart && !isEnd ? styles.todayText : null,
                         isStart || isEnd ? styles.activeDayText : null,
                       ]}

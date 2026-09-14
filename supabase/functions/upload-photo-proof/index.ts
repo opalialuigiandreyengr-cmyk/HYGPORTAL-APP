@@ -101,6 +101,42 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
+
+    // Handle Delete Action
+    if (body.action === 'delete' || req.method === 'DELETE' || (body.driveFileId && !body.photoBase64)) {
+      const fileIdToDelete = body.driveFileId || body.fileId;
+      if (!fileIdToDelete) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'No driveFileId provided for deletion' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const token = await getGoogleAccessToken();
+      if (!token) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'Failed to obtain Google access token' }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const delRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileIdToDelete}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const isSuccess = delRes.ok || delRes.status === 204 || delRes.status === 404;
+      return new Response(
+        JSON.stringify({
+          success: isSuccess,
+          deleted: isSuccess,
+          status: delRes.status,
+          driveFileId: fileIdToDelete,
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
     const {
       photoBase64,
       employeeName = 'Employee',

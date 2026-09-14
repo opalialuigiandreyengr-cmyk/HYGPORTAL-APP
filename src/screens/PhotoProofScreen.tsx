@@ -13,7 +13,7 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { ChevronLeft, Info, RefreshCw, SwitchCamera, FlipHorizontal, X, Check, Eye, Pencil, MapPin, Images, Zap, ZapOff } from 'lucide-react-native';
+import { ChevronLeft, Info, RefreshCw, SwitchCamera, X, Check, Eye, Pencil, MapPin, Images, Zap, ZapOff } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -37,6 +37,118 @@ type Props = {
   userStoreName?: string | null;
 };
 
+function drawWatermarkOnCanvas(
+  ctx: any,
+  w: number,
+  h: number,
+  data: {
+    timeDigits: string;
+    timePeriod: string;
+    dateFormatted: string;
+    dayFormatted: string;
+    locationText: string;
+  }
+) {
+  try {
+    const scale = Math.max(1, w / 400);
+    const padX = Math.round(20 * scale);
+    const btmY = h - Math.round(24 * scale);
+
+    // Subtle dark gradient at bottom for maximum readability against bright scenes
+    const gradH = Math.round(h * 0.35);
+    const grad = ctx.createLinearGradient(0, h - gradH, 0, h);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(0.5, 'rgba(0,0,0,0.25)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.75)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, h - gradH, w, gradH);
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+    ctx.shadowBlur = Math.round(4 * scale);
+    ctx.shadowOffsetX = 1 * scale;
+    ctx.shadowOffsetY = 1 * scale;
+
+    // Location text wrapping
+    const locFontSize = Math.round(15 * scale);
+    const locLineHeight = Math.round(19 * scale);
+    ctx.font = `500 ${locFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+    ctx.fillStyle = '#ffffff';
+
+    const maxLocWidth = w - padX * 2;
+    const words = (data.locationText || '').split(' ');
+    const lines: string[] = [];
+    let curLine = '';
+    for (const word of words) {
+      const test = curLine ? `${curLine} ${word}` : word;
+      if (ctx.measureText(test).width > maxLocWidth && curLine) {
+        lines.push(curLine);
+        curLine = word;
+      } else {
+        curLine = test;
+      }
+    }
+    if (curLine) lines.push(curLine);
+    const displayLines = lines.slice(0, 4);
+
+    let curY = btmY;
+    for (let i = displayLines.length - 1; i >= 0; i--) {
+      ctx.fillText(displayLines[i], padX, curY);
+      curY -= locLineHeight;
+    }
+
+    // Time & Period row above location
+    curY -= Math.round(8 * scale);
+    const timeFontSize = Math.round(42 * scale);
+    const periodFontSize = Math.round(22 * scale);
+    const dateFontSize = Math.round(16 * scale);
+    const dayFontSize = Math.round(14 * scale);
+
+    ctx.font = `300 ${timeFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+    ctx.fillStyle = '#ffffff';
+    const timeDigits = data.timeDigits || '';
+    ctx.fillText(timeDigits, padX, curY);
+    const timeWidth = ctx.measureText(timeDigits).width;
+
+    ctx.font = `bold ${periodFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+    ctx.fillStyle = '#facc15';
+    const periodX = padX + timeWidth + Math.round(4 * scale);
+    ctx.fillText(data.timePeriod || '', periodX, curY);
+    const periodWidth = ctx.measureText(data.timePeriod || '').width;
+
+    // Divider
+    const divX = periodX + periodWidth + Math.round(10 * scale);
+    const divTop = curY - Math.round(34 * scale);
+    const divBottom = curY + Math.round(4 * scale);
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
+    ctx.lineWidth = Math.max(2, Math.round(2 * scale));
+    ctx.beginPath();
+    ctx.moveTo(divX, divTop);
+    ctx.lineTo(divX, divBottom);
+    ctx.stroke();
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+    ctx.shadowBlur = Math.round(3 * scale);
+    ctx.shadowOffsetX = 1 * scale;
+    ctx.shadowOffsetY = 1 * scale;
+
+    // Date & Day
+    const dateX = divX + Math.round(10 * scale);
+    ctx.font = `600 ${dateFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(data.dateFormatted || '', dateX, curY - Math.round(16 * scale));
+
+    ctx.font = `500 ${dayFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+    ctx.fillText(data.dayFormatted || '', dateX, curY + Math.round(2 * scale));
+    ctx.restore();
+  } catch (err) {
+    console.warn('[PhotoProof] Watermark canvas overlay failed:', err);
+  }
+}
+
 export function PhotoProofScreen({
   onBack,
   onOpenPhotoLog,
@@ -47,7 +159,8 @@ export function PhotoProofScreen({
 }: Props) {
   const insets = useSafeAreaInsets();
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
-  const [isMirrored, setIsMirrored] = useState(false);
+  // Automatic mirroring: Front camera is automatically mirrored/flipped; Back camera is left as-is
+  const isMirrored = facingMode === 'user';
   const [capturedPhotoUri, setCapturedPhotoUri] = useState<string | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
   const [isRefreshingLocation, setIsRefreshingLocation] = useState(false);
@@ -238,13 +351,7 @@ export function PhotoProofScreen({
   }, [facingMode, startWebCamera]);
 
   const toggleFacingMode = () => {
-    const nextMode = facingMode === 'environment' ? 'user' : 'environment';
-    setFacingMode(nextMode);
-    setIsMirrored(nextMode === 'user');
-  };
-
-  const toggleMirror = () => {
-    setIsMirrored((prev) => !prev);
+    setFacingMode((prev) => (prev === 'environment' ? 'user' : 'environment'));
   };
 
   // Helper to detect if ambient webcam scene is low-light / dark (for Auto flash on web)
@@ -309,9 +416,11 @@ export function PhotoProofScreen({
     let didEnableTorch = false;
     let activeTorchTrack: MediaStreamTrack | null = null;
     try {
-      let finalPhotoUri = '';
+      let finalPhotoUri: string | null = null;
+      let capturedWidth: number | undefined;
+      let capturedHeight: number | undefined;
 
-      if (Platform.OS === 'web' && videoRef.current && isWebCameraReady) {
+      if (Platform.OS === 'web' && videoRef.current) {
         const video = videoRef.current;
 
         // If flash is triggered on web, strobe rear hardware torch (if supported) or hold screen flash
@@ -342,6 +451,8 @@ export function PhotoProofScreen({
         const vHeight = video.videoHeight || 1280;
         canvas.width = vWidth;
         canvas.height = vHeight;
+        capturedWidth = vWidth;
+        capturedHeight = vHeight;
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.save();
@@ -365,6 +476,13 @@ export function PhotoProofScreen({
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           }
           ctx.restore();
+          drawWatermarkOnCanvas(ctx, canvas.width, canvas.height, {
+            timeDigits: currentTimestamp.timeDigits,
+            timePeriod: currentTimestamp.timePeriod,
+            dateFormatted: currentTimestamp.dateFormatted,
+            dayFormatted: currentTimestamp.dayFormatted,
+            locationText: locationText || 'Tacloban City, 6500',
+          });
           finalPhotoUri = canvas.toDataURL('image/jpeg', 0.88);
         }
 
@@ -393,6 +511,8 @@ export function PhotoProofScreen({
         });
         if (photo?.uri) {
           let photoUri = photo.uri;
+          capturedWidth = photo.width;
+          capturedHeight = photo.height;
           if (isMirrored) {
             try {
               const manip = await manipulateAsync(
@@ -402,6 +522,10 @@ export function PhotoProofScreen({
               );
               if (manip?.uri) {
                 photoUri = manip.uri;
+                if (manip.width && manip.height) {
+                  capturedWidth = manip.width;
+                  capturedHeight = manip.height;
+                }
               }
             } catch (flipErr) {
               console.warn('[PhotoProof] Image flip failed:', flipErr);
@@ -420,6 +544,8 @@ export function PhotoProofScreen({
 
         if (!result.canceled && result.assets[0]) {
           let photoUri = result.assets[0].uri;
+          capturedWidth = result.assets[0].width;
+          capturedHeight = result.assets[0].height;
           if (isMirrored) {
             try {
               const manip = await manipulateAsync(
@@ -429,6 +555,10 @@ export function PhotoProofScreen({
               );
               if (manip?.uri) {
                 photoUri = manip.uri;
+                if (manip.width && manip.height) {
+                  capturedWidth = manip.width;
+                  capturedHeight = manip.height;
+                }
               }
             } catch (flipErr) {
               console.warn('[PhotoProof] Image flip failed:', flipErr);
@@ -461,6 +591,8 @@ export function PhotoProofScreen({
         employeeName: employeeName || 'Employee',
         userEmail: userEmail || null,
         storeName: userStoreName,
+        imageWidth: capturedWidth,
+        imageHeight: capturedHeight,
       };
 
       console.log('[PhotoProof] Capturing photo proof for employee:', employeeName, 'id:', employeeId, 'store:', userStoreName);
@@ -497,7 +629,7 @@ export function PhotoProofScreen({
     }
   };
 
-  const shouldFlipNativeView = facingMode === 'user' ? !isMirrored : isMirrored;
+
 
   return (
     <View style={styles.container}>
@@ -567,10 +699,7 @@ export function PhotoProofScreen({
           <CameraView
             ref={nativeCameraRef}
             facing={facingMode === 'user' ? 'front' : 'back'}
-            style={[
-              styles.viewfinderMedia,
-              shouldFlipNativeView ? { transform: [{ scaleX: -1 }] } : null,
-            ]}
+            style={styles.viewfinderMedia}
             zoom={zoom}
             flash={
               facingMode === 'user' && flashMode === 'on'
@@ -633,27 +762,13 @@ export function PhotoProofScreen({
           </View>
         )}
 
-        {/* Viewfinder Top Controls - only visible during live capture, hidden in preview */}
-        {!capturedPhotoUri && (
-          <View style={styles.viewfinderTopBar}>
-            <Pressable
-              style={[styles.glassButton, isMirrored ? styles.glassButtonActive : null]}
-              onPress={toggleMirror}
-              hitSlop={8}
-            >
-              <FlipHorizontal size={18} color={isMirrored ? '#facc15' : '#ffffff'} strokeWidth={2.2} />
-            </Pressable>
-            <Pressable style={styles.glassButton} onPress={() => void refreshLocation()} disabled={isRefreshingLocation}>
-              <RefreshCw size={18} color="#ffffff" strokeWidth={2.2} />
-            </Pressable>
-          </View>
-        )}
+
 
 
 
         {/* Live Watermark Overlay (Bottom Left) */}
-        <View style={styles.watermarkContainer}>
-          <View style={styles.watermarkTimeRow}>
+        <View style={styles.watermarkContainer} pointerEvents="box-none">
+          <View style={styles.watermarkTimeRow} pointerEvents="none">
             <Text style={styles.watermarkTime}>
               {currentTimestamp.timeDigits}
               <Text style={styles.watermarkPeriod}> {currentTimestamp.timePeriod}</Text>

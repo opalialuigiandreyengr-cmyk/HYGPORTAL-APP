@@ -1574,6 +1574,7 @@ export default function App() {
             name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
             username={currentUsername}
             photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
+            birthDate={profileResult?.status === 'linked' ? profileResult.profile.birthDate : null}
             leaveCreditRemaining={dashboardSummary.leave_credit_remaining}
             initialDraft={assistantDraft?.intent === 'draft_leave_request' ? assistantDraft : null}
             editingRequest={editingRequest}

@@ -31,13 +31,17 @@ export function getLeaveBreakdown(leaveType: string, totalDays: number, paidValu
 export function getDisabledLeaveTypes(totalDays: number, leaveCreditRemaining: number) {
   const disabled: string[] = [];
 
-  if (totalDays <= 0 || leaveCreditRemaining <= 0) {
+  if (leaveCreditRemaining <= 0) {
     disabled.push('With Pay', 'Both');
     return disabled;
   }
 
-  if (totalDays > leaveCreditRemaining) {
+  if (totalDays > 0 && totalDays > leaveCreditRemaining) {
     disabled.push('With Pay');
+  }
+
+  if (totalDays === 1) {
+    disabled.push('Both');
   }
 
   return disabled;

@@ -24,6 +24,8 @@ export type PhotoProofItem = {
   driveFileId?: string | null;
   driveWebViewLink?: string | null;
   syncedToCloud?: boolean;
+  imageWidth?: number;
+  imageHeight?: number;
 };
 
 const PHOTO_PROOFS_KEY = 'hyg_photo_proofs_list';
@@ -634,6 +636,93 @@ export async function savePhotoProof(item: PhotoProofItem): Promise<void> {
   }
 }
 
+export function extractDriveFileId(uri?: string | null): string | null {
+  if (!uri || typeof uri !== 'string') return null;
+  // Match lh3.googleusercontent.com/d/<id>
+  const lh3Match = uri.match(/googleusercontent\.com\/d\/([a-zA-Z0-9_-]+)/);
+  if (lh3Match) return lh3Match[1];
+
+  // Match drive.google.com/file/d/<id>
+  const driveMatch = uri.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (driveMatch) return driveMatch[1];
+
+  // Match ?id=<id> or &id=<id>
+  const queryMatch = uri.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (queryMatch) return queryMatch[1];
+
+  // If it's already a raw Drive file ID (20-50 alphanumeric chars with hyphens/underscores)
+  if (/^[a-zA-Z0-9_-]{20,50}$/.test(uri)) {
+    return uri;
+  }
+
+  return null;
+}
+
+export async function deleteFromGoogleDrive(driveFileId: string): Promise<boolean> {
+  if (!driveFileId) return false;
+  console.log('[PhotoProofGDrive] Deleting file from Google Drive:', driveFileId);
+  let deleted = false;
+
+  // 1. Primary route: Delete via Google Apps Script (handles files uploaded to personal Google Drive)
+  const scriptUrl = env.photoProofScriptUrl;
+  if (scriptUrl) {
+    try {
+      console.log('[PhotoProofGDrive] Calling Google Apps Script delete action...');
+      const response = await fetch(scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'delete', driveFileId }),
+      });
+      const json = await response.json().catch(() => null);
+      console.log('[PhotoProofGDrive] Google Apps Script delete response:', json);
+      if (json?.success) {
+        console.log('[PhotoProofGDrive] Successfully deleted file via Google Apps Script:', driveFileId);
+        deleted = true;
+      }
+    } catch (scriptErr) {
+      console.warn('[PhotoProofGDrive] Google Apps Script deletion exception:', scriptErr);
+    }
+  }
+
+  // 2. Secondary route: Delete via Supabase Edge Function (Service Account credentials)
+  if (!deleted) {
+    try {
+      console.log('[PhotoProofGDrive] Calling Supabase Edge Function delete action...');
+      const { data: funcData, error: funcError } = await supabase.functions.invoke('upload-photo-proof', {
+        body: { action: 'delete', driveFileId },
+      });
+      console.log('[PhotoProofGDrive] Edge Function delete response:', { funcData, funcError });
+      if (!funcError && funcData?.success) {
+        console.log('[PhotoProofGDrive] Successfully deleted file via Edge Function:', driveFileId);
+        deleted = true;
+      }
+    } catch (edgeErr) {
+      console.warn('[PhotoProofGDrive] Edge function deletion exception:', edgeErr);
+    }
+  }
+
+  // 3. Fallback route: Direct Google Drive API (if environment supports crypto token generation)
+  if (!deleted) {
+    try {
+      const token = await generateGoogleAccessToken();
+      if (token) {
+        const res = await fetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok || res.status === 204 || res.status === 404) {
+          console.log('[PhotoProofGDrive] Successfully deleted file via direct Google Drive API:', driveFileId);
+          deleted = true;
+        }
+      }
+    } catch (gErr) {
+      console.warn('[PhotoProofGDrive] Direct Google Drive file deletion error:', gErr);
+    }
+  }
+
+  return deleted;
+}
+
 export async function deletePhotoProof(itemOrId: PhotoProofItem | string): Promise<void> {
   const id = typeof itemOrId === 'string' ? itemOrId : itemOrId.id;
   let targetItem: PhotoProofItem | undefined;
@@ -649,7 +738,8 @@ export async function deletePhotoProof(itemOrId: PhotoProofItem | string): Promi
     const updated = current.filter((p) => p.id !== id);
     await setCacheJSON(PHOTO_PROOFS_KEY, updated);
 
-    // 2. Delete from Supabase photo_proofs table
+    // 2. Delete from Supabase photo_proofs table and retrieve deleted row
+    let deletedDriveFileId: string | null = null;
     try {
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
       let res;
@@ -663,28 +753,30 @@ export async function deletePhotoProof(itemOrId: PhotoProofItem | string): Promi
       if (res?.error) {
         console.warn('Supabase delete photo_proof error:', res.error);
       }
-      if (res?.data && res.data.length === 0) {
+      if (res?.data && res.data.length > 0) {
+        deletedDriveFileId =
+          res.data[0].drive_file_id ||
+          extractDriveFileId(res.data[0].photo_url) ||
+          extractDriveFileId(res.data[0].drive_web_view_link);
+      } else if (res?.data && res.data.length === 0) {
         console.warn('[PhotoProofDelete] 0 rows deleted in Supabase. Check RLS DELETE policy on photo_proofs table.');
       }
     } catch (dbErr) {
       console.warn('Supabase delete photo_proof exception:', dbErr);
     }
 
-    // 3. Delete from Google Drive if file ID exists
-    const driveFileId = targetItem?.driveFileId || (typeof itemOrId === 'object' ? itemOrId.driveFileId : null);
+    // 3. Resolve Drive file ID from target item, deleted row, or URL regex
+    const driveFileId =
+      targetItem?.driveFileId ||
+      deletedDriveFileId ||
+      (typeof itemOrId === 'object' ? itemOrId.driveFileId : null) ||
+      extractDriveFileId(targetItem?.photoUri) ||
+      extractDriveFileId(targetItem?.driveWebViewLink);
+
     if (driveFileId) {
-      try {
-        const token = await generateGoogleAccessToken();
-        if (token) {
-          await fetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}`, {
-            method: 'DELETE',
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          console.log('[PhotoProofGDrive] Successfully deleted file from Google Drive:', driveFileId);
-        }
-      } catch (gErr) {
-        console.warn('Google Drive file deletion error:', gErr);
-      }
+      await deleteFromGoogleDrive(driveFileId);
+    } else {
+      console.log('[PhotoProofDelete] No Google Drive file ID found to delete for photo proof:', id);
     }
   } catch (err) {
     console.error('Failed to delete photo proof:', err);

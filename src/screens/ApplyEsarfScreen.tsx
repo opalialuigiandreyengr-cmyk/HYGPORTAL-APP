@@ -1950,24 +1950,29 @@ export function ApplyEsarfScreen({
                   </Pressable>
                 </View>
 
-                <View style={styles.notesList}>
-                  {submissionNotes.map((note, index) => (
-                    <View key={note} style={styles.timelineNoteRow}>
-                      <View style={styles.timelineMarkerColumn}>
-                        <View style={styles.timelineDot} />
-                        {index < submissionNotes.length - 1 ? <View style={styles.timelineLine} /> : null}
+                <ScrollView style={styles.notesListScroll} showsVerticalScrollIndicator={false}>
+                  <View style={styles.notesList}>
+                    {submissionNotes.map((note, index) => (
+                      <View key={note.title} style={styles.timelineNoteRow}>
+                        <View style={styles.timelineMarkerColumn}>
+                          <View style={styles.timelineDot} />
+                          {index < submissionNotes.length - 1 ? <View style={styles.timelineLine} /> : null}
+                        </View>
+                        <View style={styles.timelineNoteContent}>
+                          <Text style={styles.timelineNoteTitle}>{note.title}</Text>
+                          <Text style={styles.timelineNoteText}>{note.description}</Text>
+                        </View>
                       </View>
-                      <Text style={styles.timelineNoteText}>{note}</Text>
+                    ))}
+                    <View style={styles.deadlineNote}>
+                      <CalendarDays size={16} color="#b45309" strokeWidth={2.7} />
+                      <Text style={styles.deadlineNoteText}>
+                        Submit approved ESARF forms on or before the <Text style={styles.deadlineStrong}>5th</Text> and{' '}
+                        <Text style={styles.deadlineStrong}>20th</Text> for payroll inclusion.
+                      </Text>
                     </View>
-                  ))}
-                  <View style={styles.deadlineNote}>
-                    <CalendarDays size={16} color="#b45309" strokeWidth={2.7} />
-                    <Text style={styles.deadlineNoteText}>
-                      Submit approved ESARF forms on or before the <Text style={styles.deadlineStrong}>5th</Text> and{' '}
-                      <Text style={styles.deadlineStrong}>20th</Text>.
-                    </Text>
                   </View>
-                </View>
+                </ScrollView>
               </View>
             </View>
           </Modal>
@@ -1986,11 +1991,30 @@ export function ApplyEsarfScreen({
 }
 
 const submissionNotes = [
-  'Prepare two copies of the form for every payroll period.',
-  'Select the correct transaction type for each entry.',
-  'For FIO, record only the missed time-in or time-out.',
-  'Leave dates should exclude rest days and holidays.',
-  'Overnight overtime must be written on its actual date.',
+  {
+    title: 'Transaction Types',
+    description: 'Select the appropriate transaction type: Undertime (UT), Overtime (OT), Failure to In/Out (FIO), Official Business (OB), Offset Earn, or Use Offset.',
+  },
+  {
+    title: 'Failure to In/Out (FIO)',
+    description: 'Record only the specific punch missed (time-in or time-out). Do not file FIO for punches that were already registered on the biometric system.',
+  },
+  {
+    title: 'Overtime & Overnight Shifts',
+    description: 'Overnight overtime crossing midnight must be recorded under its shift start date or actual working hours. Managerial overtime follows company policy.',
+  },
+  {
+    title: 'Offset & Use Offset',
+    description: 'Offset hours must be earned and approved beforehand. When using offset, ensure your current balance is sufficient to cover the requested duration.',
+  },
+  {
+    title: 'Automatic Split',
+    description: 'If regular entries and Use Offset entries are combined in one form, the system automatically splits them into separate requests for approval routing.',
+  },
+  {
+    title: 'Approval & Lock Protection',
+    description: 'All entries require review and approval from your supervisor. Requests are temporarily locked from editing while an approver is actively viewing them.',
+  },
 ];
 
 function getSelectSheet(
@@ -2690,6 +2714,7 @@ const styles = StyleSheet.create({
   },
   underlineTextPlaceholder: {
     color: '#94a3b8',
+    fontWeight: 'normal',
   },
   underlineLabel: {
     color: '#334155',
@@ -2722,7 +2747,7 @@ const styles = StyleSheet.create({
     color: '#0f172a',
     fontSize: 14,
     lineHeight: 20,
-    fontWeight: '600',
+    fontWeight: 'normal',
     paddingHorizontal: 12,
     paddingVertical: 10,
     textAlignVertical: 'top',
@@ -3228,8 +3253,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  notesListScroll: {
+    maxHeight: 480,
+  },
   notesList: {
     gap: 0,
+    paddingTop: 4,
+  },
+  timelineNoteContent: {
+    flex: 1,
+    paddingBottom: 14,
+  },
+  timelineNoteTitle: {
+    color: '#0f172a',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: fontWeights.heavy,
+    marginBottom: 2,
   },
   timelineNoteRow: {
     flexDirection: 'row',
