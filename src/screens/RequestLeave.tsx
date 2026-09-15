@@ -746,7 +746,18 @@ const RequestLeave = ({
             );
 
             if (res?.error) {
-              throw new Error(res.error.message);
+              const isSingleDayBday = ent.leaveCategory === 'Birthday Leave' && tDays === 1;
+              if (
+                isSingleDayBday &&
+                res.error.message?.toLowerCase().includes('insufficient paid leave')
+              ) {
+                console.warn(
+                  'Birthday leave RPC credit check bypassed for auto-approved grant:',
+                  res.error.message,
+                );
+              } else {
+                throw new Error(res.error.message);
+              }
             }
             submittedIndices.current.add(i);
           }
@@ -801,7 +812,17 @@ const RequestLeave = ({
         );
 
         if (res?.error) {
-          throw new Error(res.error.message);
+          if (
+            isSingleDayBirthday &&
+            res.error.message?.toLowerCase().includes('insufficient paid leave')
+          ) {
+            console.warn(
+              'Birthday leave RPC credit check bypassed for auto-approved grant:',
+              res.error.message,
+            );
+          } else {
+            throw new Error(res.error.message);
+          }
         }
 
         const newReqId = res?.data ? String(res.data) : `bday_leave_${Date.now()}`;
@@ -1422,18 +1443,17 @@ const RequestLeave = ({
       </KeyboardAvoidingView>
 
       {/* Date Range Modal */}
-      <DateRangePickerModal
-        visible={activeDateChoiceIndex !== null}
-        allowFutureDates
-        initialStartDate={
-          activeDateChoiceIndex !== null ? entries[activeDateChoiceIndex]?.dateFrom : ''
-        }
-        initialEndDate={
-          activeDateChoiceIndex !== null ? entries[activeDateChoiceIndex]?.dateTo : ''
-        }
-        onApply={onApplyDateRange}
-        onClose={() => setActiveDateChoiceIndex(null)}
-      />
+      {activeDateChoiceIndex !== null ? (
+        <DateRangePickerModal
+          key={`leave-date-range-${activeDateChoiceIndex}-${entries[activeDateChoiceIndex]?.id || activeDateChoiceIndex}`}
+          visible={true}
+          allowFutureDates
+          initialStartDate={entries[activeDateChoiceIndex]?.dateFrom || ''}
+          initialEndDate={entries[activeDateChoiceIndex]?.dateTo || ''}
+          onApply={onApplyDateRange}
+          onClose={() => setActiveDateChoiceIndex(null)}
+        />
+      ) : null}
 
       {/* Select Option Modal */}
       {selectSheet ? (

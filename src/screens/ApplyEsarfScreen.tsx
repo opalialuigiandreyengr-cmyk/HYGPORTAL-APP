@@ -46,7 +46,15 @@ import { platformAlert } from '../utils/platformAlert';
 import { withTimeout } from '../utils/withTimeout';
 import type { RequestTypeCode } from '../types/domain';
 import { calculateRequestHours, parse12HourToken, parseDayOffList } from '../utils/requestCalculations';
-import { dateStringToDate, formatDateInput, formatTimeDisplay, formatTimeInput, timeStringToDate } from '../utils/dateTime';
+import {
+  dateStringToDate,
+  formatDateInput,
+  formatTimeDisplay,
+  formatTimeInput,
+  getDaysBetweenYMD,
+  isValidEsarfDateRange,
+  timeStringToDate,
+} from '../utils/dateTime';
 
 export type EsarfEntry = {
   id: string;
@@ -57,6 +65,7 @@ export type EsarfEntry = {
   timeTo: string;
   reason: string;
 };
+
 
 type ValidationKey =
   | 'schedule'
@@ -531,6 +540,7 @@ export function ApplyEsarfScreen({
     return calculateRequestHours({
       requestType,
       dateFrom: entry.dateFrom,
+      dateTo: entry.dateTo,
       timeFrom: entry.timeFrom,
       timeTo: entry.timeTo,
       timeSchedule: schedule === NO_SCHEDULE_LABEL ? '' : schedule,
@@ -557,22 +567,30 @@ export function ApplyEsarfScreen({
     if (kind === 'date_from') {
       const val = formatDateInput(selectedDate);
       const currentTo = entries[index]?.dateTo;
-      const nextTo = currentTo && dateStringToDate(currentTo).getTime() >= dateStringToDate(val).getTime() ? currentTo : val;
+      let nextTo = currentTo && dateStringToDate(currentTo).getTime() >= dateStringToDate(val).getTime() ? currentTo : val;
+      if (getDaysBetweenYMD(val, nextTo) > 1) {
+        nextTo = val;
+      }
       updateEntry(index, { dateFrom: val, dateTo: nextTo });
       setValidationErrors((current) => ({
         ...current,
         [`entry_${index}_dateFrom`]: undefined,
         [`entry_${index}_dateTo`]: undefined,
+        multi_entry_dates: undefined,
       }));
     } else if (kind === 'date_to') {
       const val = formatDateInput(selectedDate);
       const currentFrom = entries[index]?.dateFrom;
-      const nextFrom = currentFrom && dateStringToDate(currentFrom).getTime() <= dateStringToDate(val).getTime() ? currentFrom : val;
+      let nextFrom = currentFrom && dateStringToDate(currentFrom).getTime() <= dateStringToDate(val).getTime() ? currentFrom : val;
+      if (getDaysBetweenYMD(nextFrom, val) > 1) {
+        nextFrom = val;
+      }
       updateEntry(index, { dateFrom: nextFrom, dateTo: val });
       setValidationErrors((current) => ({
         ...current,
         [`entry_${index}_dateFrom`]: undefined,
         [`entry_${index}_dateTo`]: undefined,
+        multi_entry_dates: undefined,
       }));
     } else if (kind === 'time_from') {
       updateEntry(index, { timeFrom: formatTimeInput(selectedDate) });
@@ -771,8 +789,13 @@ export function ApplyEsarfScreen({
       }
       if (!entry.dateFrom) errors[`entry_${i}_dateFrom`] = `Request #${num}: Date From is required.`;
       if (!entry.dateTo) errors[`entry_${i}_dateTo`] = `Request #${num}: Date To is required.`;
-      if (entry.dateFrom && entry.dateTo && dateStringToDate(entry.dateTo).getTime() < dateStringToDate(entry.dateFrom).getTime()) {
-        errors[`entry_${i}_dateTo`] = `Request #${num}: Date To cannot be earlier than Date From.`;
+      if (entry.dateFrom && entry.dateTo) {
+        const diff = getDaysBetweenYMD(entry.dateFrom, entry.dateTo);
+        if (diff < 0) {
+          errors[`entry_${i}_dateTo`] = `Request #${num}: Date To cannot be earlier than Date From.`;
+        } else if (diff > 1) {
+          errors[`entry_${i}_dateTo`] = `Request #${num}: ESARF date range can only be for a single day or two consecutive days (e.g., overnight overtime).`;
+        }
       }
       if (!entry.timeFrom) errors[`entry_${i}_timeFrom`] = `Request #${num}: Time From is required.`;
       if (!entry.timeTo) errors[`entry_${i}_timeTo`] = `Request #${num}: Time To is required.`;
@@ -788,6 +811,20 @@ export function ApplyEsarfScreen({
       }
       if (!entry.reason.trim()) errors[`entry_${i}_reason`] = `Request #${num}: Reason is required.`;
     });
+
+    if (entries.length > 1) {
+      const validDatesFrom = entries.map((e) => e.dateFrom).filter(Boolean);
+      const validDatesTo = entries.map((e) => e.dateTo || e.dateFrom).filter(Boolean);
+      if (validDatesFrom.length > 0 && validDatesTo.length > 0) {
+        const sortedFrom = [...validDatesFrom].sort();
+        const sortedTo = [...validDatesTo].sort();
+        const minFrom = sortedFrom[0];
+        const maxTo = sortedTo[sortedTo.length - 1];
+        if (getDaysBetweenYMD(minFrom, maxTo) > 1) {
+          errors.multi_entry_dates = 'All entries in an ESARF request must fall within a single day or two consecutive days.';
+        }
+      }
+    }
 
     if (editingRequest) {
       const hasRegular = entries.some((e) => !parseEntryTransactions(e.transaction).includes('use_offset'));
@@ -1366,7 +1403,10 @@ export function ApplyEsarfScreen({
                       <Pressable
                         style={[
                           styles.underlineBox,
-                          validationErrors[`entry_${actualIndex}_dateFrom`] ? styles.inputError : null,
+                          validationErrors[`entry_${actualIndex}_dateFrom`] ||
+                          validationErrors[`entry_${actualIndex}_dateTo`]
+                            ? styles.inputError
+                            : null,
                         ]}
                         onPress={() => setActiveDateChoiceIndex(actualIndex)}
                       >
@@ -1382,8 +1422,12 @@ export function ApplyEsarfScreen({
                         <CalendarDays size={16} color="#64748b" strokeWidth={2} />
                       </Pressable>
                       <Text style={styles.underlineLabel}>Date From-To</Text>
-                      {validationErrors[`entry_${actualIndex}_dateFrom`] ? (
-                        <Text style={styles.fieldError}>{validationErrors[`entry_${actualIndex}_dateFrom`]}</Text>
+                      {validationErrors[`entry_${actualIndex}_dateFrom`] ||
+                      validationErrors[`entry_${actualIndex}_dateTo`] ? (
+                        <Text style={styles.fieldError}>
+                          {validationErrors[`entry_${actualIndex}_dateFrom`] ||
+                            validationErrors[`entry_${actualIndex}_dateTo`]}
+                        </Text>
                       ) : null}
                     </View>
                   </View>
@@ -1898,12 +1942,20 @@ export function ApplyEsarfScreen({
 
           {activeDateChoiceIndex !== null ? (
             <DateRangePickerModal
+              key={`esarf-date-range-${activeDateChoiceIndex}-${entries[activeDateChoiceIndex]?.id || activeDateChoiceIndex}`}
               visible
               initialStartDate={entries[activeDateChoiceIndex]?.dateFrom || ''}
               initialEndDate={entries[activeDateChoiceIndex]?.dateTo || ''}
+              maxRangeDays={2}
               onApply={(startYMD, endYMD) => {
                 const idx = activeDateChoiceIndex;
                 updateEntry(idx, { dateFrom: startYMD, dateTo: endYMD });
+                setValidationErrors((current) => ({
+                  ...current,
+                  [`entry_${idx}_dateFrom`]: undefined,
+                  [`entry_${idx}_dateTo`]: undefined,
+                  multi_entry_dates: undefined,
+                }));
                 setActiveDateChoiceIndex(null);
               }}
               onClose={() => setActiveDateChoiceIndex(null)}
@@ -2164,8 +2216,13 @@ function validateForm({
   if (!transactions.length) errors.transactions = 'Select at least one transaction.';
   if (!dateFrom) errors.dateFrom = 'Date From is required.';
   if (!dateTo) errors.dateTo = 'Date To is required.';
-  if (dateFrom && dateTo && dateStringToDate(dateTo).getTime() < dateStringToDate(dateFrom).getTime()) {
-    errors.dateTo = 'Date To cannot be earlier than Date From';
+  if (dateFrom && dateTo) {
+    const diff = getDaysBetweenYMD(dateFrom, dateTo);
+    if (diff < 0) {
+      errors.dateTo = 'Date To cannot be earlier than Date From';
+    } else if (diff > 1) {
+      errors.dateTo = 'Date range can only be for a single day or two consecutive days.';
+    }
   }
   if (!timeFrom) errors.timeFrom = 'Time From is required.';
   if (!timeTo) errors.timeTo = 'Time To is required.';

@@ -1,15 +1,18 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react-native';
+import { getDaysBetweenYMD } from '../utils/dateTime';
 
 type DateRangePickerModalProps = {
   visible: boolean;
   initialStartDate?: string; // YYYY-MM-DD
   initialEndDate?: string;   // YYYY-MM-DD
   allowFutureDates?: boolean;
+  maxRangeDays?: number;
   onApply: (startDate: string, endDate: string) => void;
   onClose: () => void;
 };
+
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -43,6 +46,7 @@ export function DateRangePickerModal({
   initialStartDate = '',
   initialEndDate = '',
   allowFutureDates = false,
+  maxRangeDays,
   onApply,
   onClose,
 }: DateRangePickerModalProps) {
@@ -59,6 +63,18 @@ export function DateRangePickerModal({
   const [endDateStr, setEndDateStr] = useState(initialEndDate);
   const [selectingStep, setSelectingStep] = useState<'start' | 'end'>(initialStartDate && !initialEndDate ? 'end' : 'start');
   const [warningMsg, setWarningMsg] = useState('');
+
+  useEffect(() => {
+    if (visible) {
+      const initDateObj = parseYMD(initialStartDate) || todayObj;
+      setCurrentYear(initDateObj.getFullYear());
+      setCurrentMonth(initDateObj.getMonth());
+      setStartDateStr(initialStartDate || '');
+      setEndDateStr(initialEndDate || '');
+      setSelectingStep(initialStartDate && !initialEndDate ? 'end' : 'start');
+      setWarningMsg('');
+    }
+  }, [visible, initialStartDate, initialEndDate, todayObj]);
 
   const isAtMaxMonth = currentYear > maxYear || (currentYear === maxYear && currentMonth >= maxMonth);
 
@@ -130,6 +146,15 @@ export function DateRangePickerModal({
         setEndDateStr('');
         setSelectingStep('end');
       } else {
+        const diffDays = getDaysBetweenYMD(startDateStr, dateStr);
+        if (maxRangeDays && diffDays + 1 > maxRangeDays) {
+          setWarningMsg(
+            maxRangeDays === 2
+              ? 'ESARF date range can only be for a single day or two consecutive days (e.g., overnight overtime).'
+              : `Date range cannot exceed ${maxRangeDays} days.`,
+          );
+          return;
+        }
         setEndDateStr(dateStr);
         setSelectingStep('start');
       }
@@ -156,22 +181,33 @@ export function DateRangePickerModal({
       setWarningMsg('Please select Date From and Date To before applying.');
       return;
     }
-    if (startDateStr && !endDateStr) {
-      setWarningMsg('Please select Date To (End Date) before applying.');
-      return;
-    }
-    if (!startDateStr && endDateStr) {
+
+    let finalStart = startDateStr;
+    let finalEnd = endDateStr || startDateStr;
+
+    if (!finalStart && finalEnd) {
       setWarningMsg('Please select Date From (Start Date) before applying.');
       return;
     }
 
-    let finalStart = startDateStr;
-    let finalEnd = endDateStr;
     if (finalEnd < finalStart) {
       const temp = finalStart;
       finalStart = finalEnd;
       finalEnd = temp;
     }
+
+    if (maxRangeDays) {
+      const diffDays = getDaysBetweenYMD(finalStart, finalEnd);
+      if (diffDays + 1 > maxRangeDays) {
+        setWarningMsg(
+          maxRangeDays === 2
+            ? 'ESARF date range can only be for a single day or two consecutive days (e.g., overnight overtime).'
+            : `Date range cannot exceed ${maxRangeDays} days.`,
+        );
+        return;
+      }
+    }
+
     setWarningMsg('');
     onApply(finalStart, finalEnd);
     onClose();
@@ -182,10 +218,14 @@ export function DateRangePickerModal({
       return `${formatReadable(startDateStr)} – ${formatReadable(endDateStr)}`;
     }
     if (startDateStr) {
+      if (maxRangeDays === 2) {
+        return `${formatReadable(startDateStr)} – Select end date (same day or next day)`;
+      }
       return `${formatReadable(startDateStr)} – Select end date`;
     }
     return 'Select date range';
   };
+
 
   return (
     <Modal transparent animationType="fade" visible={visible} onRequestClose={onClose}>

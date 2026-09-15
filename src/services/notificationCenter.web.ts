@@ -2,7 +2,7 @@ import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { isPwaInstalled } from '../constants/download';
 import { deleteSecureItem, getSecureItem, setSecureItem } from '../lib/secureStorage';
 import { env } from '../lib/env';
-import { supabase } from '../lib/supabase';
+import { ensureFreshSession, supabase } from '../lib/supabase';
 
 export type AppNotification = {
   id: string;
@@ -89,24 +89,48 @@ async function loadLocalNotifications() {
 }
 
 async function loadServerNotifications() {
+  await ensureFreshSession().catch(() => {});
   const { data: sessionResult } = await supabase.auth.getSession();
+  const userId = sessionResult.session?.user?.id;
+  const serverCacheKey = userId ? `server_notifications_v1_${userId}` : 'server_notifications_v1';
+
   if (!sessionResult.session?.user) {
-    return [];
+    const cached = await getCacheJSON<AppNotification[]>(serverCacheKey);
+    return cached ?? [];
   }
 
-  await ensureMyHygPointGifts();
+  try {
+    await ensureMyHygPointGifts();
+  } catch {
+    // Non-blocking
+  }
 
-  const [{ data: rpcData }, { data: tableData }] = await Promise.all([
-    supabase.rpc('get_my_notifications'),
-    supabase.from('notifications').select('id, link_type, link_id').limit(100),
-  ]);
+  let rpcData: any[] | null = null;
+  let tableData: any[] | null = null;
+  try {
+    const [rpcRes, tableRes] = await Promise.all([
+      supabase.rpc('get_my_notifications'),
+      supabase.from('notifications').select('id, link_type, link_id').limit(100),
+    ]);
+    rpcData = rpcRes.data;
+    tableData = tableRes.data;
+  } catch (err) {
+    console.warn('loadServerNotifications error:', err);
+    const cached = await getCacheJSON<AppNotification[]>(serverCacheKey);
+    return cached ?? [];
+  }
+
+  if (!rpcData) {
+    const cached = await getCacheJSON<AppNotification[]>(serverCacheKey);
+    return cached ?? [];
+  }
 
   const tableMap = new Map<string, { link_type?: string | null; link_id?: string | null }>();
   (tableData ?? []).forEach((row) => {
     tableMap.set(row.id, { link_type: row.link_type, link_id: row.link_id });
   });
 
-  return (rpcData ?? []).map((item: {
+  const serverNotifications = (rpcData ?? []).map((item: {
     id: string;
     title: string;
     body: string;
@@ -141,6 +165,20 @@ async function loadServerNotifications() {
       receivedAt: item.received_at ?? null,
     };
   });
+
+  // Guard: if server returned 0 items but we have cached notifications, check session validity
+  if (serverNotifications.length === 0) {
+    const cached = await getCacheJSON<AppNotification[]>(serverCacheKey);
+    if (cached && cached.length > 0) {
+      const { data: checkSession } = await supabase.auth.getSession();
+      if (!checkSession.session?.user) {
+        return cached;
+      }
+    }
+  }
+
+  await setCacheJSON(serverCacheKey, serverNotifications);
+  return serverNotifications;
 }
 
 export async function ensureMyHygPointGifts() {
@@ -186,6 +224,7 @@ export async function addAppNotification(input: { title: string; body: string })
 
 export async function markNotificationRead(id: string) {
   if (id.startsWith('server:')) {
+    await ensureFreshSession().catch(() => {});
     const { error } = await supabase.rpc('mark_my_notification_read', { p_notification_id: id.slice('server:'.length) });
     if (error) {
       throw new Error(error.message);
@@ -201,6 +240,7 @@ export async function markNotificationRead(id: string) {
 
 export async function deleteNotification(id: string) {
   if (id.startsWith('server:')) {
+    await ensureFreshSession().catch(() => {});
     const { error } = await supabase.rpc('delete_my_notification', { p_notification_id: id.slice('server:'.length) });
     if (error) {
       throw new Error(error.message);
@@ -215,6 +255,7 @@ export async function deleteNotification(id: string) {
 }
 
 export async function claimHygPointsNotification(actionId: string) {
+  await ensureFreshSession().catch(() => {});
   const { data, error } = await supabase.rpc('claim_my_hyg_points', {
     p_transaction_id: actionId,
   });

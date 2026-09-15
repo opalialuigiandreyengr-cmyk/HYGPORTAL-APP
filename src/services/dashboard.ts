@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase';
+import { ensureFreshSession, supabase } from '../lib/supabase';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 
 
@@ -13,9 +13,17 @@ export type DashboardSummary = {
 };
 
 export async function loadDashboardSummary(userId?: string, employeeId?: string) {
+  await ensureFreshSession().catch(() => {});
   const { data: sessionResult } = await supabase.auth.getSession();
   const currentUserId = userId || sessionResult.session?.user?.id;
   const cacheKey = currentUserId ? `dashboard_summary_v2_${currentUserId}` : 'dashboard_summary_v2';
+
+  if (!currentUserId) {
+    const cached = await getCacheJSON<DashboardSummary>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+  }
 
   let empId = employeeId;
   if (!empId && currentUserId) {
@@ -75,6 +83,23 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
     leave_used_days: leaveUsedDays,
     hyg_points_balance: hygPointsBalance,
   } satisfies DashboardSummary;
+
+  // Guard: if all values are 0, check if this is due to an unauthenticated/expired session wiping data
+  const cached = await getCacheJSON<DashboardSummary>(cacheKey);
+  if (
+    cached &&
+    (cached.annual_credit_days > 0 || cached.leave_credit_remaining > 0 || cached.pending_requests > 0 || cached.pending_approvals > 0) &&
+    summary.annual_credit_days === 0 &&
+    summary.leave_credit_remaining === 0 &&
+    summary.pending_requests === 0 &&
+    summary.pending_approvals === 0
+  ) {
+    const { data: checkSession } = await supabase.auth.getSession();
+    if (!checkSession.session?.user) {
+      // Session in transition or expired: retain valid cache
+      return cached;
+    }
+  }
 
   await setCacheJSON(cacheKey, summary);
   return summary;

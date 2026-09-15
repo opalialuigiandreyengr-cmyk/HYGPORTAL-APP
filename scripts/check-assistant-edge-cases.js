@@ -15,7 +15,7 @@ require.extensions['.ts'] = (module, filename) => {
 
 const { createAssistantReply } = require(path.join('..', 'src', 'services', 'assistant.ts'));
 const { calculateRequestHours } = require(path.join('..', 'src', 'utils', 'requestCalculations.ts'));
-const { calculateLeaveDays } = require(path.join('..', 'src', 'utils', 'dateTime.ts'));
+const { calculateLeaveDays, getDaysBetweenYMD, isValidEsarfDateRange } = require(path.join('..', 'src', 'utils', 'dateTime.ts'));
 const { getDisabledLeaveTypes, getLeaveBreakdown } = require(path.join('..', 'src', 'utils', 'requestCalculations.ts'));
 
 const context = {
@@ -178,6 +178,26 @@ assertEqual('overnight request range', calculateRequestHours({
   dayOff: 'Sun',
 }), 7);
 
+assertEqual('overnight request range with dateTo does not multiply hours', calculateRequestHours({
+  requestType: 'use_offset',
+  dateFrom: '2026-05-20',
+  dateTo: '2026-05-21',
+  timeFrom: '20:00',
+  timeTo: '03:00',
+  timeSchedule: '9:00AM - 6:00PM',
+  dayOff: 'Sun',
+}), 7);
+
+assertEqual('overnight overtime with dateTo does not multiply hours', calculateRequestHours({
+  requestType: 'overtime',
+  dateFrom: '2026-09-15',
+  dateTo: '2026-09-16',
+  timeFrom: '09:00',
+  timeTo: '02:00',
+  timeSchedule: '9:00AM - 6:00PM',
+  dayOff: 'Sun',
+}), 8);
+
 const { parseDayOffList, isDateDayOff } = require(path.join('..', 'src', 'utils', 'requestCalculations.ts'));
 
 assertDeepEqual('parse multi-day off Saturday, Sunday', parseDayOffList('Saturday, Sunday'), ['Sat', 'Sun']);
@@ -225,6 +245,17 @@ assertEqual(
 
 assertEqual('inclusive leave days', calculateLeaveDays('2026-05-20', '2026-05-21'), 2);
 assertDeepEqual('leave credits disable paid options', getDisabledLeaveTypes(2, context.leaveCreditRemaining), ['With Pay']);
+
+// ESARF single and two consecutive days checks
+assertEqual('esarf single day diff', getDaysBetweenYMD('2026-09-15', '2026-09-15'), 0);
+assertEqual('esarf next day diff', getDaysBetweenYMD('2026-09-15', '2026-09-16'), 1);
+assertEqual('esarf two days diff', getDaysBetweenYMD('2026-09-15', '2026-09-17'), 2);
+assertEqual('esarf reverse diff', getDaysBetweenYMD('2026-09-16', '2026-09-15'), -1);
+assertEqual('esarf single day valid', isValidEsarfDateRange('2026-09-15', '2026-09-15'), true);
+assertEqual('esarf consecutive days valid', isValidEsarfDateRange('2026-09-15', '2026-09-16'), true);
+assertEqual('esarf month boundary consecutive days valid', isValidEsarfDateRange('2026-02-28', '2026-03-01'), true);
+assertEqual('esarf 3 days invalid', isValidEsarfDateRange('2026-09-15', '2026-09-17'), false);
+assertEqual('esarf reverse dates invalid', isValidEsarfDateRange('2026-09-16', '2026-09-15'), false);
 
 const bothBreakdown = getLeaveBreakdown('Both', 2, '1', '1');
 assertDeepEqual('both leave split', bothBreakdown, {

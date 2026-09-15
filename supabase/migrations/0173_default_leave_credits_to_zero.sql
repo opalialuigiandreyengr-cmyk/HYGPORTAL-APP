@@ -623,7 +623,7 @@ grant execute on function public.admin_validate_leave_request(uuid, numeric, num
 grant execute on function public.admin_validate_leave_request(uuid, numeric, numeric) to anon;
 grant execute on function public.admin_validate_leave_request(uuid, numeric, numeric) to service_role;
 
--- 9. Update apply_leave_side_effects to default to 0
+-- -- 9. Update apply_leave_side_effects to default to 0 and exempt 1-day Birthday Leave
 create or replace function public.apply_leave_side_effects(p_request_id uuid)
 returns void
 language plpgsql
@@ -637,6 +637,7 @@ declare
   v_current_available numeric;
   v_new_used numeric;
   v_balance_after numeric;
+  v_days_to_deduct numeric;
 begin
   select * into v_request
   from public.requests
@@ -655,6 +656,17 @@ begin
   where request_id = p_request_id;
 
   if coalesce(v_leave.paid_days, 0) <= 0 then
+    return;
+  end if;
+
+  -- If Birthday Leave, 1 day is granted with pay by the system without deducting leave credits
+  if trim(coalesce(v_leave.leave_category, '')) in ('Birthday Leave', 'Birthday Leave Grant') then
+    v_days_to_deduct := greatest(0, coalesce(v_leave.paid_days, 0) - 1);
+  else
+    v_days_to_deduct := coalesce(v_leave.paid_days, 0);
+  end if;
+
+  if v_days_to_deduct <= 0 then
     return;
   end if;
 
@@ -677,12 +689,12 @@ begin
   where employee_id = v_request.submitted_by_employee_id
   for update;
 
-  if v_current_available < v_leave.paid_days then
+  if v_current_available < v_days_to_deduct then
     raise exception 'Insufficient paid leave credits at approval time.';
   end if;
 
   update public.leave_balances
-  set used_days = used_days + v_leave.paid_days,
+  set used_days = used_days + v_days_to_deduct,
       updated_at = now()
   where employee_id = v_request.submitted_by_employee_id
   returning used_days, annual_credit_days - used_days
@@ -699,15 +711,17 @@ begin
     v_request.submitted_by_employee_id,
     p_request_id,
     'use_paid',
-    v_leave.paid_days,
+    v_days_to_deduct,
     v_balance_after
   );
 end;
 $$;
 
 grant execute on function public.apply_leave_side_effects(uuid) to authenticated;
+grant execute on function public.apply_leave_side_effects(uuid) to anon;
+grant execute on function public.apply_leave_side_effects(uuid) to service_role;
 
--- 10. Update submit_leave_request to default to 0
+-- 10. Update submit_leave_request to default to 0 and auto-approve 1-day Birthday Leave
 create or replace function public.submit_leave_request(
   p_leave_type text,
   p_leave_category text,
@@ -735,6 +749,8 @@ declare
   v_paid_days numeric;
   v_unpaid_days numeric;
   v_available_days numeric;
+  v_is_birthday_leave boolean;
+  v_credits_to_check numeric;
 begin
   if auth.uid() is null then
     raise exception 'Authentication required.';
@@ -758,8 +774,17 @@ begin
   end if;
 
   v_total_days := (p_end_date - p_start_date) + 1;
+  v_is_birthday_leave := trim(p_leave_category) in ('Birthday Leave', 'Birthday Leave Grant');
 
-  if v_leave_type = 'With Pay' then
+  if v_is_birthday_leave and v_total_days = 1 then
+    v_leave_type := 'With Pay';
+    v_paid_days := 1;
+    v_unpaid_days := 0;
+  elsif v_is_birthday_leave and v_leave_type = 'Without Pay' then
+    v_paid_days := 1;
+    v_unpaid_days := greatest(0, v_total_days - 1);
+    v_leave_type := case when v_total_days = 1 then 'With Pay' else 'Both' end;
+  elsif v_leave_type = 'With Pay' then
     v_paid_days := v_total_days;
     v_unpaid_days := 0;
   elsif v_leave_type = 'Without Pay' then
@@ -793,7 +818,15 @@ begin
   on conflict (employee_id) do nothing;
 
   v_available_days := public.get_available_leave_days(v_profile.employee_id);
-  if v_paid_days > v_available_days then
+
+  -- For Birthday Leave, 1 day is granted with pay by the system (0 credits deducted)
+  if v_is_birthday_leave then
+    v_credits_to_check := greatest(0, v_paid_days - 1);
+  else
+    v_credits_to_check := v_paid_days;
+  end if;
+
+  if v_credits_to_check > 0 and v_credits_to_check > v_available_days then
     raise exception 'Insufficient paid leave credits. Available paid leave: % day(s).', v_available_days;
   end if;
 
@@ -922,7 +955,7 @@ begin
     )
     limit 1;
 
-    if v_approver.approver_employee_id is null then
+    if coalesce(to_jsonb(v_approver)->>'approver_employee_id', '') = '' then
       insert into public.request_approval_steps (
         request_id,
         step_order,
@@ -957,9 +990,13 @@ begin
         v_request_id,
         1,
         v_assignment.function_id,
-        v_approver.resolved_level,
-        v_approver.approver_employee_id,
-        v_approver.approver_user_profile_id,
+        coalesce((to_jsonb(v_approver)->>'resolved_level')::integer, v_route.approver_level),
+        (to_jsonb(v_approver)->>'approver_employee_id')::uuid,
+        coalesce(
+          (to_jsonb(v_approver)->>'approver_user_profile_id')::uuid,
+          (to_jsonb(v_approver)->>'approver_user_id')::uuid,
+          (select id from public.user_profiles where employee_id = (to_jsonb(v_approver)->>'approver_employee_id')::uuid limit 1)
+        ),
         'pending'
       );
     end if;

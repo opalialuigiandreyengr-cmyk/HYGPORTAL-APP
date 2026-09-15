@@ -1,4 +1,5 @@
-import { supabase } from '../lib/supabase';
+import { ensureFreshSession, supabase } from '../lib/supabase';
+import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 
 export type PendingApprovalStep = {
   step_order: number;
@@ -67,13 +68,32 @@ function getWeekdayFromDateStr(dateStr: string | null): string {
 }
 
 export async function loadPendingApprovals() {
+  await ensureFreshSession().catch(() => {});
+  const { data: sessionData } = await supabase.auth.getSession();
+  const userId = sessionData.session?.user?.id;
+  const cacheKey = userId ? `pending_approvals_v2_${userId}` : 'pending_approvals_v2';
+
   const { data, error } = await supabase.rpc('get_my_pending_approvals');
 
   if (error) {
+    const cached = await getCacheJSON<PendingApproval[]>(cacheKey);
+    if (cached) {
+      return cached;
+    }
     throw error;
   }
 
   const items = (data ?? []) as PendingApproval[];
+
+  // Guard: if server returns empty list but we have cached approvals, verify user session before overwriting
+  const cached = await getCacheJSON<PendingApproval[]>(cacheKey);
+  if (items.length === 0 && cached && cached.length > 0) {
+    const { data: checkSession } = await supabase.auth.getSession();
+    if (!checkSession.session?.user) {
+      // Unauthenticated or session in transition: retain cached approvals
+      return cached;
+    }
+  }
 
   const enhancedItems = await Promise.all(
     items.map(async (item) => {
@@ -130,6 +150,7 @@ export async function loadPendingApprovals() {
     }),
   );
 
+  await setCacheJSON(cacheKey, enhancedItems);
   return enhancedItems;
 }
 

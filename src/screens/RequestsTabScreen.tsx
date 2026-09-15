@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, AppState, type AppStateStatus, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, type AppStateStatus, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
@@ -87,10 +87,10 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
 
   async function handleDeleteRequest(item: MyRequest) {
     const isPerk = isPerkRequest(item);
-    const typeName = isPerk ? 'Perks' : formatRequestType(item);
+    if (!isPerk) return;
 
     const confirmTitle = 'Delete Request';
-    const confirmMessage = `Are you sure you want to delete this pending ${typeName} request? This action cannot be undone.`;
+    const confirmMessage = 'Are you sure you want to delete this pending Perks request? This action cannot be undone.';
 
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
       if (window.confirm(confirmMessage)) {
@@ -478,7 +478,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
             isDeleting={deletingId === item.request_id}
             onView={() => setSelectedRequest({ item, sequence })}
             onEdit={onEditRequest ? () => void handleEditRequest(item) : undefined}
-            onDelete={() => void handleDeleteRequest(item)}
+            onDelete={isPerkRequest(item) ? () => void handleDeleteRequest(item) : undefined}
           />
           );
         })}
@@ -525,7 +525,11 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
         isDeleting={Boolean(selectedRequest && deletingId === selectedRequest.item.request_id)}
         onClose={() => setSelectedRequest(null)}
         onEdit={onEditRequest ? (req) => void handleEditRequest(req) : undefined}
-        onDelete={(req) => void handleDeleteRequest(req)}
+        onDelete={
+          selectedRequest && isPerkRequest(selectedRequest.item)
+            ? (req) => void handleDeleteRequest(req)
+            : undefined
+        }
       />
 
       <ActiveReviewLockModal
@@ -601,24 +605,36 @@ function RequestCard({
 
           <View style={styles.cardBottomRow}>
             <View style={styles.typePill}>
-              <Text style={styles.typePillText}>{formatRequestType(item)}</Text>
+              <Text style={styles.typePillText} numberOfLines={1} ellipsizeMode="tail">
+                {formatRequestType(item)}
+              </Text>
             </View>
             {statusKey === 'pending' ? (
               <>
                 {!isPerk && onEdit ? (
-                  <Pressable style={styles.editButton} onPress={onEdit}>
+                  <Pressable
+                    style={styles.editButton}
+                    onPress={onEdit}
+                    accessibilityLabel="Edit request"
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
                     <Pencil size={14} color="#92400e" strokeWidth={2.3} />
                     <Text style={styles.editText}>Edit</Text>
                   </Pressable>
                 ) : null}
-                {onDelete ? (
+                {isPerk && onDelete ? (
                   <Pressable
                     disabled={isDeleting}
                     style={[styles.deleteButton, isDeleting ? { opacity: 0.6 } : null]}
                     onPress={onDelete}
+                    accessibilityLabel="Delete request"
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                   >
-                    <Trash2 size={14} color={colors.semantic.danger} strokeWidth={2.3} />
-                    <Text style={styles.deleteText}>{isDeleting ? '...' : 'Delete'}</Text>
+                    {isDeleting ? (
+                      <ActivityIndicator size="small" color={colors.semantic.danger} />
+                    ) : (
+                      <Trash2 size={14} color={colors.semantic.danger} strokeWidth={2.3} />
+                    )}
                   </Pressable>
                 ) : null}
               </>
@@ -846,7 +862,7 @@ function RequestDetailsSheet({
                     <Text style={styles.sheetEditText}>Edit Request</Text>
                   </Pressable>
                 ) : null}
-                {onDelete ? (
+                {isPerk && onDelete ? (
                   <Pressable
                     disabled={isDeleting}
                     style={[styles.sheetDeleteButton, isDeleting ? { opacity: 0.6 } : null]}
@@ -2213,11 +2229,12 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
+    gap: 6,
   },
   typePill: {
     flex: 1,
-    minHeight: 25,
+    minWidth: 0,
+    height: 28,
     borderRadius: radius.md,
     backgroundColor: '#eff6ff',
     borderWidth: 1,
@@ -2227,12 +2244,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
   },
   typePillText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: fontWeights.bold,
     color: '#1d4ed8',
   },
   viewButton: {
-    minHeight: 26,
+    height: 28,
     borderRadius: radius.sm,
     backgroundColor: colors.background,
     borderWidth: 1,
@@ -2243,12 +2260,12 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   viewText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: fontWeights.bold,
     color: colors.text,
   },
   editButton: {
-    minHeight: 26,
+    height: 28,
     borderRadius: radius.sm,
     backgroundColor: '#fef3c7',
     borderWidth: 1,
@@ -2256,7 +2273,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 5,
   },
   editText: {
     fontSize: 14,
@@ -2264,20 +2281,14 @@ const styles = StyleSheet.create({
     color: '#92400e',
   },
   deleteButton: {
-    minHeight: 26,
+    width: 28,
+    height: 28,
     borderRadius: radius.sm,
     backgroundColor: '#fef2f2',
     borderWidth: 1,
     borderColor: '#fecaca',
-    paddingHorizontal: spacing.sm,
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-  },
-  deleteText: {
-    fontSize: 14,
-    fontWeight: fontWeights.bold,
-    color: colors.semantic.danger,
+    justifyContent: 'center',
   },
   sheetEditButton: {
     flex: 1,

@@ -52,6 +52,7 @@ const DEFAULT_OFFICIAL_SCHEDULE = '9:00AM - 6:00PM';
 export function calculateRequestHours({
   requestType,
   dateFrom,
+  dateTo,
   timeFrom,
   timeTo,
   timeSchedule,
@@ -60,6 +61,7 @@ export function calculateRequestHours({
 }: {
   requestType: RequestTypeCode;
   dateFrom: string;
+  dateTo?: string;
   timeFrom: string;
   timeTo: string;
   timeSchedule: string;

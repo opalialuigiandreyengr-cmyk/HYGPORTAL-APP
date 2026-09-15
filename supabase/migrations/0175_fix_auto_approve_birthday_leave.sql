@@ -1,13 +1,14 @@
--- Migration 0174: Support manual auto-approved Birthday Leave Grant
--- 1. If 1-day Birthday Leave is filed, it is auto-approved by 'HYG Portal System' with pay and 0 credits deducted.
--- 2. If multi-day Birthday Leave is filed, 1 day (birthday) is granted with pay (0 credits deducted),
---    and the remaining days require manager approval and deduct only (paid_days - 1) credits.
+-- Migration 0175: Fix auto-approved Birthday Leave Grant and leave credit deduction
+-- 1. Ensure request_approval_steps has necessary columns for system auto-approval
+-- 2. Exempt 1-day Birthday Leave from leave credit balance checks (auto-approved with pay, 0 credits deducted)
+-- 3. For multi-day Birthday Leave (e.g. 1 birthday grant + without pay days), only check (paid_days - 1) credits
 
+-- Step 1: Ensure columns exist on request_approval_steps
 alter table public.request_approval_steps add column if not exists approver_name text;
 alter table public.request_approval_steps add column if not exists approver_position_name text;
 alter table public.request_approval_steps add column if not exists approver_employee_no text;
 
--- Update apply_leave_side_effects to exempt 1 day for Birthday Leave
+-- Step 2: Update apply_leave_side_effects to exempt 1 day for Birthday Leave
 create or replace function public.apply_leave_side_effects(p_request_id uuid)
 returns void
 language plpgsql
@@ -50,6 +51,7 @@ begin
     v_days_to_deduct := coalesce(v_leave.paid_days, 0);
   end if;
 
+  -- If no credits need to be deducted (e.g. 1-day birthday leave or unpaid days only), return
   if v_days_to_deduct <= 0 then
     return;
   end if;
@@ -105,7 +107,7 @@ grant execute on function public.apply_leave_side_effects(uuid) to authenticated
 grant execute on function public.apply_leave_side_effects(uuid) to anon;
 grant execute on function public.apply_leave_side_effects(uuid) to service_role;
 
--- Update submit_leave_request to auto-approve 1-day Birthday Leave
+-- Step 3: Update submit_leave_request
 create or replace function public.submit_leave_request(
   p_leave_type text,
   p_leave_category text,
@@ -160,11 +162,14 @@ begin
   v_total_days := (p_end_date - p_start_date) + 1;
   v_is_birthday_leave := trim(p_leave_category) in ('Birthday Leave', 'Birthday Leave Grant');
 
+  -- Handle Birthday Leave vs Standard Leave days breakdown
   if v_is_birthday_leave and v_total_days = 1 then
+    -- 1-day Birthday Leave is ALWAYS granted With Pay by the system
     v_leave_type := 'With Pay';
     v_paid_days := 1;
     v_unpaid_days := 0;
   elsif v_is_birthday_leave and v_leave_type = 'Without Pay' then
+    -- If Birthday Leave requested Without Pay for multiple days, 1 day is still granted with pay
     v_paid_days := 1;
     v_unpaid_days := greatest(0, v_total_days - 1);
     v_leave_type := case when v_total_days = 1 then 'With Pay' else 'Both' end;
@@ -203,13 +208,14 @@ begin
 
   v_available_days := public.get_available_leave_days(v_profile.employee_id);
 
-  -- For Birthday Leave, 1 day is granted with pay by the system (0 credits deducted)
+  -- For Birthday Leave, 1 day is granted with pay by the system (0 credits deducted from annual leave)
   if v_is_birthday_leave then
     v_credits_to_check := greatest(0, v_paid_days - 1);
   else
     v_credits_to_check := v_paid_days;
   end if;
 
+  -- Only check against available leave credits if deduction > 0
   if v_credits_to_check > 0 and v_credits_to_check > v_available_days then
     raise exception 'Insufficient paid leave credits. Available paid leave: % day(s).', v_available_days;
   end if;

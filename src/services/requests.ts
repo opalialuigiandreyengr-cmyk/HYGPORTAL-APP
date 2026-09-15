@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase';
+import { ensureFreshSession, supabase } from '../lib/supabase';
 import { getCacheJSON, removeCacheItem, setCacheJSON } from '../lib/localCache';
 
 export type RequestApprovalSummary = {
@@ -59,6 +59,9 @@ export async function loadMyRequests(forceRefresh = false) {
     }
   }
 
+  // Ensure session is fresh before fetching requests
+  await ensureFreshSession().catch(() => {});
+
   const { data, error } = await supabase.rpc('get_my_requests');
 
   if (error) {
@@ -108,6 +111,15 @@ export async function loadMyRequests(forceRefresh = false) {
   });
 
   const cached = await getCacheJSON<MyRequest[]>(cacheKey);
+
+  // If server returns empty list but we have cached requests, verify user session before overwriting
+  if (items.length === 0 && cached && cached.length > 0) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (!sessionData.session?.user) {
+      // Unauthenticated or session in transition: retain cached requests to prevent disappearing data
+      return cached;
+    }
+  }
 
   // Preserve any locally auto-approved Birthday Leave grants that aren't returned by RPC yet
   if (cached && cached.length) {

@@ -1,4 +1,4 @@
-import { formatDateInput } from '../utils/dateTime';
+import { formatDateInput, getDaysBetweenYMD } from '../utils/dateTime';
 import { assistantDefaults, assistantFallbacks, assistantFaqRules } from '../constants/assistantKnowledge';
 
 export type AssistantIntent =
@@ -233,7 +233,10 @@ export function createAssistantReply(input: string, context: { leaveCreditRemain
         payrollClass: assistantDefaults.esarfPayrollClass,
         transactions,
         dateFrom: dates.startDate,
-        dateTo: dates.endDate ?? dates.startDate,
+        dateTo:
+          dates.startDate && dates.endDate && getDaysBetweenYMD(dates.startDate, dates.endDate) > 1
+            ? dates.startDate
+            : (dates.endDate ?? dates.startDate),
         timeFrom: timeRange.timeFrom,
         timeTo: timeRange.timeTo,
         reason,

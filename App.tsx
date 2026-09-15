@@ -20,7 +20,7 @@ import {
   requestLabels,
   scheduleOptions,
 } from './src/constants/requestOptions';
-import { isSupabaseConfigured, supabase } from './src/lib/supabase';
+import { ensureFreshSession, isSupabaseConfigured, supabase } from './src/lib/supabase';
 import { getCacheJSON, initLocalCache, setCacheJSON } from './src/lib/localCache';
 import { loadPendingApprovals, type PendingApproval } from './src/services/approvals';
 import {
@@ -120,6 +120,7 @@ import {
   formatDateInput,
   formatTimeDisplay,
   formatTimeInput,
+  getDaysBetweenYMD,
   timeStringToDate,
 } from './src/utils/dateTime';
 import {
@@ -374,18 +375,18 @@ export default function App() {
         setRecoverySession(true);
       }
 
-      if (!session?.user) {
+      if (event === 'SIGNED_OUT') {
         setSignedInUser(null);
         setProfileResult(null);
         // Only reset recoverySession if we are NOT in the middle of a recovery flow URL
         if (!isRecoveryUrl) {
           setRecoverySession(false);
         }
-      } else {
-        // If the user signed in normally (not in recovery mode), auto-login them
-        if (event === 'SIGNED_IN' && !isRecoveryUrl && !recoverySession) {
+      } else if (session?.user) {
+        // If the user signed in or refreshed token normally (not in recovery mode), ensure user is set
+        if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && !isRecoveryUrl && !recoverySession) {
           setSignedInUser(session.user);
-          if ((session.user.email ?? '').toLowerCase() !== SUPER_ADMIN_EMAIL) {
+          if (event === 'SIGNED_IN' && (session.user.email ?? '').toLowerCase() !== SUPER_ADMIN_EMAIL) {
             await loadProfileForUser(session.user);
             await refreshDashboard();
             await refreshPendingApprovalCount();
@@ -1005,12 +1006,65 @@ export default function App() {
   useEffect(() => {
     if (!signedInUser) return;
 
-    // 1. Silent sync on app resume/focus (just like admin desktop)
+    let isResuming = false;
+    const handleAppResume = async () => {
+      if (isResuming) return;
+      isResuming = true;
+      try {
+        // 1. Proactively verify and refresh session before queries run
+        await ensureFreshSession().catch(() => {});
+
+        // 2. Silent sync of metrics, counts, and active requests
+        void refreshDashboard(true);
+        void refreshPendingApprovalCount();
+        void refreshNotificationUnreadCount();
+        setRequestsRefreshKey((k) => k + 1);
+
+        // 3. Ensure Supabase Realtime is reconnected if suspended
+        try {
+          if (supabase.realtime && typeof (supabase.realtime as any).connect === 'function') {
+            (supabase.realtime as any).connect();
+          }
+        } catch {
+          // ignore
+        }
+      } finally {
+        isResuming = false;
+      }
+    };
+
+    // 1. Silent sync on app resume/focus via AppState
     const appStateSub = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
       if (nextAppState === 'active') {
-        void refreshDashboard(true);
+        void handleAppResume();
       }
     });
+
+    // On Web / iOS PWA, also listen to browser lifecycle events to catch wake-ups from sleep
+    let cleanupWebListeners: (() => void) | null = null;
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const onVisibilityChange = () => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+          void handleAppResume();
+        }
+      };
+      const onPageShow = () => {
+        void handleAppResume();
+      };
+      const onWindowFocus = () => {
+        void handleAppResume();
+      };
+
+      document.addEventListener('visibilitychange', onVisibilityChange);
+      window.addEventListener('pageshow', onPageShow);
+      window.addEventListener('focus', onWindowFocus);
+
+      cleanupWebListeners = () => {
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+        window.removeEventListener('pageshow', onPageShow);
+        window.removeEventListener('focus', onWindowFocus);
+      };
+    }
 
     // 2. Periodic background refresh every 12 seconds (matching admin desktop interval)
     const pollInterval = setInterval(() => {
@@ -1071,6 +1125,9 @@ export default function App() {
 
     return () => {
       appStateSub.remove();
+      if (cleanupWebListeners) {
+        cleanupWebListeners();
+      }
       clearInterval(pollInterval);
       if (leaveChannel) {
         void supabase.removeChannel(leaveChannel);
@@ -5391,9 +5448,21 @@ function TimeRequestScreen({
 
   function applyPickerValue(kind: 'date_from' | 'date_to' | 'time_from' | 'time_to', selectedDate: Date) {
     if (kind === 'date_from') {
-      setDateFrom(formatDateInput(selectedDate));
+      const val = formatDateInput(selectedDate);
+      setDateFrom(val);
+      if (requestType !== 'leave') {
+        if (dateTo < val || getDaysBetweenYMD(val, dateTo) > 1) {
+          setDateTo(val);
+        }
+      }
     } else if (kind === 'date_to') {
-      setDateTo(formatDateInput(selectedDate));
+      const val = formatDateInput(selectedDate);
+      setDateTo(val);
+      if (requestType !== 'leave') {
+        if (val < dateFrom || getDaysBetweenYMD(dateFrom, val) > 1) {
+          setDateFrom(val);
+        }
+      }
     } else if (kind === 'time_from') {
       setTimeFrom(formatTimeInput(selectedDate));
     } else if (kind === 'time_to') {
@@ -5512,6 +5581,23 @@ function TimeRequestScreen({
     if (!dateFrom || !dateTo || !timeFrom || !timeTo || !timeSchedule || !dayOff || !payrollClass || !reason.trim()) {
       Alert.alert('Missing details', 'Complete schedule, day off, payroll class, date, time, and reason.');
       setSubmitStatus('Missing ESARF request details.');
+      submitLockRef.current = false;
+      return;
+    }
+
+    const diff = getDaysBetweenYMD(dateFrom, dateTo);
+    if (diff < 0) {
+      Alert.alert('Invalid date range', 'Date To cannot be earlier than Date From.');
+      setSubmitStatus('Date To cannot be earlier than Date From.');
+      submitLockRef.current = false;
+      return;
+    }
+    if (diff > 1) {
+      Alert.alert(
+        'Invalid date range',
+        'ESARF request can only be for a single day or two consecutive days (e.g. overnight overtime).',
+      );
+      setSubmitStatus('ESARF request can only be for a single day or two consecutive days.');
       submitLockRef.current = false;
       return;
     }
