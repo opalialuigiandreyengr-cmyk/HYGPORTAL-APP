@@ -26,6 +26,7 @@ export type PhotoProofItem = {
   syncedToCloud?: boolean;
   imageWidth?: number;
   imageHeight?: number;
+  isWatermarked?: boolean;
 };
 
 const PHOTO_PROOFS_KEY = 'hyg_photo_proofs_list';
@@ -349,6 +350,7 @@ export async function loadPhotoProofs(userFilter?: {
           driveFileId: row.drive_file_id,
           driveWebViewLink: row.drive_web_view_link,
           syncedToCloud: true,
+          isWatermarked: row.is_watermarked ?? true,
         };
       });
 
@@ -366,8 +368,18 @@ export async function loadPhotoProofs(userFilter?: {
           const cloudTime = Date.parse(cloud.timestamp);
           for (const loc of localList) {
             if (!matchedLocalIds.has(loc.id)) {
+              const sameDrive = Boolean(cloud.driveFileId && loc.driveFileId && cloud.driveFileId === loc.driveFileId);
+              const sameExactTime = cloud.timestamp === loc.timestamp;
               const locTime = Date.parse(loc.timestamp);
-              if (Math.abs(cloudTime - locTime) < 90000 && loc.employeeName === cloud.employeeName) {
+              const closeTime =
+                !isNaN(cloudTime) &&
+                !isNaN(locTime) &&
+                Math.abs(cloudTime - locTime) < 3000 &&
+                loc.timeDigits === cloud.timeDigits &&
+                loc.dateFormatted === cloud.dateFormatted &&
+                loc.employeeName === cloud.employeeName;
+
+              if (sameDrive || sameExactTime || closeTime) {
                 matched = loc;
                 break;
               }
@@ -383,6 +395,7 @@ export async function loadPhotoProofs(userFilter?: {
             ...cloud,
             photoUri: cloud.photoUri || matched.photoUri,
             syncedToCloud: true,
+            isWatermarked: true,
           });
         } else {
           merged.push(cloud);

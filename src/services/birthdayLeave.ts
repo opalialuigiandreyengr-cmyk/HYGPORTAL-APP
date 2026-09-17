@@ -219,6 +219,130 @@ export async function getBirthdayLeaveGrantForCurrentYear(
   return getCacheJSON<MyRequest>(recordCacheKey);
 }
 
+export async function markBirthdayLeaveGrantedForYear(
+  identityKey: string,
+  bdayRequest?: MyRequest,
+): Promise<void> {
+  if (!identityKey) return;
+  const currentYear = new Date().getFullYear();
+  const cleanIdentity = identityKey.trim().toLowerCase();
+  const flagCacheKey = `${CACHE_KEY_PREFIX}${cleanIdentity}_${currentYear}`;
+  const recordCacheKey = `${RECORD_CACHE_PREFIX}${cleanIdentity}_${currentYear}`;
+
+  await setCacheJSON(flagCacheKey, true);
+  if (bdayRequest) {
+    await setCacheJSON(recordCacheKey, bdayRequest);
+    await mergeIntoMyRequestsCache(bdayRequest);
+  }
+}
+
+/**
+ * Checks whether the employee has already applied for or received
+ * the auto-approved Birthday Leave grant for the current calendar year.
+ */
+export async function checkBirthdayLeaveAppliedForYear(
+  identityKey?: string | null,
+): Promise<boolean> {
+  const currentYear = new Date().getFullYear();
+
+  // 1. Check local persistent cache flag and record
+  if (identityKey && identityKey.trim().length > 0) {
+    const cleanIdentity = identityKey.trim().toLowerCase();
+    const flagKey = `${CACHE_KEY_PREFIX}${cleanIdentity}_${currentYear}`;
+    const recordKey = `${RECORD_CACHE_PREFIX}${cleanIdentity}_${currentYear}`;
+    const alreadyGranted = await getCacheJSON<boolean>(flagKey);
+    const existingRecord = await getCacheJSON<MyRequest>(recordKey);
+    if (alreadyGranted || existingRecord) {
+      return true;
+    }
+  }
+
+  // 2. Check cached user requests in my_requests_v1
+  const cachedRequests = (await getCacheJSON<MyRequest[]>(MY_REQUESTS_CACHE_KEY)) ?? [];
+  const hasInCachedRequests = cachedRequests.some((req) => {
+    if (req.status === 'rejected' || req.status === 'cancelled') return false;
+    const isBday =
+      isAutoApprovedBirthdayGrant(req) ||
+      req.leave_category === 'Birthday Leave' ||
+      req.leave_category === 'Birthday Leave Grant' ||
+      req.reason === 'Auto-approved Birthday Leave Grant' ||
+      req.request_id?.startsWith('bday_leave_') === true;
+    if (!isBday) return false;
+
+    const reqDate = req.start_date || req.date_from || req.submitted_at;
+    if (!reqDate) return true;
+    const reqYear = new Date(reqDate).getFullYear();
+    return reqYear === currentYear;
+  });
+
+  if (hasInCachedRequests) {
+    return true;
+  }
+
+  // 3. Check Supabase database if connected
+  try {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (user) {
+      const userIdentities = [
+        identityKey?.trim().toLowerCase(),
+        user.email?.trim().toLowerCase(),
+      ].filter(Boolean) as string[];
+
+      // Check flag for user email if identityKey was employeeId or username
+      for (const ident of userIdentities) {
+        const flag = await getCacheJSON<boolean>(`${CACHE_KEY_PREFIX}${ident}_${currentYear}`);
+        if (flag) return true;
+      }
+
+      const { data: profile } = await supabase
+        .from('user_profiles')
+        .select('employee_id, id')
+        .eq('auth_user_id', user.id)
+        .maybeSingle();
+
+      if (profile?.employee_id) {
+        const { data: dbRequests } = await supabase
+          .from('requests')
+          .select('id, status, created_at, leave_request_details(leave_category, start_date)')
+          .eq('submitted_by_employee_id', profile.employee_id)
+          .not('status', 'in', '("rejected","cancelled")');
+
+        if (dbRequests && dbRequests.length > 0) {
+          const hasBdayInDb = dbRequests.some((r: any) => {
+            const details = Array.isArray(r.leave_request_details)
+              ? r.leave_request_details[0]
+              : r.leave_request_details;
+            if (!details) return false;
+            const cat = (details.leave_category || '').trim();
+            if (cat !== 'Birthday Leave' && cat !== 'Birthday Leave Grant') return false;
+            const dateStr = details.start_date || r.created_at;
+            if (!dateStr) return true;
+            return new Date(dateStr).getFullYear() === currentYear;
+          });
+
+          if (hasBdayInDb) {
+            if (identityKey) {
+              await setCacheJSON(
+                `${CACHE_KEY_PREFIX}${identityKey.trim().toLowerCase()}_${currentYear}`,
+                true,
+              );
+            }
+            return true;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    // Network errors are non-fatal, fallback to cache result
+    console.warn('checkBirthdayLeaveAppliedForYear database lookup notice:', err);
+  }
+
+  return false;
+}
+
 export async function mergeIntoMyRequestsCache(bdayRequest: MyRequest) {
   const cachedRequests = (await getCacheJSON<MyRequest[]>(MY_REQUESTS_CACHE_KEY)) ?? [];
   const exists = cachedRequests.some(

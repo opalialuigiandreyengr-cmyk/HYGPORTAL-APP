@@ -42,7 +42,9 @@ import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/r
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { getDisabledLeaveTypes, getLeaveBreakdown } from '../utils/requestCalculations';
 import {
+  checkBirthdayLeaveAppliedForYear,
   isAutoApprovedBirthdayGrant,
+  markBirthdayLeaveGrantedForYear,
   mergeIntoMyRequestsCache,
   parseBirthMonthDay,
   verifyEmployeeBirthday,
@@ -92,6 +94,54 @@ const RequestLeave = ({
 }: RequestLeaveProps) => {
   const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const [effectiveBirthDate, setEffectiveBirthDate] = useState<string | null>(birthDate || null);
+  const [hasAppliedBirthdayLeaveThisYear, setHasAppliedBirthdayLeaveThisYear] =
+    useState<boolean>(false);
+
+  // Check if Birthday Leave has already been granted/applied for the current calendar year
+  useEffect(() => {
+    let isMounted = true;
+    async function loadBirthdayGrantStatus() {
+      try {
+        const identity = username || '';
+        const alreadyApplied = await checkBirthdayLeaveAppliedForYear(identity);
+        if (isMounted) {
+          setHasAppliedBirthdayLeaveThisYear(alreadyApplied);
+        }
+      } catch {
+        // ignore errors
+      }
+    }
+    loadBirthdayGrantStatus();
+    return () => {
+      isMounted = false;
+    };
+  }, [username]);
+
+  // If already applied for Birthday Leave, ensure any unsubmitted draft doesn't default to it
+  useEffect(() => {
+    if (
+      hasAppliedBirthdayLeaveThisYear &&
+      (!editingRequest || editingRequest.leave_category !== 'Birthday Leave')
+    ) {
+      setEntries((prev) => {
+        let changed = false;
+        const next = prev.map((e) => {
+          if (e.leaveCategory === 'Birthday Leave') {
+            changed = true;
+            return {
+              ...e,
+              leaveCategory: '',
+              dateFrom: '',
+              dateTo: '',
+              reason: e.reason === 'Auto-approved Birthday Leave Grant' ? '' : e.reason,
+            };
+          }
+          return e;
+        });
+        return changed ? next : prev;
+      });
+    }
+  }, [hasAppliedBirthdayLeaveThisYear, editingRequest]);
 
   // Fallback load birthDate from database if not passed as prop
   useEffect(() => {
@@ -428,6 +478,23 @@ const RequestLeave = ({
       }));
     } else if (field === 'leave_category') {
       if (value === 'Birthday Leave') {
+        const isEditingThisBirthday = Boolean(
+          editingRequest && editingRequest.leave_category === 'Birthday Leave',
+        );
+        const hasBirthdayInOther = entries.some(
+          (e, i) => i !== index && e.leaveCategory === 'Birthday Leave',
+        );
+        if (!isEditingThisBirthday && (hasAppliedBirthdayLeaveThisYear || hasBirthdayInOther)) {
+          platformAlert(
+            'Birthday Leave Unavailable',
+            hasAppliedBirthdayLeaveThisYear
+              ? 'You have already applied for the auto-approved Birthday Leave Grant for this year.'
+              : 'Birthday Leave has already been selected on another card.',
+          );
+          setActiveSelect(null);
+          return;
+        }
+
         if (!effectiveBirthDate) {
           platformAlert(
             'Birth Date Required',
@@ -826,11 +893,12 @@ const RequestLeave = ({
         }
 
         const newReqId = res?.data ? String(res.data) : `bday_leave_${Date.now()}`;
+        let bdayRequestRecord: MyRequest | undefined;
 
         // If single-day Birthday Leave, sync to local cache as auto-approved by HYG Portal System
         if (isSingleDayBirthday) {
           autoApprovedBirthdayCount++;
-          const bdayRequestRecord: MyRequest = {
+          bdayRequestRecord = {
             request_id: newReqId,
             request_type_code: 'leave',
             request_type_name: 'Leave',
@@ -867,6 +935,14 @@ const RequestLeave = ({
             ],
           };
           await mergeIntoMyRequestsCache(bdayRequestRecord);
+        }
+
+        if (ent.leaveCategory === 'Birthday Leave') {
+          const identity = username || '';
+          if (identity) {
+            await markBirthdayLeaveGrantedForYear(identity, bdayRequestRecord);
+          }
+          setHasAppliedBirthdayLeaveThisYear(true);
         }
 
         submittedIndices.current.add(i);
@@ -976,6 +1052,17 @@ const RequestLeave = ({
   }, 0);
   const availableForActiveEntry = Math.max(0, leaveCreditRemaining - otherCreditsDeducted);
 
+  const isEditingThisBirthdayRequest = Boolean(
+    editingRequest && editingRequest.leave_category === 'Birthday Leave',
+  );
+  const hasBirthdayLeaveInOtherCard = entries.some(
+    (e, i) => (!activeSelect || i !== activeSelect.index) && e.leaveCategory === 'Birthday Leave',
+  );
+  const isBirthdayLeaveDisabled =
+    !isEditingThisBirthdayRequest &&
+    (hasAppliedBirthdayLeaveThisYear || hasBirthdayLeaveInOtherCard);
+  const disabledLeaveCategoriesForActiveEntry = isBirthdayLeaveDisabled ? ['Birthday Leave'] : [];
+
   const disabledLeaveTypesForActiveEntry =
     activeEntry?.leaveCategory === 'Birthday Leave'
       ? activeEntryDays === 1
@@ -992,6 +1079,7 @@ const RequestLeave = ({
           activeEntry.leaveType,
           activeEntry.leaveCategory,
           disabledLeaveTypesForActiveEntry,
+          disabledLeaveCategoriesForActiveEntry,
         )
       : null;
 
@@ -1482,15 +1570,24 @@ const RequestLeave = ({
                     ]}
                     onPress={() => chooseSelectOption(option)}
                   >
-                    <Text
-                      style={[
-                        styles.optionText,
-                        selected ? styles.optionTextActive : null,
-                        disabled ? styles.optionTextDisabled : null,
-                      ]}
-                    >
-                      {option}
-                    </Text>
+                    <View style={styles.optionRowLeft}>
+                      <Text
+                        style={[
+                          styles.optionText,
+                          selected ? styles.optionTextActive : null,
+                          disabled ? styles.optionTextDisabled : null,
+                        ]}
+                      >
+                        {option}
+                      </Text>
+                      {disabled && option === 'Birthday Leave' ? (
+                        <Text style={styles.optionDisabledHint}>
+                          {hasAppliedBirthdayLeaveThisYear
+                            ? 'Already applied for this year'
+                            : 'Selected on another card'}
+                        </Text>
+                      ) : null}
+                    </View>
                     {selected ? (
                       <Check size={18} color={colors.brand.goldStrong} strokeWidth={3} />
                     ) : null}
@@ -1608,6 +1705,7 @@ function getSelectSheet(
   leaveType: string,
   leaveCategory: string,
   disabledLeaveTypes: string[],
+  disabledLeaveCategories: string[] = [],
 ) {
   if (field === 'leave_type') {
     return {
@@ -1622,7 +1720,7 @@ function getSelectSheet(
       title: 'Select leave category',
       value: leaveCategory,
       options: leaveCategoryOptions,
-      disabledOptions: [],
+      disabledOptions: disabledLeaveCategories,
     };
   }
   return null;
@@ -2057,6 +2155,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  optionRowLeft: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+  },
+  optionDisabledHint: {
+    fontSize: 11,
+    lineHeight: 15,
+    color: colors.muted,
+    fontWeight: fontWeights.medium,
+    marginTop: 2,
   },
   optionRowActive: {
     backgroundColor: '#fffbeb',

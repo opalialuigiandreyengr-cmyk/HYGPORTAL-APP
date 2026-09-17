@@ -593,6 +593,7 @@ export function PhotoProofScreen({
         storeName: userStoreName,
         imageWidth: capturedWidth,
         imageHeight: capturedHeight,
+        isWatermarked: Platform.OS === 'web',
       };
 
       console.log('[PhotoProof] Capturing photo proof for employee:', employeeName, 'id:', employeeId, 'store:', userStoreName);
@@ -766,34 +767,36 @@ export function PhotoProofScreen({
 
 
 
-        {/* Live Watermark Overlay (Bottom Left) */}
-        <View style={styles.watermarkContainer} pointerEvents="box-none">
-          <View style={styles.watermarkTimeRow} pointerEvents="none">
-            <Text style={styles.watermarkTime}>
-              {currentTimestamp.timeDigits}
-              <Text style={styles.watermarkPeriod}> {currentTimestamp.timePeriod}</Text>
-            </Text>
-            <View style={styles.watermarkDivider} />
-            <View style={styles.watermarkDateCol}>
-              <Text style={styles.watermarkDate}>{currentTimestamp.dateFormatted}</Text>
-              <Text style={styles.watermarkDay}>{currentTimestamp.dayFormatted}</Text>
+        {/* Live Watermark Overlay (Bottom Left) - On Web, the captured photo already has the watermark burned into the canvas, so hide it during preview. On Android/native, preserve original behavior */}
+        {(Platform.OS !== 'web' || !capturedPhotoUri) && (
+          <View style={styles.watermarkContainer} pointerEvents="box-none">
+            <View style={styles.watermarkTimeRow} pointerEvents="none">
+              <Text style={styles.watermarkTime}>
+                {currentTimestamp.timeDigits}
+                <Text style={styles.watermarkPeriod}> {currentTimestamp.timePeriod}</Text>
+              </Text>
+              <View style={styles.watermarkDivider} />
+              <View style={styles.watermarkDateCol}>
+                <Text style={styles.watermarkDate}>{currentTimestamp.dateFormatted}</Text>
+                <Text style={styles.watermarkDay}>{currentTimestamp.dayFormatted}</Text>
+              </View>
             </View>
+            <Pressable
+              style={styles.watermarkLocationRow}
+              onPress={() => {
+                setTempAddress(locationText);
+                setShowEditAddressModal(true);
+              }}
+            >
+              <Text style={styles.watermarkLocation} numberOfLines={4}>
+                {locationText}
+              </Text>
+              <View style={styles.editLocationBadge}>
+                <Pencil size={12} color="#ffffff" strokeWidth={2.5} />
+              </View>
+            </Pressable>
           </View>
-          <Pressable
-            style={styles.watermarkLocationRow}
-            onPress={() => {
-              setTempAddress(locationText);
-              setShowEditAddressModal(true);
-            }}
-          >
-            <Text style={styles.watermarkLocation} numberOfLines={4}>
-              {locationText}
-            </Text>
-            <View style={styles.editLocationBadge}>
-              <Pencil size={12} color="#ffffff" strokeWidth={2.5} />
-            </View>
-          </Pressable>
-        </View>
+        )}
 
         {/* Shutter Click Darkening Layer */}
         <Animated.View

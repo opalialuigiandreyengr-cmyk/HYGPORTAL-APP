@@ -77,6 +77,13 @@ function wrapLocationText(text: string, maxCharsPerLine = 38): string[] {
   return lines.slice(0, 4);
 }
 
+function isPhotoWatermarked(item?: PhotoProofItem | null): boolean {
+  if (!item) return false;
+  // Strictly applies to web/PWA where photos are captured onto the canvas with burned-in text.
+  // On native Android/iOS, camera captures raw photos and relies on the native overlays and SVG compositor.
+  return Platform.OS === 'web';
+}
+
 async function createWatermarkedImageWeb(
   photoUri: string,
   data: PhotoProofItem
@@ -298,9 +305,12 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
         const filename = `photo_proof_${safeDate}_${safeTime}.jpg`;
 
         try {
-          // Burn the full photo proof details (time, date, location) into the image before downloading
-          const watermarkedUri = await createWatermarkedImageWeb(selectedPhoto.photoUri, selectedPhoto);
-          const response = await fetch(watermarkedUri);
+          // If the photo already has the watermark burned in (all web captures do), download directly without re-burning
+          const alreadyWatermarked = isPhotoWatermarked(selectedPhoto);
+          const downloadUri = alreadyWatermarked
+            ? selectedPhoto.photoUri
+            : await createWatermarkedImageWeb(selectedPhoto.photoUri, selectedPhoto);
+          const response = await fetch(downloadUri);
           const blob = await response.blob();
           const blobUrl = URL.createObjectURL(blob);
           const a = document.createElement('a');
@@ -641,22 +651,25 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
                     </Text>
                   </View>
                 )}
-                <View style={styles.imageOverlayGradient}>
-                  <View style={styles.overlayTimeRow}>
-                    <Text style={styles.overlayTimeText}>
-                      {item.timeDigits}
-                      <Text style={styles.overlayTimePeriod}> {item.timePeriod}</Text>
-                    </Text>
-                    <View style={styles.overlayDivider} />
-                    <View>
-                      <Text style={styles.overlayDateText}>{item.dateFormatted}</Text>
-                      <Text style={styles.overlayDayText}>{item.dayFormatted}</Text>
+                {/* Details overlay only shown if the photo does not already have a burned watermark */}
+                {!isPhotoWatermarked(item) && (
+                  <View style={styles.imageOverlayGradient}>
+                    <View style={styles.overlayTimeRow}>
+                      <Text style={styles.overlayTimeText}>
+                        {item.timeDigits}
+                        <Text style={styles.overlayTimePeriod}> {item.timePeriod}</Text>
+                      </Text>
+                      <View style={styles.overlayDivider} />
+                      <View>
+                        <Text style={styles.overlayDateText}>{item.dateFormatted}</Text>
+                        <Text style={styles.overlayDayText}>{item.dayFormatted}</Text>
+                      </View>
                     </View>
+                    <Text style={styles.overlayLocationText} numberOfLines={2}>
+                      {item.locationText}
+                    </Text>
                   </View>
-                  <Text style={styles.overlayLocationText} numberOfLines={2}>
-                    {item.locationText}
-                  </Text>
-                </View>
+                )}
                 <View style={styles.expandBadge}>
                   <Eye size={16} color="#ffffff" strokeWidth={2.4} />
                 </View>
@@ -874,25 +887,27 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
                 </View>
               )}
 
-              {/* Watermark Overlay (Bottom Left) matching PhotoProofScreen exactly */}
-              <View style={styles.watermarkContainer} pointerEvents="box-none">
-                <View style={styles.watermarkTimeRow} pointerEvents="none">
-                  <Text style={styles.watermarkTime}>
-                    {selectedPhoto.timeDigits}
-                    <Text style={styles.watermarkPeriod}> {selectedPhoto.timePeriod}</Text>
-                  </Text>
-                  <View style={styles.watermarkDivider} />
-                  <View style={styles.watermarkDateCol}>
-                    <Text style={styles.watermarkDate}>{selectedPhoto.dateFormatted}</Text>
-                    <Text style={styles.watermarkDay}>{selectedPhoto.dayFormatted}</Text>
+              {/* Watermark Overlay (Bottom Left) - Only shown if the photo does not already have a burned watermark */}
+              {!isPhotoWatermarked(selectedPhoto) && (
+                <View style={styles.watermarkContainer} pointerEvents="box-none">
+                  <View style={styles.watermarkTimeRow} pointerEvents="none">
+                    <Text style={styles.watermarkTime}>
+                      {selectedPhoto.timeDigits}
+                      <Text style={styles.watermarkPeriod}> {selectedPhoto.timePeriod}</Text>
+                    </Text>
+                    <View style={styles.watermarkDivider} />
+                    <View style={styles.watermarkDateCol}>
+                      <Text style={styles.watermarkDate}>{selectedPhoto.dateFormatted}</Text>
+                      <Text style={styles.watermarkDay}>{selectedPhoto.dayFormatted}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.watermarkLocationRow}>
+                    <Text style={styles.watermarkLocation} numberOfLines={4}>
+                      {selectedPhoto.locationText}
+                    </Text>
                   </View>
                 </View>
-                <View style={styles.watermarkLocationRow}>
-                  <Text style={styles.watermarkLocation} numberOfLines={4}>
-                    {selectedPhoto.locationText}
-                  </Text>
-                </View>
-              </View>
+              )}
             </View>
           )}
 

@@ -1944,6 +1944,7 @@ export function ApplyEsarfScreen({
             <DateRangePickerModal
               key={`esarf-date-range-${activeDateChoiceIndex}-${entries[activeDateChoiceIndex]?.id || activeDateChoiceIndex}`}
               visible
+              allowFutureDates={parseEntryTransactions(entries[activeDateChoiceIndex]?.transaction).includes('use_offset')}
               initialStartDate={entries[activeDateChoiceIndex]?.dateFrom || ''}
               initialEndDate={entries[activeDateChoiceIndex]?.dateTo || ''}
               maxRangeDays={2}
