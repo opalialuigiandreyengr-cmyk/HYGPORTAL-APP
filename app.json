@@ -22,7 +22,7 @@
     },
     "android": {
       "package": "com.hyg.portal",
-      "versionCode": 24,
+      "versionCode": 25,
       "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
