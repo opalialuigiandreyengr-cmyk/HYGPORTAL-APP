@@ -5,11 +5,12 @@ const root = path.resolve(__dirname, '..');
 const publicDir = path.join(root, 'public');
 const distDir = path.join(root, 'dist');
 
-for (const fileName of ['manifest.json', 'sw.js', 'pwa-icon.png', 'apple-touch-icon.png', 'app-version.json']) {
+for (const fileName of ['manifest.json', 'sw.js', 'pwa-icon.png', 'apple-touch-icon.png', 'app-version.json', 'hygportal.apk']) {
   const source = path.join(publicDir, fileName);
   const target = path.join(distDir, fileName);
 
   if (!fs.existsSync(source)) {
+    if (fileName === 'hygportal.apk') continue;
     throw new Error(`Missing PWA asset: ${source}`);
   }
 
