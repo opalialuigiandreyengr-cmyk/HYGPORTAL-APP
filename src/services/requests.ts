@@ -235,7 +235,26 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
   // Fallback: update tables directly or via admin_update_request_data RPC
   let fallbackError: string | null = null;
 
-  // Always update main requests table (reason, total_hours, total_days, date_from, date_to)
+  // Always update main requests table (reason, total_hours, total_days, date_from, date_to, request_type_id)
+  let targetTypeId: string | null = null;
+  if (params.transactionType) {
+    const lowerTrans = params.transactionType.toLowerCase();
+    let targetCode = 'overtime';
+    if (lowerTrans.includes('use offset') || lowerTrans.includes('use_offset')) {
+      targetCode = 'use_offset';
+    } else if (lowerTrans.includes('offset')) {
+      targetCode = 'offset_earn';
+    }
+    const { data: rtData } = await supabase
+      .from('request_types')
+      .select('id')
+      .eq('code', targetCode)
+      .maybeSingle();
+    if (rtData?.id) {
+      targetTypeId = rtData.id;
+    }
+  }
+
   const { error: mainReqErr } = await supabase
     .from('requests')
     .update({
@@ -246,6 +265,7 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
       ...(params.dateTo ? { date_to: params.dateTo } : {}),
       ...(params.startDate ? { date_from: params.startDate } : {}),
       ...(params.endDate ? { date_to: params.endDate } : {}),
+      ...(targetTypeId ? { request_type_id: targetTypeId } : {}),
     })
     .eq('id', targetId);
 
