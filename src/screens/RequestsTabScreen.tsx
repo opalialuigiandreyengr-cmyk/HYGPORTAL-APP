@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, type AppStateStatus, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Animated, AppState, type AppStateStatus, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
@@ -11,6 +11,7 @@ import { TopBar } from '../components/TopBar';
 import { deleteMyPendingRequest, loadMyRequests, loadMyRequestsCached, type MyRequest } from '../services/requests';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
+import { DeleteConfirmationModal } from '../components/DeleteConfirmationModal';
 import { isAutoApprovedBirthdayGrant } from '../services/birthdayLeave';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import {
@@ -70,6 +71,8 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
   const [selectedRequest, setSelectedRequest] = useState<{ item: MyRequest; sequence: number } | null>(null);
   const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [requestToDelete, setRequestToDelete] = useState<{ item: MyRequest; sequence: number } | null>(null);
+  const [swipedCardId, setSwipedCardId] = useState<string | null>(null);
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
 
   async function handleEditRequest(item: MyRequest) {
@@ -85,29 +88,21 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
     onEditRequest(item);
   }
 
-  async function handleDeleteRequest(item: MyRequest) {
-    const isPerk = isPerkRequest(item);
-    if (!isPerk) return;
+  function handleDeleteRequest(item: MyRequest, sequence?: number) {
+    const statusKey = normalizeStatus(item.status, item);
+    if (statusKey !== 'pending') return;
+    setRequestToDelete({ item, sequence: sequence ?? 1 });
+  }
 
-    const confirmTitle = 'Delete Request';
-    const confirmMessage = 'Are you sure you want to delete this pending Perks request? This action cannot be undone.';
+  async function handleConfirmDelete() {
+    if (!requestToDelete) return;
+    const isPerk = isPerkRequest(requestToDelete.item);
+    await executeDelete(requestToDelete.item, isPerk);
+  }
 
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      if (window.confirm(confirmMessage)) {
-        await executeDelete(item, isPerk);
-      }
-    } else {
-      Alert.alert(confirmTitle, confirmMessage, [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            void executeDelete(item, isPerk);
-          },
-        },
-      ]);
-    }
+  function handleCancelDelete() {
+    setRequestToDelete(null);
+    setSwipedCardId(null);
   }
 
   async function executeDelete(item: MyRequest, isPerk: boolean) {
@@ -118,6 +113,8 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
         if (selectedRequest) {
           setSelectedRequest(null);
         }
+        setRequestToDelete(null);
+        setSwipedCardId(null);
         setActiveLockInfo(lockInfo);
         return;
       }
@@ -126,6 +123,8 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
       if (selectedRequest?.item.request_id === item.request_id) {
         setSelectedRequest(null);
       }
+      setRequestToDelete(null);
+      setSwipedCardId(null);
       await refresh(true);
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unable to delete request.';
@@ -469,17 +468,26 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
 
         {paginatedItems.map((item, index) => {
           const sequence = (currentPage - 1) * pageSize + index + 1;
+          const statusKey = normalizeStatus(item.status, item);
+          const isPending = statusKey === 'pending';
           return (
-          <RequestCard
-            key={item.request_id}
-            item={item}
-            profile={profile}
-            sequence={sequence}
-            isDeleting={deletingId === item.request_id}
-            onView={() => setSelectedRequest({ item, sequence })}
-            onEdit={onEditRequest ? () => void handleEditRequest(item) : undefined}
-            onDelete={isPerkRequest(item) ? () => void handleDeleteRequest(item) : undefined}
-          />
+            <RequestCard
+              key={item.request_id || `req-${index}`}
+              item={item}
+              profile={profile}
+              sequence={sequence}
+              isDeleting={deletingId === item.request_id}
+              isSwipedOpen={swipedCardId === item.request_id}
+              onSwipeOpen={() => setSwipedCardId(item.request_id)}
+              onSwipeClose={() => {
+                if (swipedCardId === item.request_id) {
+                  setSwipedCardId(null);
+                }
+              }}
+              onView={() => setSelectedRequest({ item, sequence })}
+              onEdit={onEditRequest ? () => void handleEditRequest(item) : undefined}
+              onDelete={isPending ? () => handleDeleteRequest(item, sequence) : undefined}
+            />
           );
         })}
 
@@ -526,10 +534,19 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
         onClose={() => setSelectedRequest(null)}
         onEdit={onEditRequest ? (req) => void handleEditRequest(req) : undefined}
         onDelete={
-          selectedRequest && isPerkRequest(selectedRequest.item)
-            ? (req) => void handleDeleteRequest(req)
+          selectedRequest && normalizeStatus(selectedRequest.item.status, selectedRequest.item) === 'pending'
+            ? (req) => handleDeleteRequest(req, selectedRequest.sequence)
             : undefined
         }
+      />
+
+      <DeleteConfirmationModal
+        visible={Boolean(requestToDelete)}
+        request={requestToDelete?.item ?? null}
+        sequence={requestToDelete?.sequence ?? 1}
+        isDeleting={Boolean(requestToDelete && deletingId === requestToDelete.item.request_id)}
+        onConfirm={() => void handleConfirmDelete()}
+        onCancel={handleCancelDelete}
       />
 
       <ActiveReviewLockModal
@@ -547,6 +564,9 @@ function RequestCard({
   profile,
   sequence,
   isDeleting,
+  isSwipedOpen,
+  onSwipeOpen,
+  onSwipeClose,
   onView,
   onEdit,
   onDelete,
@@ -555,97 +575,227 @@ function RequestCard({
   profile: EmployeeProfileSummary | null;
   sequence: number;
   isDeleting?: boolean;
+  isSwipedOpen?: boolean;
+  onSwipeOpen?: () => void;
+  onSwipeClose?: () => void;
   onView: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
 }) {
   const statusKey = normalizeStatus(item.status, item);
+  const isPending = statusKey === 'pending';
   const requestDate = getRequestDate(item);
   const displayName = formatEmployeeDisplayName(profile);
   const department = formatProfileWorkUnit(profile);
   const isPerk = isPerkRequest(item);
 
+  const translateX = useRef(new Animated.Value(0)).current;
+  const isOpenRef = useRef(false);
+  const SWIPE_WIDTH = 84;
+
+  useEffect(() => {
+    if (!isSwipedOpen && isOpenRef.current) {
+      isOpenRef.current = false;
+      Animated.spring(translateX, {
+        toValue: 0,
+        bounciness: 4,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [isSwipedOpen]);
+
+  const panResponder = useMemo(() => {
+    if (!isPending || !onDelete) {
+      return null;
+    }
+
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.5;
+        if (isOpenRef.current) {
+          return isHorizontal && Math.abs(gestureState.dx) > 6;
+        }
+        return isHorizontal && gestureState.dx < -10;
+      },
+      onMoveShouldSetPanResponderCapture: (_, gestureState) => {
+        const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.5;
+        if (isOpenRef.current) {
+          return isHorizontal && Math.abs(gestureState.dx) > 6;
+        }
+        return isHorizontal && gestureState.dx < -10;
+      },
+      onPanResponderMove: (_, gestureState) => {
+        const startX = isOpenRef.current ? -SWIPE_WIDTH : 0;
+        let newX = startX + gestureState.dx;
+        if (newX > 0) {
+          newX = 0;
+        }
+        if (newX < -SWIPE_WIDTH) {
+          newX = -SWIPE_WIDTH + (newX + SWIPE_WIDTH) * 0.25;
+        }
+        translateX.setValue(newX);
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        const startX = isOpenRef.current ? -SWIPE_WIDTH : 0;
+        const totalX = startX + gestureState.dx;
+        const isFlickLeft = gestureState.vx < -0.4;
+        const isFlickRight = gestureState.vx > 0.4;
+        const shouldBeOpen = (totalX < -35 && !isFlickRight) || isFlickLeft;
+
+        if (shouldBeOpen) {
+          isOpenRef.current = true;
+          onSwipeOpen?.();
+          Animated.spring(translateX, {
+            toValue: -SWIPE_WIDTH,
+            bounciness: 4,
+            useNativeDriver: true,
+          }).start(() => {
+            onDelete();
+          });
+        } else {
+          isOpenRef.current = false;
+          onSwipeClose?.();
+          Animated.spring(translateX, {
+            toValue: 0,
+            bounciness: 4,
+            useNativeDriver: true,
+          }).start();
+        }
+      },
+      onPanResponderTerminate: () => {
+        isOpenRef.current = false;
+        onSwipeClose?.();
+        Animated.spring(translateX, {
+          toValue: 0,
+          bounciness: 4,
+          useNativeDriver: true,
+        }).start();
+      },
+    });
+  }, [isPending, onDelete, onSwipeOpen, onSwipeClose, SWIPE_WIDTH]);
+
   return (
     <View style={styles.cardOuter}>
-      <View style={styles.cardAccent} />
-      <View style={styles.card}>
-        <View style={styles.avatar}>
-          <Avatar name={displayName} photoUrl={profile?.photoUrl} size={35} textSize={13} />
+      {isPending && onDelete ? (
+        <View style={styles.swipeDeleteActionBehind}>
+          <Pressable
+            style={styles.swipeDeleteBtn}
+            onPress={() => {
+              onDelete();
+            }}
+            accessibilityLabel="Delete request"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <View style={styles.swipeDeleteIconBox}>
+              <Trash2 size={20} color="#ffffff" strokeWidth={2.4} />
+            </View>
+            <Text style={styles.swipeDeleteBtnText}>Delete</Text>
+          </Pressable>
         </View>
+      ) : null}
 
-        <View style={styles.cardContent}>
-          <View style={styles.cardTopRow}>
-            <View style={styles.cardTitleBlock}>
-              <Text style={styles.cardCode} numberOfLines={1}>
-                {formatRequestCode(item, sequence)}
-              </Text>
-              <Text style={styles.cardName} numberOfLines={1}>
-                {displayName}
-              </Text>
-              <Text style={styles.cardDept}>{department}</Text>
-            </View>
-            <View style={styles.cardMeta}>
-              <Text style={[styles.statusPill, statusPillStyle(statusKey, item)]} numberOfLines={1}>
-                {renderStatusPillContent(item)}
-              </Text>
-              <View style={styles.metaLine}>
-                <CalendarDays size={14} color={colors.muted} strokeWidth={2.2} />
-                <Text style={styles.metaText} numberOfLines={1}>
-                  {formatCompactDate(requestDate)}
-                </Text>
-              </View>
-              <View style={styles.metaLine}>
-                <Clock3 size={14} color={colors.muted} strokeWidth={2.2} />
-                <Text style={styles.metaText} numberOfLines={1}>
-                  {formatCompactTime(item.submitted_at || item.time_from)}
-                </Text>
-              </View>
-            </View>
+      <Animated.View
+        style={[
+          styles.cardSlideWrapper,
+          { transform: [{ translateX }] },
+        ]}
+        {...(panResponder ? panResponder.panHandlers : {})}
+      >
+        <View style={styles.cardAccent} />
+        <Pressable
+          style={[styles.card, isDeleting ? { opacity: 0.6 } : null]}
+          onPress={() => {
+            if (isOpenRef.current) {
+              isOpenRef.current = false;
+              onSwipeClose?.();
+              Animated.spring(translateX, {
+                toValue: 0,
+                bounciness: 4,
+                useNativeDriver: true,
+              }).start();
+            }
+          }}
+        >
+          <View style={styles.avatar}>
+            <Avatar name={displayName} photoUrl={profile?.photoUrl} size={35} textSize={13} />
           </View>
 
-          <View style={styles.cardBottomRow}>
-            <View style={styles.typePill}>
-              <Text style={styles.typePillText} numberOfLines={1} ellipsizeMode="tail">
-                {formatRequestType(item)}
-              </Text>
+          <View style={styles.cardContent}>
+            <View style={styles.cardTopRow}>
+              <View style={styles.cardTitleBlock}>
+                <Text style={styles.cardCode} numberOfLines={1}>
+                  {formatRequestCode(item, sequence)}
+                </Text>
+                <Text style={styles.cardName} numberOfLines={1}>
+                  {displayName}
+                </Text>
+                <Text style={styles.cardDept}>{department}</Text>
+              </View>
+              <View style={styles.cardMeta}>
+                <Text style={[styles.statusPill, statusPillStyle(statusKey, item)]} numberOfLines={1}>
+                  {renderStatusPillContent(item)}
+                </Text>
+                <View style={styles.metaLine}>
+                  <CalendarDays size={14} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.metaText} numberOfLines={1}>
+                    {formatCompactDate(requestDate)}
+                  </Text>
+                </View>
+                <View style={styles.metaLine}>
+                  <Clock3 size={14} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.metaText} numberOfLines={1}>
+                    {formatCompactTime(item.submitted_at || item.time_from)}
+                  </Text>
+                </View>
+              </View>
             </View>
-            {statusKey === 'pending' ? (
-              <>
-                {!isPerk && onEdit ? (
-                  <Pressable
-                    style={styles.editButton}
-                    onPress={onEdit}
-                    accessibilityLabel="Edit request"
-                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                  >
-                    <Pencil size={14} color="#92400e" strokeWidth={2.3} />
-                    <Text style={styles.editText}>Edit</Text>
-                  </Pressable>
-                ) : null}
-                {isPerk && onDelete ? (
-                  <Pressable
-                    disabled={isDeleting}
-                    style={[styles.deleteButton, isDeleting ? { opacity: 0.6 } : null]}
-                    onPress={onDelete}
-                    accessibilityLabel="Delete request"
-                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                  >
-                    {isDeleting ? (
-                      <ActivityIndicator size="small" color={colors.semantic.danger} />
-                    ) : (
-                      <Trash2 size={14} color={colors.semantic.danger} strokeWidth={2.3} />
-                    )}
-                  </Pressable>
-                ) : null}
-              </>
-            ) : null}
-            <Pressable style={styles.viewButton} onPress={onView}>
-              <Eye size={15} color={colors.text} strokeWidth={2.3} />
-              <Text style={styles.viewText}>View</Text>
-            </Pressable>
+
+            <View style={styles.cardBottomRow}>
+              <View style={styles.typePill}>
+                <Text style={styles.typePillText} numberOfLines={1} ellipsizeMode="tail">
+                  {formatRequestType(item)}
+                </Text>
+              </View>
+              {statusKey === 'pending' ? (
+                <>
+                  {!isPerk && onEdit ? (
+                    <Pressable
+                      style={styles.editButton}
+                      onPress={onEdit}
+                      accessibilityLabel="Edit request"
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                    >
+                      <Pencil size={14} color="#92400e" strokeWidth={2.3} />
+                      <Text style={styles.editText}>Edit</Text>
+                    </Pressable>
+                  ) : null}
+                  {onDelete ? (
+                    <Pressable
+                      disabled={isDeleting}
+                      style={[styles.deleteButton, isDeleting ? { opacity: 0.6 } : null]}
+                      onPress={onDelete}
+                      accessibilityLabel="Delete request"
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                    >
+                      {isDeleting ? (
+                        <ActivityIndicator size="small" color={colors.semantic.danger} />
+                      ) : (
+                        <Trash2 size={14} color={colors.semantic.danger} strokeWidth={2.3} />
+                      )}
+                    </Pressable>
+                  ) : null}
+                </>
+              ) : null}
+              <Pressable style={styles.viewButton} onPress={onView}>
+                <Eye size={15} color={colors.text} strokeWidth={2.3} />
+                <Text style={styles.viewText}>View</Text>
+              </Pressable>
+            </View>
           </View>
-        </View>
-      </View>
+        </Pressable>
+      </Animated.View>
     </View>
   );
 }
@@ -862,7 +1012,7 @@ function RequestDetailsSheet({
                     <Text style={styles.sheetEditText}>Edit Request</Text>
                   </Pressable>
                 ) : null}
-                {isPerk && onDelete ? (
+                {onDelete ? (
                   <Pressable
                     disabled={isDeleting}
                     style={[styles.sheetDeleteButton, isDeleting ? { opacity: 0.6 } : null]}
@@ -2125,7 +2275,47 @@ const styles = StyleSheet.create({
   cardOuter: {
     position: 'relative',
     marginBottom: spacing.sm,
+  },
+  cardSlideWrapper: {
+    position: 'relative',
     paddingLeft: 4,
+    backgroundColor: 'transparent',
+  },
+  swipeDeleteActionBehind: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 4,
+    right: 0,
+    borderRadius: radius.md,
+    backgroundColor: '#dc2626',
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  swipeDeleteBtn: {
+    width: 84,
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    backgroundColor: '#dc2626',
+  },
+  swipeDeleteIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  swipeDeleteBtnText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: fontWeights.heavy,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   cardAccent: {
     position: 'absolute',

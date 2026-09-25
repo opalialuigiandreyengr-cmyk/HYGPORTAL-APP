@@ -86,3 +86,89 @@ export function isValidEsarfDateRange(startDate: string, endDate: string): boole
   return diff === 0 || diff === 1;
 }
 
+/**
+ * Parses formatted ESARF date strings (e.g. '09/22-23/26', '09/23-23/26', '09/23/2026',
+ * '02/28-03/01/26', '12/31/26-01/01/27') back into YYYY-MM-DD dateFrom and dateTo.
+ */
+export function parseEsarfDateRangeStringToYMD(
+  dateStr?: string | null,
+  fallbackYear: number = new Date().getFullYear(),
+): { dateFrom: string; dateTo: string } | null {
+  if (!dateStr || dateStr === 'mm/dd-dd/yyyy' || dateStr === '--') return null;
+  const s = dateStr.trim();
+
+  const toFullYear = (yStr: string) => {
+    const num = parseInt(yStr, 10);
+    if (isNaN(num)) return fallbackYear;
+    return yStr.length <= 2 ? 2000 + num : num;
+  };
+
+  // Cross year: MM/DD/YY-MM/DD/YY or MM/DD/YYYY-MM/DD/YYYY (with optional spaces around hyphen)
+  const crossYear = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s*-\s*(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (crossYear) {
+    const [, m1, d1, y1, m2, d2, y2] = crossYear;
+    return {
+      dateFrom: `${toFullYear(y1)}-${m1.padStart(2, '0')}-${d1.padStart(2, '0')}`,
+      dateTo: `${toFullYear(y2)}-${m2.padStart(2, '0')}-${d2.padStart(2, '0')}`,
+    };
+  }
+
+  // Cross month: MM/DD-MM/DD/YY or MM/DD-MM/DD/YYYY
+  const crossMonth = s.match(/^(\d{1,2})\/(\d{1,2})\s*-\s*(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (crossMonth) {
+    const [, m1, d1, m2, d2, y] = crossMonth;
+    const fullYear = toFullYear(y);
+    return {
+      dateFrom: `${fullYear}-${m1.padStart(2, '0')}-${d1.padStart(2, '0')}`,
+      dateTo: `${fullYear}-${m2.padStart(2, '0')}-${d2.padStart(2, '0')}`,
+    };
+  }
+
+  // Same month: MM/DD-DD/YY or MM/DD-DD/YYYY
+  const sameMonth = s.match(/^(\d{1,2})\/(\d{1,2})\s*-\s*(\d{1,2})\/(\d{2,4})$/);
+  if (sameMonth) {
+    const [, m, d1, d2, y] = sameMonth;
+    const fullYear = toFullYear(y);
+    return {
+      dateFrom: `${fullYear}-${m.padStart(2, '0')}-${d1.padStart(2, '0')}`,
+      dateTo: `${fullYear}-${m.padStart(2, '0')}-${d2.padStart(2, '0')}`,
+    };
+  }
+
+  // Two full dates separated by dash: MM/DD/YYYY-MM/DD/YYYY
+  const twoDates = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s*-\s*(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (twoDates) {
+    const [, m1, d1, y1, m2, d2, y2] = twoDates;
+    return {
+      dateFrom: `${toFullYear(y1)}-${m1.padStart(2, '0')}-${d1.padStart(2, '0')}`,
+      dateTo: `${toFullYear(y2)}-${m2.padStart(2, '0')}-${d2.padStart(2, '0')}`,
+    };
+  }
+
+  // Single date: MM/DD/YY or MM/DD/YYYY
+  const single = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (single) {
+    const [, m, d, y] = single;
+    const ymd = `${toFullYear(y)}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+    return { dateFrom: ymd, dateTo: ymd };
+  }
+
+  return null;
+}
+
+/**
+ * Parses 12-hour formatted time (e.g. '9:00 AM', '04:30 PM') to 24-hour 'HH:MM'.
+ */
+export function parse12HourDisplayTo24(timeStr?: string | null): string | null {
+  if (!timeStr || timeStr === '--:--' || timeStr === '--') return null;
+  const match = timeStr.trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$/i);
+  if (!match) return null;
+  let h = parseInt(match[1], 10);
+  const m = match[2];
+  const period = match[3].toUpperCase();
+  if (period === 'PM' && h < 12) h += 12;
+  if (period === 'AM' && h === 12) h = 0;
+  return `${String(h).padStart(2, '0')}:${m}`;
+}
+
+

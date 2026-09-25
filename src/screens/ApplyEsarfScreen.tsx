@@ -53,6 +53,8 @@ import {
   formatTimeInput,
   getDaysBetweenYMD,
   isValidEsarfDateRange,
+  parse12HourDisplayTo24,
+  parseEsarfDateRangeStringToYMD,
   timeStringToDate,
 } from '../utils/dateTime';
 
@@ -242,13 +244,16 @@ export function ApplyEsarfScreen({
       if (parsed.length > 0) {
         return parsed.map((p, idx) => {
           const key = parseTransactionStringToKeys(p.transactionLabel || editingRequest.transaction_type, editingRequest.request_type_code);
+          const parsedDates = parseEsarfDateRangeStringToYMD(p.dateStr);
+          const parsedTimeFrom = parse12HourDisplayTo24(p.timeFromStr);
+          const parsedTimeTo = parse12HourDisplayTo24(p.timeToStr);
           return {
             id: String(idx + 1),
             transaction: key,
-            dateFrom: editingRequest.date_from || '',
-            dateTo: editingRequest.date_to || editingRequest.date_from || '',
-            timeFrom: editingRequest.time_from || '',
-            timeTo: editingRequest.time_to || '',
+            dateFrom: parsedDates?.dateFrom || editingRequest.date_from || '',
+            dateTo: parsedDates?.dateTo || editingRequest.date_to || editingRequest.date_from || '',
+            timeFrom: parsedTimeFrom || editingRequest.time_from || '',
+            timeTo: parsedTimeTo || editingRequest.time_to || '',
             reason: p.reason || editingRequest.reason || '',
           };
         });
@@ -379,15 +384,20 @@ export function ApplyEsarfScreen({
       const parsed = parseEsarfEntries(editingRequest);
       if (parsed.length > 0) {
         setEntries(
-          parsed.map((p, idx) => ({
-            id: String(idx + 1),
-            transaction: parseTransactionStringToKeys(p.transactionLabel || editingRequest.transaction_type, editingRequest.request_type_code),
-            dateFrom: editingRequest.date_from || '',
-            dateTo: editingRequest.date_to || editingRequest.date_from || '',
-            timeFrom: editingRequest.time_from || '',
-            timeTo: editingRequest.time_to || '',
-            reason: p.reason || editingRequest.reason || '',
-          })),
+          parsed.map((p, idx) => {
+            const parsedDates = parseEsarfDateRangeStringToYMD(p.dateStr);
+            const parsedTimeFrom = parse12HourDisplayTo24(p.timeFromStr);
+            const parsedTimeTo = parse12HourDisplayTo24(p.timeToStr);
+            return {
+              id: String(idx + 1),
+              transaction: parseTransactionStringToKeys(p.transactionLabel || editingRequest.transaction_type, editingRequest.request_type_code),
+              dateFrom: parsedDates?.dateFrom || editingRequest.date_from || '',
+              dateTo: parsedDates?.dateTo || editingRequest.date_to || editingRequest.date_from || '',
+              timeFrom: parsedTimeFrom || editingRequest.time_from || '',
+              timeTo: parsedTimeTo || editingRequest.time_to || '',
+              reason: p.reason || editingRequest.reason || '',
+            };
+          }),
         );
       } else {
         const defaultKey = parseTransactionStringToKeys(editingRequest.transaction_type, editingRequest.request_type_code);
@@ -576,7 +586,6 @@ export function ApplyEsarfScreen({
         ...current,
         [`entry_${index}_dateFrom`]: undefined,
         [`entry_${index}_dateTo`]: undefined,
-        multi_entry_dates: undefined,
       }));
     } else if (kind === 'date_to') {
       const val = formatDateInput(selectedDate);
@@ -590,7 +599,6 @@ export function ApplyEsarfScreen({
         ...current,
         [`entry_${index}_dateFrom`]: undefined,
         [`entry_${index}_dateTo`]: undefined,
-        multi_entry_dates: undefined,
       }));
     } else if (kind === 'time_from') {
       updateEntry(index, { timeFrom: formatTimeInput(selectedDate) });
@@ -812,19 +820,6 @@ export function ApplyEsarfScreen({
       if (!entry.reason.trim()) errors[`entry_${i}_reason`] = `Request #${num}: Reason is required.`;
     });
 
-    if (entries.length > 1) {
-      const validDatesFrom = entries.map((e) => e.dateFrom).filter(Boolean);
-      const validDatesTo = entries.map((e) => e.dateTo || e.dateFrom).filter(Boolean);
-      if (validDatesFrom.length > 0 && validDatesTo.length > 0) {
-        const sortedFrom = [...validDatesFrom].sort();
-        const sortedTo = [...validDatesTo].sort();
-        const minFrom = sortedFrom[0];
-        const maxTo = sortedTo[sortedTo.length - 1];
-        if (getDaysBetweenYMD(minFrom, maxTo) > 1) {
-          errors.multi_entry_dates = 'All entries in an ESARF request must fall within a single day or two consecutive days.';
-        }
-      }
-    }
 
     if (editingRequest) {
       const hasRegular = entries.some((e) => !parseEntryTransactions(e.transaction).includes('use_offset'));
@@ -1955,7 +1950,6 @@ export function ApplyEsarfScreen({
                   ...current,
                   [`entry_${idx}_dateFrom`]: undefined,
                   [`entry_${idx}_dateTo`]: undefined,
-                  multi_entry_dates: undefined,
                 }));
                 setActiveDateChoiceIndex(null);
               }}

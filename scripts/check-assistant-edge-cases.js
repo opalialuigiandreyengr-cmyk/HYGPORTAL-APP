@@ -15,7 +15,13 @@ require.extensions['.ts'] = (module, filename) => {
 
 const { createAssistantReply } = require(path.join('..', 'src', 'services', 'assistant.ts'));
 const { calculateRequestHours } = require(path.join('..', 'src', 'utils', 'requestCalculations.ts'));
-const { calculateLeaveDays, getDaysBetweenYMD, isValidEsarfDateRange } = require(path.join('..', 'src', 'utils', 'dateTime.ts'));
+const {
+  calculateLeaveDays,
+  getDaysBetweenYMD,
+  isValidEsarfDateRange,
+  parseEsarfDateRangeStringToYMD,
+  parse12HourDisplayTo24,
+} = require(path.join('..', 'src', 'utils', 'dateTime.ts'));
 const { getDisabledLeaveTypes, getLeaveBreakdown } = require(path.join('..', 'src', 'utils', 'requestCalculations.ts'));
 
 const context = {
@@ -256,6 +262,37 @@ assertEqual('esarf consecutive days valid', isValidEsarfDateRange('2026-09-15', 
 assertEqual('esarf month boundary consecutive days valid', isValidEsarfDateRange('2026-02-28', '2026-03-01'), true);
 assertEqual('esarf 3 days invalid', isValidEsarfDateRange('2026-09-15', '2026-09-17'), false);
 assertEqual('esarf reverse dates invalid', isValidEsarfDateRange('2026-09-16', '2026-09-15'), false);
+
+// Test user scenario multi-entries (each entry is independently valid)
+assertEqual('user entry 1 (09/22-23/26) valid', isValidEsarfDateRange('2026-09-22', '2026-09-23'), true);
+assertEqual('user entry 2 (09/23-23/26) valid', isValidEsarfDateRange('2026-09-23', '2026-09-23'), true);
+assertEqual('user entry 3 (09/24-24/26) valid', isValidEsarfDateRange('2026-09-24', '2026-09-24'), true);
+
+// Test parseEsarfDateRangeStringToYMD
+assertDeepEqual('parse formatted 09/22-23/26', parseEsarfDateRangeStringToYMD('09/22-23/26'), {
+  dateFrom: '2026-09-22',
+  dateTo: '2026-09-23',
+});
+assertDeepEqual('parse formatted 09/23-23/26', parseEsarfDateRangeStringToYMD('09/23-23/26'), {
+  dateFrom: '2026-09-23',
+  dateTo: '2026-09-23',
+});
+assertDeepEqual('parse formatted 09/24-24/26', parseEsarfDateRangeStringToYMD('09/24-24/26'), {
+  dateFrom: '2026-09-24',
+  dateTo: '2026-09-24',
+});
+assertDeepEqual('parse formatted cross-month 02/28-03/01/26', parseEsarfDateRangeStringToYMD('02/28-03/01/26'), {
+  dateFrom: '2026-02-28',
+  dateTo: '2026-03-01',
+});
+
+// Test parse12HourDisplayTo24
+assertEqual('parse 9AM', parse12HourDisplayTo24('9:00 AM'), '09:00');
+assertEqual('parse 1AM', parse12HourDisplayTo24('1:00 AM'), '01:00');
+assertEqual('parse 4:30AM', parse12HourDisplayTo24('4:30 AM'), '04:30');
+assertEqual('parse 9PM', parse12HourDisplayTo24('9:00 PM'), '21:00');
+assertEqual('parse 6AM', parse12HourDisplayTo24('6:00 AM'), '06:00');
+assertEqual('parse 12PM', parse12HourDisplayTo24('12:00 PM'), '12:00');
 
 const bothBreakdown = getLeaveBreakdown('Both', 2, '1', '1');
 assertDeepEqual('both leave split', bothBreakdown, {
