@@ -1,5 +1,5 @@
-// Version: 20260820-v1.5.6
-const CACHE_NAME = 'hygportal-assets-20260820-v1.5.6';
+// Version: 20260915-v1.6.0
+const CACHE_NAME = 'hygportal-assets-20260915-v1.6.0';
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
