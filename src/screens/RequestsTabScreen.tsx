@@ -77,6 +77,15 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
 
   async function handleEditRequest(item: MyRequest) {
     if (!onEditRequest) return;
+    if (!canEditRequest(item)) {
+      const msg = 'This ESARF request has already received an approval in the timeline and can no longer be edited.';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(msg);
+      } else {
+        Alert.alert('Cannot Edit Request', msg);
+      }
+      return;
+    }
     const lockInfo = await checkApproverActiveViewing(item.request_id);
     if (lockInfo.isLocked) {
       if (selectedRequest) {
@@ -91,6 +100,15 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
   function handleDeleteRequest(item: MyRequest, sequence?: number) {
     const statusKey = normalizeStatus(item.status, item);
     if (statusKey !== 'pending') return;
+    if (!canDeleteRequest(item)) {
+      const msg = 'This ESARF request has already received an approval in the timeline and can no longer be deleted.';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(msg);
+      } else {
+        Alert.alert('Cannot Delete Request', msg);
+      }
+      return;
+    }
     setRequestToDelete({ item, sequence: sequence ?? 1 });
   }
 
@@ -106,6 +124,15 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
   }
 
   async function executeDelete(item: MyRequest, isPerk: boolean) {
+    if (!canDeleteRequest(item)) {
+      const msg = 'This ESARF request has already received an approval in the timeline and can no longer be deleted.';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(msg);
+      } else {
+        Alert.alert('Cannot Delete Request', msg);
+      }
+      return;
+    }
     setDeletingId(item.request_id);
     try {
       const lockInfo = await checkApproverActiveViewing(item.request_id);
@@ -173,7 +200,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
         setStatus('');
       }
       if (active) {
-        await refresh(false);
+        await refresh(true);
       }
     })();
 
@@ -468,8 +495,8 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
 
         {paginatedItems.map((item, index) => {
           const sequence = (currentPage - 1) * pageSize + index + 1;
-          const statusKey = normalizeStatus(item.status, item);
-          const isPending = statusKey === 'pending';
+          const canEdit = canEditRequest(item);
+          const canDelete = canDeleteRequest(item);
           return (
             <RequestCard
               key={item.request_id || `req-${index}`}
@@ -485,8 +512,8 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
                 }
               }}
               onView={() => setSelectedRequest({ item, sequence })}
-              onEdit={onEditRequest ? () => void handleEditRequest(item) : undefined}
-              onDelete={isPending ? () => handleDeleteRequest(item, sequence) : undefined}
+              onEdit={canEdit && onEditRequest ? () => void handleEditRequest(item) : undefined}
+              onDelete={canDelete ? () => handleDeleteRequest(item, sequence) : undefined}
             />
           );
         })}
@@ -528,13 +555,24 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
       ) : null}
 
       <RequestDetailsSheet
-        request={selectedRequest}
+        request={
+          selectedRequest
+            ? {
+                ...selectedRequest,
+                item: items.find((it) => it.request_id === selectedRequest.item.request_id) || selectedRequest.item,
+              }
+            : null
+        }
         profile={profile}
         isDeleting={Boolean(selectedRequest && deletingId === selectedRequest.item.request_id)}
         onClose={() => setSelectedRequest(null)}
-        onEdit={onEditRequest ? (req) => void handleEditRequest(req) : undefined}
+        onEdit={
+          selectedRequest && canEditRequest(selectedRequest.item) && onEditRequest
+            ? (req) => void handleEditRequest(req)
+            : undefined
+        }
         onDelete={
-          selectedRequest && normalizeStatus(selectedRequest.item.status, selectedRequest.item) === 'pending'
+          selectedRequest && canDeleteRequest(selectedRequest.item)
             ? (req) => handleDeleteRequest(req, selectedRequest.sequence)
             : undefined
         }
@@ -664,6 +702,7 @@ function RequestCard({
           }).start();
         }
       },
+      onPanResponderTerminationRequest: () => false,
       onPanResponderTerminate: () => {
         isOpenRef.current = false;
         onSwipeClose?.();
@@ -704,20 +743,7 @@ function RequestCard({
         {...(panResponder ? panResponder.panHandlers : {})}
       >
         <View style={styles.cardAccent} />
-        <Pressable
-          style={[styles.card, isDeleting ? { opacity: 0.6 } : null]}
-          onPress={() => {
-            if (isOpenRef.current) {
-              isOpenRef.current = false;
-              onSwipeClose?.();
-              Animated.spring(translateX, {
-                toValue: 0,
-                bounciness: 4,
-                useNativeDriver: true,
-              }).start();
-            }
-          }}
-        >
+        <View style={[styles.card, isDeleting ? { opacity: 0.6 } : null]}>
           <View style={styles.avatar}>
             <Avatar name={displayName} photoUrl={profile?.photoUrl} size={35} textSize={13} />
           </View>
@@ -794,7 +820,22 @@ function RequestCard({
               </Pressable>
             </View>
           </View>
-        </Pressable>
+        </View>
+
+        {isSwipedOpen ? (
+          <Pressable
+            style={styles.swipedCardOverlay}
+            onPress={() => {
+              isOpenRef.current = false;
+              onSwipeClose?.();
+              Animated.spring(translateX, {
+                toValue: 0,
+                bounciness: 4,
+                useNativeDriver: true,
+              }).start();
+            }}
+          />
+        ) : null}
       </Animated.View>
     </View>
   );
@@ -908,6 +949,7 @@ function RequestDetailsSheet({
               </>
             ) : (
               <EsarfRequestInfoPanel
+                transactionType={formatRequestType(item)}
                 timeSchedule={item.time_schedule}
                 dayOff={item.day_off}
                 payrollClass={item.payroll_class}
@@ -1248,6 +1290,40 @@ function requestCategory(item: MyRequest): CategoryFilter {
 
 function isPerkRequest(item: MyRequest) {
   return item.request_type_code === 'discount' || item.request_type_code === 'charge';
+}
+
+function isEsarfRequest(item: MyRequest): boolean {
+  return !isPerkRequest(item) && item.request_type_code !== 'leave';
+}
+
+function hasApprovedTimelineStatus(item: MyRequest): boolean {
+  if (!item) return false;
+  if (isPartialApproval(item)) return true;
+  if (!item.approval_summary || item.approval_summary.length === 0) return false;
+  return item.approval_summary.some((step) =>
+    (step.status || '').toLowerCase().includes('approved')
+  );
+}
+
+function canEditRequest(item: MyRequest): boolean {
+  const statusKey = normalizeStatus(item.status, item);
+  if (statusKey !== 'pending') return false;
+  if (isPerkRequest(item)) return false;
+  // If ESARF has at least one approved status in the timeline, it cannot be edited
+  if (isEsarfRequest(item) && hasApprovedTimelineStatus(item)) {
+    return false;
+  }
+  return true;
+}
+
+function canDeleteRequest(item: MyRequest): boolean {
+  const statusKey = normalizeStatus(item.status, item);
+  if (statusKey !== 'pending') return false;
+  // If ESARF has at least one approved status in the timeline, it cannot be deleted
+  if (isEsarfRequest(item) && hasApprovedTimelineStatus(item)) {
+    return false;
+  }
+  return true;
 }
 
 function formatEmployeeDisplayName(profile: EmployeeProfileSummary | null) {
@@ -2279,6 +2355,16 @@ const styles = StyleSheet.create({
   cardSlideWrapper: {
     position: 'relative',
     paddingLeft: 4,
+    backgroundColor: 'transparent',
+    ...(Platform.OS === 'web' ? ({ touchAction: 'pan-y' } as any) : {}),
+  },
+  swipedCardOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 20,
     backgroundColor: 'transparent',
   },
   swipeDeleteActionBehind: {

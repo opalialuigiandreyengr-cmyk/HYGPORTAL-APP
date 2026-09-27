@@ -80,8 +80,8 @@ function wrapLocationText(text: string, maxCharsPerLine = 38): string[] {
 function isPhotoWatermarked(item?: PhotoProofItem | null): boolean {
   if (!item) return false;
   // Strictly applies to web/PWA where photos are captured onto the canvas with burned-in text.
-  // On native Android/iOS, camera captures raw photos and relies on the native overlays and SVG compositor.
-  return Platform.OS === 'web';
+  // Also checks explicit isWatermarked boolean if synced from web/PWA client.
+  return Platform.OS === 'web' || Boolean(item.isWatermarked);
 }
 
 async function createWatermarkedImageWeb(
@@ -106,61 +106,70 @@ async function createWatermarkedImageWeb(
 
         ctx.drawImage(img, 0, 0, w, h);
 
-        const scale = Math.max(1, w / 400);
+        const scale = Math.max(1, w / 390);
         const padX = Math.round(20 * scale);
-        const btmY = h - Math.round(24 * scale);
+        const padBottom = Math.round(24 * scale);
+        const fontStack = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 
-        const gradH = Math.round(h * 0.35);
+        const locFontSize = Math.round(15 * scale);
+        const locLineHeight = Math.round(19 * scale);
+        ctx.font = `500 ${locFontSize}px ${fontStack}`;
+        ctx.fillStyle = '#ffffff';
+
+        const lines = wrapLocationText(data.locationText || '', Math.floor((w - padX * 2) / (locFontSize * 0.55)));
+
+        const totalBlockHeight = lines.length * locLineHeight + Math.round(58 * scale);
+        const gradH = Math.min(Math.round(h * 0.45), totalBlockHeight + Math.round(50 * scale));
         const grad = ctx.createLinearGradient(0, h - gradH, 0, h);
         grad.addColorStop(0, 'rgba(0,0,0,0)');
-        grad.addColorStop(0.5, 'rgba(0,0,0,0.25)');
+        grad.addColorStop(0.35, 'rgba(0,0,0,0.18)');
         grad.addColorStop(1, 'rgba(0,0,0,0.75)');
         ctx.fillStyle = grad;
         ctx.fillRect(0, h - gradH, w, gradH);
 
         ctx.save();
         ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
-        ctx.shadowBlur = Math.round(4 * scale);
-        ctx.shadowOffsetX = 1 * scale;
-        ctx.shadowOffsetY = 1 * scale;
+        ctx.shadowBlur = Math.round(3.5 * scale);
+        ctx.shadowOffsetX = Math.max(1, Math.round(1 * scale));
+        ctx.shadowOffsetY = Math.max(1, Math.round(1 * scale));
 
-        const locFontSize = Math.round(15 * scale);
-        const locLineHeight = Math.round(19 * scale);
-        ctx.font = `500 ${locFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+        const btmLineY = h - padBottom;
+        let curY = btmLineY;
+        ctx.font = `500 ${locFontSize}px ${fontStack}`;
         ctx.fillStyle = '#ffffff';
+        ctx.textBaseline = 'alphabetic';
 
-        const lines = wrapLocationText(data.locationText || '', Math.floor((w - padX * 2) / (locFontSize * 0.55)));
-        let curY = btmY;
         for (let i = lines.length - 1; i >= 0; i--) {
           ctx.fillText(lines[i], padX, curY);
           curY -= locLineHeight;
         }
 
-        curY -= Math.round(8 * scale);
+        const timeRowBaseline = curY - Math.round(6 * scale);
         const timeFontSize = Math.round(42 * scale);
         const periodFontSize = Math.round(22 * scale);
         const dateFontSize = Math.round(16 * scale);
         const dayFontSize = Math.round(14 * scale);
 
-        ctx.font = `300 ${timeFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+        ctx.font = `300 ${timeFontSize}px ${fontStack}`;
         ctx.fillStyle = '#ffffff';
         const timeDigits = data.timeDigits || '';
-        ctx.fillText(timeDigits, padX, curY);
+        ctx.fillText(timeDigits, padX, timeRowBaseline);
         const timeWidth = ctx.measureText(timeDigits).width;
 
-        ctx.font = `bold ${periodFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+        ctx.font = `800 ${periodFontSize}px ${fontStack}`;
         ctx.fillStyle = '#facc15';
-        const periodX = padX + timeWidth + Math.round(4 * scale);
-        ctx.fillText(data.timePeriod || '', periodX, curY);
+        const periodX = padX + timeWidth + Math.round(6 * scale);
+        ctx.fillText(data.timePeriod || '', periodX, timeRowBaseline);
         const periodWidth = ctx.measureText(data.timePeriod || '').width;
 
         const divX = periodX + periodWidth + Math.round(10 * scale);
-        const divTop = curY - Math.round(34 * scale);
-        const divBottom = curY + Math.round(4 * scale);
+        const divHeight = Math.round(38 * scale);
+        const divTop = timeRowBaseline - Math.round(33 * scale);
+        const divBottom = divTop + divHeight;
         ctx.restore();
 
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
-        ctx.lineWidth = Math.max(2, Math.round(2 * scale));
+        ctx.lineWidth = Math.max(1.5, Math.round(2 * scale));
         ctx.beginPath();
         ctx.moveTo(divX, divTop);
         ctx.lineTo(divX, divBottom);
@@ -169,16 +178,18 @@ async function createWatermarkedImageWeb(
         ctx.save();
         ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
         ctx.shadowBlur = Math.round(3 * scale);
-        ctx.shadowOffsetX = 1 * scale;
-        ctx.shadowOffsetY = 1 * scale;
+        ctx.shadowOffsetX = Math.max(1, Math.round(1 * scale));
+        ctx.shadowOffsetY = Math.max(1, Math.round(1 * scale));
+        ctx.textBaseline = 'alphabetic';
 
         const dateX = divX + Math.round(10 * scale);
-        ctx.font = `600 ${dateFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+        ctx.font = `600 ${dateFontSize}px ${fontStack}`;
         ctx.fillStyle = '#ffffff';
-        ctx.fillText(data.dateFormatted || '', dateX, curY - Math.round(16 * scale));
+        ctx.fillText(data.dateFormatted || '', dateX, timeRowBaseline - Math.round(18 * scale));
 
-        ctx.font = `500 ${dayFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
-        ctx.fillText(data.dayFormatted || '', dateX, curY + Math.round(2 * scale));
+        ctx.font = `500 ${dayFontSize}px ${fontStack}`;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(data.dayFormatted || '', dateX, timeRowBaseline - Math.round(2 * scale));
         ctx.restore();
 
         resolve(canvas.toDataURL('image/jpeg', 0.92));
@@ -491,6 +502,31 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
       if (Platform.OS === 'web') {
         if (typeof navigator !== 'undefined' && (navigator as any).share) {
           try {
+            // Attempt native file share if supported (iOS Safari and Android Chrome PWA)
+            if (typeof (navigator as any).canShare === 'function' && selectedPhoto.photoUri) {
+              try {
+                const safeDate = (selectedPhoto.dateFormatted || 'proof').replace(/[^a-zA-Z0-9]/g, '_');
+                const safeTime = (selectedPhoto.timeDigits || '').replace(':', '');
+                const filename = `photo_proof_${safeDate}_${safeTime}.jpg`;
+                const res = await fetch(selectedPhoto.photoUri);
+                const blob = await res.blob();
+                const file = new File([blob], filename, { type: 'image/jpeg' });
+                if ((navigator as any).canShare({ files: [file] })) {
+                  await (navigator as any).share({
+                    files: [file],
+                    title: 'Photo Proof',
+                    text: shareMessage,
+                  });
+                  setShareSuccess(true);
+                  setTimeout(() => setShareSuccess(false), 2400);
+                  showFeedbackToast('Photo Shared', 'Share menu action completed.', 'share');
+                  return;
+                }
+              } catch {
+                // Fall back to link/text share below
+              }
+            }
+
             await (navigator as any).share({
               title: 'Photo Proof',
               text: shareMessage,
@@ -769,7 +805,7 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
                 <Image
                   source={{ uri: selectedPhoto.photoUri }}
                   style={styles.viewfinderMedia}
-                  resizeMode="cover"
+                  resizeMode="contain"
                 />
               ) : (
                 <View style={[styles.viewfinderMedia, styles.viewerPlaceholder]}>

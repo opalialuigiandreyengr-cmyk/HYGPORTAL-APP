@@ -47,33 +47,20 @@ function drawWatermarkOnCanvas(
     dateFormatted: string;
     dayFormatted: string;
     locationText: string;
-  }
+  },
+  referenceWidth: number = 390
 ) {
   try {
-    const scale = Math.max(1, w / 400);
+    // Exact proportional scale relative to reference screen viewport (standard 390px mobile viewport)
+    const scale = Math.max(1, w / (referenceWidth || 390));
     const padX = Math.round(20 * scale);
-    const btmY = h - Math.round(24 * scale);
+    const padBottom = Math.round(24 * scale);
+    const fontStack = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 
-    // Subtle dark gradient at bottom for maximum readability against bright scenes
-    const gradH = Math.round(h * 0.35);
-    const grad = ctx.createLinearGradient(0, h - gradH, 0, h);
-    grad.addColorStop(0, 'rgba(0,0,0,0)');
-    grad.addColorStop(0.5, 'rgba(0,0,0,0.25)');
-    grad.addColorStop(1, 'rgba(0,0,0,0.75)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, h - gradH, w, gradH);
-
-    ctx.save();
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
-    ctx.shadowBlur = Math.round(4 * scale);
-    ctx.shadowOffsetX = 1 * scale;
-    ctx.shadowOffsetY = 1 * scale;
-
-    // Location text wrapping
+    // 1. Location text wrapping
     const locFontSize = Math.round(15 * scale);
     const locLineHeight = Math.round(19 * scale);
-    ctx.font = `500 ${locFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
-    ctx.fillStyle = '#ffffff';
+    ctx.font = `500 ${locFontSize}px ${fontStack}`;
 
     const maxLocWidth = w - padX * 2;
     const words = (data.locationText || '').split(' ');
@@ -91,58 +78,84 @@ function drawWatermarkOnCanvas(
     if (curLine) lines.push(curLine);
     const displayLines = lines.slice(0, 4);
 
-    let curY = btmY;
+    // 2. Subtle dark gradient at bottom for maximum readability against bright scenes
+    const totalBlockHeight = displayLines.length * locLineHeight + Math.round(58 * scale);
+    const gradH = Math.min(Math.round(h * 0.45), totalBlockHeight + Math.round(50 * scale));
+    const grad = ctx.createLinearGradient(0, h - gradH, 0, h);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(0.35, 'rgba(0,0,0,0.18)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.75)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, h - gradH, w, gradH);
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+    ctx.shadowBlur = Math.round(3.5 * scale);
+    ctx.shadowOffsetX = Math.max(1, Math.round(1 * scale));
+    ctx.shadowOffsetY = Math.max(1, Math.round(1 * scale));
+
+    // 3. Render Location lines from bottom up
+    const btmLineY = h - padBottom;
+    let curY = btmLineY;
+    ctx.font = `500 ${locFontSize}px ${fontStack}`;
+    ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'alphabetic';
+
     for (let i = displayLines.length - 1; i >= 0; i--) {
       ctx.fillText(displayLines[i], padX, curY);
       curY -= locLineHeight;
     }
 
-    // Time & Period row above location
-    curY -= Math.round(8 * scale);
+    // 4. Time & Period row above location
+    const timeRowBaseline = curY - Math.round(6 * scale);
     const timeFontSize = Math.round(42 * scale);
     const periodFontSize = Math.round(22 * scale);
     const dateFontSize = Math.round(16 * scale);
     const dayFontSize = Math.round(14 * scale);
 
-    ctx.font = `300 ${timeFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+    // A. Time digits
+    ctx.font = `300 ${timeFontSize}px ${fontStack}`;
     ctx.fillStyle = '#ffffff';
     const timeDigits = data.timeDigits || '';
-    ctx.fillText(timeDigits, padX, curY);
+    ctx.fillText(timeDigits, padX, timeRowBaseline);
     const timeWidth = ctx.measureText(timeDigits).width;
 
-    ctx.font = `bold ${periodFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+    // B. Period (e.g. "PM" in vibrant yellow)
+    ctx.font = `800 ${periodFontSize}px ${fontStack}`;
     ctx.fillStyle = '#facc15';
-    const periodX = padX + timeWidth + Math.round(4 * scale);
-    ctx.fillText(data.timePeriod || '', periodX, curY);
+    const periodX = padX + timeWidth + Math.round(6 * scale);
+    ctx.fillText(data.timePeriod || '', periodX, timeRowBaseline);
     const periodWidth = ctx.measureText(data.timePeriod || '').width;
 
-    // Divider
+    // C. Divider line (temporarily remove text shadow for clean line)
     const divX = periodX + periodWidth + Math.round(10 * scale);
-    const divTop = curY - Math.round(34 * scale);
-    const divBottom = curY + Math.round(4 * scale);
+    const divHeight = Math.round(38 * scale);
+    const divTop = timeRowBaseline - Math.round(33 * scale);
+    const divBottom = divTop + divHeight;
     ctx.restore();
 
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
-    ctx.lineWidth = Math.max(2, Math.round(2 * scale));
+    ctx.lineWidth = Math.max(1.5, Math.round(2 * scale));
     ctx.beginPath();
     ctx.moveTo(divX, divTop);
     ctx.lineTo(divX, divBottom);
     ctx.stroke();
 
+    // D. Date & Day (stacked next to divider)
     ctx.save();
     ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
     ctx.shadowBlur = Math.round(3 * scale);
-    ctx.shadowOffsetX = 1 * scale;
-    ctx.shadowOffsetY = 1 * scale;
+    ctx.shadowOffsetX = Math.max(1, Math.round(1 * scale));
+    ctx.shadowOffsetY = Math.max(1, Math.round(1 * scale));
+    ctx.textBaseline = 'alphabetic';
 
-    // Date & Day
     const dateX = divX + Math.round(10 * scale);
-    ctx.font = `600 ${dateFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+    ctx.font = `600 ${dateFontSize}px ${fontStack}`;
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(data.dateFormatted || '', dateX, curY - Math.round(16 * scale));
+    ctx.fillText(data.dateFormatted || '', dateX, timeRowBaseline - Math.round(18 * scale));
 
-    ctx.font = `500 ${dayFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
-    ctx.fillText(data.dayFormatted || '', dateX, curY + Math.round(2 * scale));
+    ctx.font = `500 ${dayFontSize}px ${fontStack}`;
+    ctx.fillText(data.dayFormatted || '', dateX, timeRowBaseline - Math.round(2 * scale));
     ctx.restore();
   } catch (err) {
     console.warn('[PhotoProof] Watermark canvas overlay failed:', err);
@@ -445,44 +458,77 @@ export function PhotoProofScreen({
           await new Promise((resolve) => setTimeout(resolve, 200));
         }
 
-        // Capture frame directly from HTML5 video feed with zoom crop and mirror if applied
-        const canvas = document.createElement('canvas');
+        // Viewfinder element dimensions (CSS pixels)
+        const clientW = video.clientWidth || video.parentElement?.clientWidth || (typeof window !== 'undefined' ? window.innerWidth : 390) || 390;
+        const clientH = video.clientHeight || video.parentElement?.clientHeight || (typeof window !== 'undefined' ? Math.round(window.innerHeight * 0.75) : 650) || 650;
         const vWidth = video.videoWidth || 720;
         const vHeight = video.videoHeight || 1280;
-        canvas.width = vWidth;
-        canvas.height = vHeight;
-        capturedWidth = vWidth;
-        capturedHeight = vHeight;
+
+        const clientRatio = clientW / clientH;
+        const videoRatio = vWidth / vHeight;
+
+        let sx = 0;
+        let sy = 0;
+        let sw = vWidth;
+        let sh = vHeight;
+
+        if (videoRatio > clientRatio) {
+          // Video stream is wider than the viewfinder container (e.g. 16:9 or 4:3 camera stream vs tall portrait phone)
+          // Center-crop width to match container's exact aspect ratio (just like object-fit: cover)
+          sw = vHeight * clientRatio;
+          sx = (vWidth - sw) / 2;
+        } else {
+          // Video stream is taller than the viewfinder container
+          // Center-crop height to match container's exact aspect ratio
+          sh = vWidth / clientRatio;
+          sy = (vHeight - sh) / 2;
+        }
+
+        // Apply digital zoom if active
+        if (zoom > 0) {
+          const zoomFactor = 1 + zoom * 2.5;
+          const prevSw = sw;
+          const prevSh = sh;
+          sw = sw / zoomFactor;
+          sh = sh / zoomFactor;
+          sx += (prevSw - sw) / 2;
+          sy += (prevSh - sh) / 2;
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(sw);
+        canvas.height = Math.round(sh);
+        capturedWidth = canvas.width;
+        capturedHeight = canvas.height;
+
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.save();
           if (isMirrored) {
             // Flip canvas horizontally so captured photo matches mirrored preview
-            ctx.translate(vWidth, 0);
+            ctx.translate(canvas.width, 0);
             ctx.scale(-1, 1);
           }
           if (shouldFlash) {
             // Enhance low-light brightness and contrast for flash photography on web
             ctx.filter = 'brightness(1.26) contrast(1.10) saturate(1.04)';
           }
-          if (zoom > 0) {
-            const scale = 1 + zoom * 2.5;
-            const sw = vWidth / scale;
-            const sh = vHeight / scale;
-            const sx = (vWidth - sw) / 2;
-            const sy = (vHeight - sh) / 2;
-            ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-          } else {
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          }
+          ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
           ctx.restore();
-          drawWatermarkOnCanvas(ctx, canvas.width, canvas.height, {
-            timeDigits: currentTimestamp.timeDigits,
-            timePeriod: currentTimestamp.timePeriod,
-            dateFormatted: currentTimestamp.dateFormatted,
-            dayFormatted: currentTimestamp.dayFormatted,
-            locationText: locationText || 'Tacloban City, 6500',
-          });
+
+          drawWatermarkOnCanvas(
+            ctx,
+            canvas.width,
+            canvas.height,
+            {
+              timeDigits: currentTimestamp.timeDigits,
+              timePeriod: currentTimestamp.timePeriod,
+              dateFormatted: currentTimestamp.dateFormatted,
+              dayFormatted: currentTimestamp.dayFormatted,
+              locationText: locationText || 'Tacloban City, 6500',
+            },
+            clientW,
+          );
           finalPhotoUri = canvas.toDataURL('image/jpeg', 0.88);
         }
 
@@ -662,7 +708,7 @@ export function PhotoProofScreen({
       <View style={styles.viewfinderContainer}>
         {Platform.OS === 'web' ? (
           capturedPhotoUri ? (
-            <Image source={{ uri: capturedPhotoUri }} style={styles.viewfinderMedia} resizeMode="cover" />
+            <Image source={{ uri: capturedPhotoUri }} style={styles.viewfinderMedia} resizeMode="contain" />
           ) : (
             <div
               style={{
@@ -695,7 +741,7 @@ export function PhotoProofScreen({
             </div>
           )
         ) : capturedPhotoUri ? (
-          <Image source={{ uri: capturedPhotoUri }} style={styles.viewfinderMedia} resizeMode="cover" />
+          <Image source={{ uri: capturedPhotoUri }} style={styles.viewfinderMedia} resizeMode="contain" />
         ) : (
           <CameraView
             ref={nativeCameraRef}

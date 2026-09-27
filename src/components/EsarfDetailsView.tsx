@@ -113,16 +113,16 @@ export function formatUnifiedRequestType(
   if (item.transaction_type && item.transaction_type.trim()) {
     const parts = item.transaction_type.split(/[,/]+/).map((s) => s.trim()).filter(Boolean);
     rawTokens.push(...parts);
-  }
-
-  const parsed = parseEsarfEntries(item);
-  if (parsed.length > 0) {
-    parsed.forEach((e) => {
-      if (e.transactionLabel && e.transactionLabel !== 'ESARF Request') {
-        const parts = e.transactionLabel.split(/[,/]+/).map((s) => s.trim()).filter(Boolean);
-        rawTokens.push(...parts);
-      }
-    });
+  } else {
+    const parsed = parseEsarfEntries(item);
+    if (parsed.length > 0) {
+      parsed.forEach((e) => {
+        if (e.transactionLabel && e.transactionLabel !== 'ESARF Request') {
+          const parts = e.transactionLabel.split(/[,/]+/).map((s) => s.trim()).filter(Boolean);
+          rawTokens.push(...parts);
+        }
+      });
+    }
   }
 
   const normalizedTokens = rawTokens
@@ -161,7 +161,15 @@ export function parseEsarfEntries(item: {
 
       if (match) {
         const entryNum = parseInt(match[1], 10) || idx + 1;
-        const transactionLabel = match[2].trim();
+        let transactionLabel = match[2].trim();
+        if (blocks.length === 1 && item.transaction_type && item.transaction_type.trim()) {
+          transactionLabel = formatUnifiedRequestType(item);
+        } else {
+          const tokens = transactionLabel.split(/[,/]+/).map((s) => normalizeTransactionToken(s)).filter(Boolean);
+          if (tokens.length > 0) {
+            transactionLabel = Array.from(new Set(tokens)).join(' / ');
+          }
+        }
         const dateTimeChunk = match[3].trim();
         const hoursStr = match[4].replace(/hrs?/i, '').trim();
         const reasonText = match[5].trim();
@@ -226,7 +234,7 @@ export function parseEsarfEntries(item: {
   const timeFromStr = formatTime(item.time_from);
   const timeToStr = formatTime(item.time_to);
   const totalHours = item.total_hours !== null && item.total_hours !== undefined ? String(item.total_hours) : '0';
-  const transactionLabel = item.transaction_type || 'ESARF Request';
+  const transactionLabel = formatUnifiedRequestType(item);
 
   return [
     {
@@ -409,10 +417,12 @@ export function HorizontalApprovalTimeline({ steps }: { steps: TimelineStep[] })
 }
 
 export function EsarfRequestInfoPanel({
+  transactionType,
   timeSchedule,
   dayOff,
   payrollClass,
 }: {
+  transactionType?: string | null;
   timeSchedule?: string | null;
   dayOff?: string | null;
   payrollClass?: string | null;
@@ -425,6 +435,19 @@ export function EsarfRequestInfoPanel({
       </View>
 
       <View style={styles.infoPanelBox}>
+        {transactionType ? (
+          <>
+            <View style={styles.infoRow}>
+              <View style={styles.infoLeft}>
+                <FileText size={16} color="#64748b" strokeWidth={2} />
+                <Text style={styles.infoLabel}>Transaction Type</Text>
+              </View>
+              <Text style={styles.infoValue}>{transactionType}</Text>
+            </View>
+            <View style={styles.infoDivider} />
+          </>
+        ) : null}
+
         <View style={styles.infoRow}>
           <View style={styles.infoLeft}>
             <Clock3 size={16} color="#64748b" strokeWidth={2} />

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { AppState, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import {
   ArrowRight,
@@ -83,7 +83,7 @@ export function DashboardScreen({
 
   const refreshSupplemental = async () => {
     try {
-      const [usage, requests] = await Promise.all([loadPerkUsage(), loadMyRequests()]);
+      const [usage, requests] = await Promise.all([loadPerkUsage(), loadMyRequests(true)]);
       setPerkUsage(usage);
       setRecentRequests(requests);
     } catch {
@@ -100,7 +100,21 @@ export function DashboardScreen({
 
   useEffect(() => {
     refreshDashboard();
+
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        void refreshSupplemental();
+      }
+    });
+
+    return () => {
+      sub.remove();
+    };
   }, []);
+
+  useEffect(() => {
+    void refreshSupplemental();
+  }, [summary]);
 
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
   const employeeName = formatHomeEmployeeName(profile, userEmail);

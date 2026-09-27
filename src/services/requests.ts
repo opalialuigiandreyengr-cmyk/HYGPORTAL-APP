@@ -153,6 +153,7 @@ export async function loadMyRequestsCached() {
 
 export type UpdatePendingRequestParams = {
   requestId: string;
+  requestTypeCode?: string | null;
   dateFrom?: string | null;
   dateTo?: string | null;
   timeFrom?: string | null;
@@ -188,34 +189,57 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
     );
   }
 
+  // Prevent editing if any approval step has already been approved
+  const { data: updateApprovedSteps } = await supabase
+    .from('request_approval_steps')
+    .select('id')
+    .eq('request_id', targetId)
+    .ilike('status', '%approved%')
+    .limit(1);
+
+  if (updateApprovedSteps && updateApprovedSteps.length > 0) {
+    throw new Error('This request has already received an approval in the timeline and can no longer be edited.');
+  }
+
   let rpcSuccess = false;
   try {
-    const rpcPromise = supabase.rpc('update_my_pending_request', {
-      p_request_id: targetId,
-      p_date_from: params.dateFrom || null,
-      p_date_to: params.dateTo || null,
-      p_time_from: params.timeFrom || null,
-      p_time_to: params.timeTo || null,
-      p_total_hours: params.totalHours ?? null,
-      p_time_schedule: params.timeSchedule || null,
-      p_day_off: params.dayOff || null,
-      p_payroll_class: params.payrollClass || null,
-      p_transaction_type: params.transactionType || null,
-      p_leave_type: params.leaveType || null,
-      p_leave_category: params.leaveCategory || null,
-      p_start_date: params.startDate || null,
-      p_end_date: params.endDate || null,
-      p_total_days: params.totalDays ?? null,
-      p_paid_days: params.paidDays ?? null,
-      p_unpaid_days: params.unpaidDays ?? null,
-      p_reason: params.reason || null,
-    });
+    const callRpc = (includeTypeCode: boolean) => {
+      const payload: Record<string, any> = {
+        p_request_id: targetId,
+        p_date_from: params.dateFrom || null,
+        p_date_to: params.dateTo || null,
+        p_time_from: params.timeFrom || null,
+        p_time_to: params.timeTo || null,
+        p_total_hours: params.totalHours ?? null,
+        p_time_schedule: params.timeSchedule || null,
+        p_day_off: params.dayOff || null,
+        p_payroll_class: params.payrollClass || null,
+        p_transaction_type: params.transactionType || null,
+        p_leave_type: params.leaveType || null,
+        p_leave_category: params.leaveCategory || null,
+        p_start_date: params.startDate || null,
+        p_end_date: params.endDate || null,
+        p_total_days: params.totalDays ?? null,
+        p_paid_days: params.paidDays ?? null,
+        p_unpaid_days: params.unpaidDays ?? null,
+        p_reason: params.reason || null,
+      };
+      if (includeTypeCode && params.requestTypeCode) {
+        payload.p_request_type_code = params.requestTypeCode;
+      }
+      return supabase.rpc('update_my_pending_request', payload);
+    };
 
     const timeoutPromise = new Promise<{ data: any; error: any }>((resolve) =>
-      setTimeout(() => resolve({ data: null, error: new Error('RPC_TIMEOUT') }), 2000),
+      setTimeout(() => resolve({ data: null, error: new Error('RPC_TIMEOUT') }), 20000),
     );
 
-    const { error } = await Promise.race([rpcPromise, timeoutPromise]);
+    let { error } = await Promise.race([callRpc(true), timeoutPromise]);
+    if (error && params.requestTypeCode && String(error?.message || error).toLowerCase().includes('schema cache')) {
+      const retryResult = await Promise.race([callRpc(false), timeoutPromise]);
+      error = retryResult.error;
+    }
+
     if (!error) {
       rpcSuccess = true;
     }
@@ -235,17 +259,39 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
   // Fallback: update tables directly or via admin_update_request_data RPC
   let fallbackError: string | null = null;
 
-  // Always update main requests table (reason, total_hours, total_days, date_from, date_to)
+  // Determine if request_type_id should change based on transactionType or requestTypeCode
+  let targetTypeCode: string | null = params.requestTypeCode || null;
+  if (!targetTypeCode && params.transactionType) {
+    const lower = params.transactionType.toLowerCase();
+    if (lower.includes('use_offset') || lower.includes('use offset')) {
+      targetTypeCode = 'use_offset';
+    } else if (lower.includes('offset')) {
+      targetTypeCode = 'offset_earn';
+    }
+  }
+
+  let requestTypeIdToUpdate: string | null = null;
+  if (targetTypeCode) {
+    try {
+      const { data: rt } = await supabase
+        .from('request_types')
+        .select('id')
+        .eq('code', targetTypeCode)
+        .maybeSingle<{ id: string }>();
+      if (rt?.id) {
+        requestTypeIdToUpdate = rt.id;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Update main requests table (request_type_id, updated_at)
   const { error: mainReqErr } = await supabase
     .from('requests')
     .update({
-      ...(params.reason ? { reason: params.reason } : {}),
-      ...(params.totalHours !== undefined && params.totalHours !== null ? { total_hours: params.totalHours } : {}),
-      ...(params.totalDays !== undefined && params.totalDays !== null ? { total_days: params.totalDays } : {}),
-      ...(params.dateFrom ? { date_from: params.dateFrom } : {}),
-      ...(params.dateTo ? { date_to: params.dateTo } : {}),
-      ...(params.startDate ? { date_from: params.startDate } : {}),
-      ...(params.endDate ? { date_to: params.endDate } : {}),
+      ...(requestTypeIdToUpdate ? { request_type_id: requestTypeIdToUpdate } : {}),
+      updated_at: new Date().toISOString(),
     })
     .eq('id', targetId);
 
@@ -337,6 +383,20 @@ export async function deleteMyPendingRequest(requestId: string, isPerk = false) 
     throw new Error(
       `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Deleting is temporarily disabled while they are viewing it to prevent data conflicts.`,
     );
+  }
+
+  // Prevent deletion if any approval step has already been approved
+  if (!isPerk) {
+    const { data: deleteApprovedSteps } = await supabase
+      .from('request_approval_steps')
+      .select('id')
+      .eq('request_id', requestId)
+      .ilike('status', '%approved%')
+      .limit(1);
+
+    if (deleteApprovedSteps && deleteApprovedSteps.length > 0) {
+      throw new Error('This request has already received an approval in the timeline and can no longer be deleted.');
+    }
   }
 
   let rpcSuccess = false;

@@ -903,6 +903,7 @@ function ApprovalDetailsSheet({
               </>
             ) : (
               <EsarfRequestInfoPanel
+                transactionType={formatApprovalType(item)}
                 timeSchedule={item.time_schedule}
                 dayOff={item.day_off}
                 payrollClass={item.payroll_class}

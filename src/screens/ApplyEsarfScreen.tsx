@@ -38,6 +38,7 @@ import { supabase } from '../lib/supabase';
 import type { AssistantDraft } from '../services/assistant';
 import { loadMyFlexibleSchedule } from '../services/team';
 import { updateMyPendingRequest, type MyRequest } from '../services/requests';
+import { removeCacheItem } from '../lib/localCache';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { formatEsarfDateRange, parseEsarfEntries } from '../components/EsarfDetailsView';
@@ -869,6 +870,17 @@ export function ApplyEsarfScreen({
           return;
         }
 
+        const allTransKeys = entries.flatMap((e) => parseEntryTransactions(e.transaction));
+        const isUseOffset = allTransKeys.includes('use_offset');
+        const isOffsetEarn = allTransKeys.includes('offset');
+
+        let primaryRequestType: RequestTypeCode = 'overtime';
+        if (isUseOffset) {
+          primaryRequestType = 'use_offset';
+        } else if (isOffsetEarn) {
+          primaryRequestType = 'offset_earn';
+        }
+
         const transactionTypesPerEntry = entries.map((e) => {
           const keys = parseEntryTransactions(e.transaction);
           const opts = transactionOptions.filter((t) => keys.includes(t.key));
@@ -889,9 +901,16 @@ export function ApplyEsarfScreen({
         const overallTimeFrom = firstEntry.timeFrom;
         const overallTimeTo = lastEntry.timeTo || firstEntry.timeTo;
 
+        const cleanReasonText = (text: string) => {
+          if (!text) return '';
+          const match = text.match(/^\[Entry\s+\d+\]\s*\([^)]*\)\s*.*?\([^)]*\):\s*([\s\S]*)$/i)
+            || text.match(/^\[Entry\s+\d+\]\s*\([^)]*\)[^:]*:\s*([\s\S]*)$/i);
+          return match ? match[1].trim() : text.trim();
+        };
+
         let combinedReason: string;
         if (entries.length === 1) {
-          combinedReason = firstEntry.reason.trim();
+          combinedReason = cleanReasonText(firstEntry.reason);
         } else {
           combinedReason = entries
             .map((e, idx) => {
@@ -902,7 +921,8 @@ export function ApplyEsarfScreen({
               const timeFromStr = e.timeFrom ? formatTimeDisplay(e.timeFrom) : '';
               const timeToStr = e.timeTo ? formatTimeDisplay(e.timeTo) : '';
               const hrs = getEntryTotalHours(e);
-              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr} (${hrs.toFixed(2)} hrs): ${e.reason.trim()}`;
+              const cleanReason = cleanReasonText(e.reason);
+              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr} (${hrs.toFixed(2)} hrs): ${cleanReason}`;
             })
             .join('\n');
         }
@@ -910,6 +930,7 @@ export function ApplyEsarfScreen({
         await withTimeout(
           updateMyPendingRequest({
             requestId: targetReqId,
+            requestTypeCode: primaryRequestType,
             dateFrom: overallDateFrom,
             dateTo: overallDateTo,
             timeFrom: overallTimeFrom,
@@ -931,6 +952,7 @@ export function ApplyEsarfScreen({
           title: 'ESARF updated',
           message: `ESARF request with ${entries.length} entry(ies) has been updated.`,
         });
+        await removeCacheItem('my_requests_v1').catch(() => {});
         await onSubmitted?.();
         return;
       }

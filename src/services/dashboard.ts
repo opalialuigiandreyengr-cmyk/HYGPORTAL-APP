@@ -35,7 +35,7 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
     empId = userProfile?.employee_id ?? undefined;
   }
 
-  const [rpcResult, hygPointsBalance, leaveBalanceRow] = await Promise.all([
+  const [rpcResult, hygPointsBalance, leaveBalanceRow, offsetBalanceRow] = await Promise.all([
     supabase.rpc('get_my_dashboard_summary'),
     loadHygPointsBalance(currentUserId, empId),
     empId
@@ -45,11 +45,18 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
           .eq('employee_id', empId)
           .maybeSingle<{ annual_credit_days: number | null; used_days: number | null }>()
       : Promise.resolve({ data: null, error: null }),
+    empId
+      ? supabase
+          .from('offset_balances')
+          .select('balance_hours')
+          .eq('employee_id', empId)
+          .maybeSingle<{ balance_hours: number | null }>()
+      : Promise.resolve({ data: null, error: null }),
   ]);
 
   const { data, error } = rpcResult;
 
-  if (error && !leaveBalanceRow.data) {
+  if (error && !leaveBalanceRow.data && !offsetBalanceRow.data) {
     const cached = await getCacheJSON<DashboardSummary>(cacheKey);
     if (cached) {
       return { ...cached, hyg_points_balance: hygPointsBalance };
@@ -74,10 +81,22 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
     leaveUsedDays = Math.max(0, annualCreditDays - leaveCreditRemaining);
   }
 
+  // Exact real-time offset balance from offset_balances table
+  let offsetBalance = 0;
+  if (
+    offsetBalanceRow.data &&
+    offsetBalanceRow.data.balance_hours !== null &&
+    offsetBalanceRow.data.balance_hours !== undefined
+  ) {
+    offsetBalance = Number(offsetBalanceRow.data.balance_hours);
+  } else {
+    offsetBalance = Number(first?.offset_balance ?? 0);
+  }
+
   const summary = {
     pending_requests: Number(first?.pending_requests ?? 0),
     pending_approvals: Number(first?.pending_approvals ?? 0),
-    offset_balance: Number(first?.offset_balance ?? 0),
+    offset_balance: offsetBalance,
     leave_credit_remaining: leaveCreditRemaining,
     annual_credit_days: annualCreditDays,
     leave_used_days: leaveUsedDays,
