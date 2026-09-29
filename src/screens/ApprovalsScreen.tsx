@@ -581,7 +581,8 @@ function ApprovalCard({
 }) {
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
   const department = profile?.departmentName || profile?.storeName || 'Department';
-  const requestDate = item.request_type_code === 'leave' ? item.start_date : item.date_from;
+  const isEsarf = item.request_type_code !== 'leave' && item.request_type_code !== 'discount' && item.request_type_code !== 'charge';
+  const requestDate = isEsarf ? (item.submitted_at || item.date_from) : item.request_type_code === 'leave' ? item.start_date : item.date_from;
 
   return (
     <View style={styles.cardOuter}>
@@ -649,7 +650,8 @@ function ApprovedCard({
 }) {
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
   const department = profile?.departmentName || profile?.storeName || 'Department';
-  const requestDate = item.request_type_code === 'leave' ? item.start_date : item.date_from;
+  const isEsarf = item.request_type_code !== 'leave' && item.request_type_code !== 'discount' && item.request_type_code !== 'charge';
+  const requestDate = isEsarf ? (item.submitted_at || item.date_from) : item.request_type_code === 'leave' ? item.start_date : item.date_from;
 
   return (
     <View style={styles.cardOuter}>

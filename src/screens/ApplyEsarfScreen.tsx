@@ -1,4 +1,4 @@
-import React, { type ReactNode, useEffect, useRef, useState } from 'react';
+import React, { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BackHandler,
   Keyboard,
@@ -102,11 +102,14 @@ const INLINE_TIME_OPTIONS = [
   '02:00', '02:30', '03:00', '03:30', '04:00', '04:30', '05:00', '05:30',
 ];
 
+export const MIN_OFFSETABLE_HOURS = 4;
+
 const exclusiveTransactionGroups = [
   ['ut', 'ot'],
+  ['ut', 'offset'],
+  ['ut', 'use_offset'],
+  ['ot', 'use_offset'],
   ['offset', 'use_offset'],
-  ['ot', 'offset', 'use_offset'],
-  ['ut', 'offset', 'use_offset'],
 ];
 function WebNativeTimePicker({ value, onChange }: { value: string; onChange: (val: string) => void }) {
   if (Platform.OS !== 'web') return null;
@@ -248,11 +251,14 @@ export function ApplyEsarfScreen({
           const parsedDates = parseEsarfDateRangeStringToYMD(p.dateStr);
           const parsedTimeFrom = parse12HourDisplayTo24(p.timeFromStr);
           const parsedTimeTo = parse12HourDisplayTo24(p.timeToStr);
+          const isEntryUseOffset = key.includes('use_offset');
+          const dFrom = parsedDates?.dateFrom || editingRequest.date_from || '';
+          const dTo = isEntryUseOffset ? dFrom : (parsedDates?.dateTo || editingRequest.date_to || dFrom);
           return {
             id: String(idx + 1),
             transaction: key,
-            dateFrom: parsedDates?.dateFrom || editingRequest.date_from || '',
-            dateTo: parsedDates?.dateTo || editingRequest.date_to || editingRequest.date_from || '',
+            dateFrom: dFrom,
+            dateTo: dTo,
             timeFrom: parsedTimeFrom || editingRequest.time_from || '',
             timeTo: parsedTimeTo || editingRequest.time_to || '',
             reason: p.reason || editingRequest.reason || '',
@@ -264,12 +270,14 @@ export function ApplyEsarfScreen({
       editingRequest?.transaction_type,
       editingRequest?.request_type_code,
     );
+    const initialTransKey = defaultKey || initialTransactions[0] || '';
+    const isInitialUseOffset = initialTransKey.includes('use_offset');
     return [
       {
         id: '1',
-        transaction: defaultKey || initialTransactions[0] || '',
+        transaction: initialTransKey,
         dateFrom: initialDateFrom,
-        dateTo: initialDateTo,
+        dateTo: isInitialUseOffset && initialDateFrom ? initialDateFrom : initialDateTo,
         timeFrom: initialTimeFrom,
         timeTo: initialTimeTo,
         reason: initialReason,
@@ -386,14 +394,18 @@ export function ApplyEsarfScreen({
       if (parsed.length > 0) {
         setEntries(
           parsed.map((p, idx) => {
+            const transKey = parseTransactionStringToKeys(p.transactionLabel || editingRequest.transaction_type, editingRequest.request_type_code);
             const parsedDates = parseEsarfDateRangeStringToYMD(p.dateStr);
             const parsedTimeFrom = parse12HourDisplayTo24(p.timeFromStr);
             const parsedTimeTo = parse12HourDisplayTo24(p.timeToStr);
+            const isEntryUseOffset = transKey.includes('use_offset');
+            const dFrom = parsedDates?.dateFrom || editingRequest.date_from || '';
+            const dTo = isEntryUseOffset ? dFrom : (parsedDates?.dateTo || editingRequest.date_to || dFrom);
             return {
               id: String(idx + 1),
-              transaction: parseTransactionStringToKeys(p.transactionLabel || editingRequest.transaction_type, editingRequest.request_type_code),
-              dateFrom: parsedDates?.dateFrom || editingRequest.date_from || '',
-              dateTo: parsedDates?.dateTo || editingRequest.date_to || editingRequest.date_from || '',
+              transaction: transKey,
+              dateFrom: dFrom,
+              dateTo: dTo,
               timeFrom: parsedTimeFrom || editingRequest.time_from || '',
               timeTo: parsedTimeTo || editingRequest.time_to || '',
               reason: p.reason || editingRequest.reason || '',
@@ -402,12 +414,15 @@ export function ApplyEsarfScreen({
         );
       } else {
         const defaultKey = parseTransactionStringToKeys(editingRequest.transaction_type, editingRequest.request_type_code);
+        const isEntryUseOffset = defaultKey.includes('use_offset');
+        const dFrom = editingRequest.date_from || '';
+        const dTo = isEntryUseOffset ? dFrom : (editingRequest.date_to || dFrom);
         setEntries([
           {
             id: '1',
             transaction: defaultKey || '',
-            dateFrom: editingRequest.date_from || '',
-            dateTo: editingRequest.date_to || editingRequest.date_from || '',
+            dateFrom: dFrom,
+            dateTo: dTo,
             timeFrom: editingRequest.time_from || '',
             timeTo: editingRequest.time_to || '',
             reason: editingRequest.reason || '',
@@ -527,19 +542,31 @@ export function ApplyEsarfScreen({
     setEntries((prev) => {
       const next = [...prev];
       if (next[index]) {
-        next[index] = { ...next[index], ...updates };
+        const merged = { ...next[index], ...updates };
+        const transKeys = parseEntryTransactions(merged.transaction);
+        if (transKeys.includes('use_offset')) {
+          if (merged.dateFrom) {
+            merged.dateTo = merged.dateFrom;
+          } else if (merged.dateTo) {
+            merged.dateFrom = merged.dateTo;
+          }
+        }
+        next[index] = merged;
       }
       return next;
     });
   }
 
   function getEntryTotalHours(entry: EsarfEntry) {
-    if (!entry.dateFrom || !entry.timeFrom || !entry.timeTo) {
+    if (!entry.timeFrom || !entry.timeTo) {
       return 0;
     }
     const transKeys = parseEntryTransactions(entry.transaction);
+    const isOt = transKeys.includes('ot');
     const isUseOffset = transKeys.includes('use_offset');
     const isOffsetEarn = transKeys.includes('offset');
+    const hasFullHoursTransaction = transKeys.some((key) => key === 'fio' || key === 'ob' || key === 'ut');
+    const isFullHours = (hasFullHoursTransaction && !isOt) || isUseOffset;
 
     let requestType: RequestTypeCode = 'overtime';
     if (isUseOffset) {
@@ -548,17 +575,55 @@ export function ApplyEsarfScreen({
       requestType = 'offset_earn';
     }
 
+    const effectiveDateFrom = entry.dateFrom || primaryDateFrom || new Date().toISOString().slice(0, 10);
+
     return calculateRequestHours({
       requestType,
-      dateFrom: entry.dateFrom,
-      dateTo: entry.dateTo,
+      dateFrom: effectiveDateFrom,
+      dateTo: entry.dateTo || effectiveDateFrom,
       timeFrom: entry.timeFrom,
       timeTo: entry.timeTo,
       timeSchedule: schedule === NO_SCHEDULE_LABEL ? '' : schedule,
       dayOff: dayOff === NO_DAY_OFF_LABEL ? '' : dayOff,
-      isFullHours: isUseOffset,
+      isFullHours,
     });
   }
+
+  type UseOffsetBreakdown = {
+    priorBalance: number;
+    entryHours: number;
+    balanceRemaining: number;
+    isExceeded: boolean;
+    hasZeroBalance: boolean;
+  };
+
+  const useOffsetBreakdowns = useMemo(() => {
+    let runningBalance = Math.max(0, offsetBalance ?? 0);
+    const breakdownMap: Record<number, UseOffsetBreakdown> = {};
+
+    entries.forEach((entry, idx) => {
+      const transKeys = parseEntryTransactions(entry.transaction);
+      if (transKeys.includes('use_offset')) {
+        const hours = getEntryTotalHours(entry);
+        const priorBalance = runningBalance;
+        const balanceRemaining = priorBalance - hours;
+        const isExceeded = (priorBalance <= 0 && hours > 0) || (hours > 0 && hours > priorBalance);
+        const hasZeroBalance = priorBalance <= 0;
+
+        breakdownMap[idx] = {
+          priorBalance,
+          entryHours: hours,
+          balanceRemaining,
+          isExceeded,
+          hasZeroBalance,
+        };
+
+        runningBalance = Math.max(0, balanceRemaining);
+      }
+    });
+
+    return breakdownMap;
+  }, [entries, offsetBalance, schedule, dayOff, primaryDateFrom]);
 
   function valueForEntryPicker(index: number, kind: 'date_from' | 'date_to' | 'time_from' | 'time_to') {
     const entry = entries[index];
@@ -575,11 +640,15 @@ export function ApplyEsarfScreen({
   }
 
   function applyEntryPickerValue(index: number, kind: 'date_from' | 'date_to' | 'time_from' | 'time_to', selectedDate: Date) {
+    const entry = entries[index];
+    const isUseOffset = entry ? parseEntryTransactions(entry.transaction).includes('use_offset') : false;
     if (kind === 'date_from') {
       const val = formatDateInput(selectedDate);
       const currentTo = entries[index]?.dateTo;
-      let nextTo = currentTo && dateStringToDate(currentTo).getTime() >= dateStringToDate(val).getTime() ? currentTo : val;
-      if (getDaysBetweenYMD(val, nextTo) > 1) {
+      let nextTo = isUseOffset
+        ? val
+        : (currentTo && dateStringToDate(currentTo).getTime() >= dateStringToDate(val).getTime() ? currentTo : val);
+      if (!isUseOffset && getDaysBetweenYMD(val, nextTo) > 1) {
         nextTo = val;
       }
       updateEntry(index, { dateFrom: val, dateTo: nextTo });
@@ -587,26 +656,44 @@ export function ApplyEsarfScreen({
         ...current,
         [`entry_${index}_dateFrom`]: undefined,
         [`entry_${index}_dateTo`]: undefined,
+        [`entry_${index}_offsetHours`]: undefined,
+        [`entry_${index}_offsetBalance`]: undefined,
       }));
     } else if (kind === 'date_to') {
       const val = formatDateInput(selectedDate);
-      const currentFrom = entries[index]?.dateFrom;
-      let nextFrom = currentFrom && dateStringToDate(currentFrom).getTime() <= dateStringToDate(val).getTime() ? currentFrom : val;
-      if (getDaysBetweenYMD(nextFrom, val) > 1) {
-        nextFrom = val;
+      if (isUseOffset) {
+        updateEntry(index, { dateFrom: val, dateTo: val });
+      } else {
+        const currentFrom = entries[index]?.dateFrom;
+        let nextFrom = currentFrom && dateStringToDate(currentFrom).getTime() <= dateStringToDate(val).getTime() ? currentFrom : val;
+        if (getDaysBetweenYMD(nextFrom, val) > 1) {
+          nextFrom = val;
+        }
+        updateEntry(index, { dateFrom: nextFrom, dateTo: val });
       }
-      updateEntry(index, { dateFrom: nextFrom, dateTo: val });
       setValidationErrors((current) => ({
         ...current,
         [`entry_${index}_dateFrom`]: undefined,
         [`entry_${index}_dateTo`]: undefined,
+        [`entry_${index}_offsetHours`]: undefined,
+        [`entry_${index}_offsetBalance`]: undefined,
       }));
     } else if (kind === 'time_from') {
       updateEntry(index, { timeFrom: formatTimeInput(selectedDate) });
-      setValidationErrors((current) => ({ ...current, [`entry_${index}_timeFrom`]: undefined }));
+      setValidationErrors((current) => ({
+        ...current,
+        [`entry_${index}_timeFrom`]: undefined,
+        [`entry_${index}_offsetHours`]: undefined,
+        [`entry_${index}_offsetBalance`]: undefined,
+      }));
     } else if (kind === 'time_to') {
       updateEntry(index, { timeTo: formatTimeInput(selectedDate) });
-      setValidationErrors((current) => ({ ...current, [`entry_${index}_timeTo`]: undefined }));
+      setValidationErrors((current) => ({
+        ...current,
+        [`entry_${index}_timeTo`]: undefined,
+        [`entry_${index}_offsetHours`]: undefined,
+        [`entry_${index}_offsetBalance`]: undefined,
+      }));
     }
   }
 
@@ -789,6 +876,8 @@ export function ApplyEsarfScreen({
     if (!isValidDayOffValue(dayOff)) errors.dayOff = 'Day off is required.';
     if (!payrollClassOptions.includes(payrollClass)) errors.payrollClass = 'Payroll class is required.';
 
+    let runningOffsetBalance = Math.max(0, offsetBalance ?? 0);
+
     entries.forEach((entry, i) => {
       const num = i + 1;
       const transKeys = parseEntryTransactions(entry.transaction);
@@ -802,6 +891,10 @@ export function ApplyEsarfScreen({
         const diff = getDaysBetweenYMD(entry.dateFrom, entry.dateTo);
         if (diff < 0) {
           errors[`entry_${i}_dateTo`] = `Request #${num}: Date To cannot be earlier than Date From.`;
+        } else if (transKeys.includes('use_offset')) {
+          if (diff > 0) {
+            errors[`entry_${i}_dateTo`] = `Request #${num}: Use Offset can only be applied for a single day.`;
+          }
         } else if (diff > 1) {
           errors[`entry_${i}_dateTo`] = `Request #${num}: ESARF date range can only be for a single day or two consecutive days (e.g., overnight overtime).`;
         }
@@ -810,12 +903,21 @@ export function ApplyEsarfScreen({
       if (!entry.timeTo) errors[`entry_${i}_timeTo`] = `Request #${num}: Time To is required.`;
       const hours = getEntryTotalHours(entry);
       if (transKeys.includes('use_offset')) {
+        const priorBalance = runningOffsetBalance;
         if ((offsetBalance ?? 0) <= 0) {
           errors[`entry_${i}_offsetBalance`] = `Request #${num}: You have no available offset balance (0.00 hrs).`;
-        } else if (entry.timeFrom && entry.timeTo && hours > (offsetBalance ?? 0)) {
-          errors[`entry_${i}_offsetBalance`] = `Request #${num}: Selected duration (${hours.toFixed(2)} hrs) exceeds available offset balance (${(offsetBalance ?? 0).toFixed(2)} hrs).`;
+        } else if (priorBalance <= 0) {
+          errors[`entry_${i}_offsetBalance`] = `Request #${num}: No available offset balance remaining for this entry (already allocated to previous entries).`;
+        } else if (entry.timeFrom && entry.timeTo && hours > priorBalance) {
+          errors[`entry_${i}_offsetBalance`] = `Request #${num}: Selected duration (${hours.toFixed(2)} hrs) exceeds available offset balance (${priorBalance.toFixed(2)} hrs).`;
         } else if (entry.timeFrom && entry.timeTo && hours <= 0) {
           errors[`entry_${i}_offsetBalance`] = `Request #${num}: Time From and Time To must result in a valid duration.`;
+        }
+        runningOffsetBalance = Math.max(0, priorBalance - hours);
+      }
+      if (transKeys.includes('offset')) {
+        if (entry.timeFrom && entry.timeTo && hours < MIN_OFFSETABLE_HOURS) {
+          errors[`entry_${i}_offsetHours`] = `Request #${num}: The minimum offsetable hours for a regular employee is ${MIN_OFFSETABLE_HOURS.toFixed(2)} hrs (currently ${hours.toFixed(2)} hrs). Please select Overtime (OT) or adjust your hours.`;
         }
       }
       if (!entry.reason.trim()) errors[`entry_${i}_reason`] = `Request #${num}: Reason is required.`;
@@ -952,7 +1054,7 @@ export function ApplyEsarfScreen({
           title: 'ESARF updated',
           message: `ESARF request with ${entries.length} entry(ies) has been updated.`,
         });
-        await removeCacheItem('my_requests_v1').catch(() => {});
+        await removeCacheItem('my_requests_v1').catch(() => { });
         await onSubmitted?.();
         return;
       }
@@ -1349,12 +1451,16 @@ export function ApplyEsarfScreen({
               const badgeNumber = actualIndex + 1;
               const entryTransKeys = parseEntryTransactions(entry.transaction);
               const isUseOffset = entryTransKeys.includes('use_offset');
+              const isOffsetEarn = entryTransKeys.includes('offset');
               const selectedOptions = transactionOptions.filter((t) => entryTransKeys.includes(t.key));
               const transactionLabelText = selectedOptions.length
                 ? selectedOptions.map((t) => t.shortLabel || t.label).join(', ')
                 : 'Select transaction';
-              const dateDisplayText = formatEsarfDateRange(entry.dateFrom, entry.dateTo);
+              const dateDisplayText = isUseOffset && entry.dateFrom
+                ? formatEsarfDateRange(entry.dateFrom, entry.dateFrom)
+                : formatEsarfDateRange(entry.dateFrom, entry.dateTo);
               const hours = getEntryTotalHours(entry);
+              const offsetInfo = useOffsetBreakdowns[actualIndex];
 
               return (
                 <View
@@ -1421,7 +1527,7 @@ export function ApplyEsarfScreen({
                         style={[
                           styles.underlineBox,
                           validationErrors[`entry_${actualIndex}_dateFrom`] ||
-                          validationErrors[`entry_${actualIndex}_dateTo`]
+                            validationErrors[`entry_${actualIndex}_dateTo`]
                             ? styles.inputError
                             : null,
                         ]}
@@ -1440,7 +1546,7 @@ export function ApplyEsarfScreen({
                       </Pressable>
                       <Text style={styles.underlineLabel}>Date From-To</Text>
                       {validationErrors[`entry_${actualIndex}_dateFrom`] ||
-                      validationErrors[`entry_${actualIndex}_dateTo`] ? (
+                        validationErrors[`entry_${actualIndex}_dateTo`] ? (
                         <Text style={styles.fieldError}>
                           {validationErrors[`entry_${actualIndex}_dateFrom`] ||
                             validationErrors[`entry_${actualIndex}_dateTo`]}
@@ -1455,7 +1561,8 @@ export function ApplyEsarfScreen({
                       <View
                         style={[
                           styles.underlineBox,
-                          isUseOffset && ((offsetBalance ?? 0) <= 0 || (hours > 0 && hours > (offsetBalance ?? 0)))
+                          (isUseOffset && ((offsetBalance ?? 0) <= 0 || offsetInfo?.isExceeded || offsetInfo?.hasZeroBalance)) ||
+                            (isOffsetEarn && entry.timeFrom && entry.timeTo && hours < MIN_OFFSETABLE_HOURS)
                             ? styles.inputError
                             : null,
                         ]}
@@ -1463,19 +1570,23 @@ export function ApplyEsarfScreen({
                         <Text
                           style={[
                             styles.underlineText,
-                            isUseOffset && ((offsetBalance ?? 0) <= 0 || (hours > 0 && hours > (offsetBalance ?? 0)))
-                              ? { color: '#ef4444', fontWeight: '800' }
+                            (isUseOffset && ((offsetBalance ?? 0) <= 0 || offsetInfo?.isExceeded || offsetInfo?.hasZeroBalance)) ||
+                              (isOffsetEarn && entry.timeFrom && entry.timeTo && hours < MIN_OFFSETABLE_HOURS)
+                              ? { color: '#dc2626', fontWeight: '800' }
                               : null,
                           ]}
                         >
-                          {isUseOffset ? (offsetBalance ?? 0).toFixed(2) : (hours ?? 0).toFixed(2)}
+                          {isUseOffset
+                            ? (offsetInfo?.priorBalance ?? (offsetBalance ?? 0)).toFixed(2)
+                            : (hours ?? 0).toFixed(2)}
                         </Text>
                       </View>
                       <Text
                         style={[
                           styles.underlineLabel,
-                          isUseOffset && ((offsetBalance ?? 0) <= 0 || (hours > 0 && hours > (offsetBalance ?? 0)))
-                            ? { color: '#ef4444' }
+                          (isUseOffset && ((offsetBalance ?? 0) <= 0 || offsetInfo?.isExceeded || offsetInfo?.hasZeroBalance)) ||
+                            (isOffsetEarn && entry.timeFrom && entry.timeTo && hours < MIN_OFFSETABLE_HOURS)
+                            ? { color: '#dc2626' }
                             : null,
                         ]}
                       >
@@ -1488,7 +1599,7 @@ export function ApplyEsarfScreen({
                         style={[
                           styles.underlineBox,
                           validationErrors[`entry_${actualIndex}_timeFrom`] ||
-                            (isUseOffset && hours > (offsetBalance ?? 0))
+                            (isUseOffset && (offsetInfo?.isExceeded || offsetInfo?.hasZeroBalance))
                             ? styles.inputError
                             : null,
                         ]}
@@ -1516,7 +1627,7 @@ export function ApplyEsarfScreen({
                         style={[
                           styles.underlineBox,
                           validationErrors[`entry_${actualIndex}_timeTo`] ||
-                            (isUseOffset && hours > (offsetBalance ?? 0))
+                            (isUseOffset && (offsetInfo?.isExceeded || offsetInfo?.hasZeroBalance))
                             ? styles.inputError
                             : null,
                         ]}
@@ -1540,7 +1651,7 @@ export function ApplyEsarfScreen({
                     </View>
                   </View>
 
-                  {/* Inline Offset Balance Warnings / Info */}
+                  {/* Inline Offset Feedback: Use Offset, Offset Earn Warning (<4 hrs), Offset Encouragement (>=4 hrs) */}
                   {isUseOffset ? (
                     <View style={styles.offsetFeedbackWrap}>
                       {(offsetBalance ?? 0) <= 0 ? (
@@ -1550,18 +1661,25 @@ export function ApplyEsarfScreen({
                             No offset balance available (0.00 hrs).
                           </Text>
                         </View>
-                      ) : entry.timeFrom && entry.timeTo && hours > (offsetBalance ?? 0) ? (
+                      ) : offsetInfo?.hasZeroBalance ? (
                         <View style={styles.offsetWarningBadge}>
                           <AlertTriangle size={13} color="#ef4444" strokeWidth={2.4} />
                           <Text style={styles.offsetWarningBadgeText}>
-                            Selected duration ({hours.toFixed(2)} hrs) exceeds offset balance by {(hours - (offsetBalance ?? 0)).toFixed(2)} hrs.
+                            No offset balance remaining for this entry (already allocated to previous entries).
+                          </Text>
+                        </View>
+                      ) : entry.timeFrom && entry.timeTo && offsetInfo?.isExceeded ? (
+                        <View style={styles.offsetWarningBadge}>
+                          <AlertTriangle size={13} color="#ef4444" strokeWidth={2.4} />
+                          <Text style={styles.offsetWarningBadgeText}>
+                            Selected duration ({hours.toFixed(2)} hrs) exceeds available offset balance by {(hours - (offsetInfo?.priorBalance ?? 0)).toFixed(2)} hrs ({(offsetInfo?.priorBalance ?? 0).toFixed(2)} hrs available).
                           </Text>
                         </View>
                       ) : entry.timeFrom && entry.timeTo && hours > 0 ? (
                         <View style={styles.offsetSuccessBadge}>
                           <Check size={13} color="#16a34a" strokeWidth={2.4} />
                           <Text style={styles.offsetSuccessBadgeText}>
-                            Using {hours.toFixed(2)} hrs • {((offsetBalance ?? 0) - hours).toFixed(2)} hrs balance remaining
+                            Using {hours.toFixed(2)} hrs • {(offsetInfo?.balanceRemaining ?? 0).toFixed(2)} hrs balance remaining
                           </Text>
                         </View>
                       ) : null}
@@ -1570,6 +1688,69 @@ export function ApplyEsarfScreen({
                           {validationErrors[`entry_${actualIndex}_offsetBalance`]}
                         </Text>
                       ) : null}
+                    </View>
+                  ) : isOffsetEarn ? (
+                    <View style={styles.offsetFeedbackWrap}>
+                      {entry.timeFrom && entry.timeTo && hours < MIN_OFFSETABLE_HOURS ? (
+                        <View style={styles.offsetWarningCard}>
+                          <View style={styles.offsetWarningCardHeader}>
+                            <AlertTriangle size={14} color="#dc2626" strokeWidth={2.4} />
+                            <Text style={styles.offsetWarningCardTitle}>Minimum Offset Hours Not Met</Text>
+                          </View>
+                          <Text style={styles.offsetWarningCardText}>
+                            The minimum offsetable hours for a regular employee is {MIN_OFFSETABLE_HOURS.toFixed(2)} hours. This request currently has {hours.toFixed(2)} hrs.
+                          </Text>
+                          {!entryTransKeys.includes('ot') && isOvertimeAllowedForPayroll(payrollClass) ? (
+                            <Pressable
+                              style={styles.offsetQuickSwitchBtn}
+                              onPress={() => {
+                                updateEntry(actualIndex, { transaction: 'ot' });
+                                setValidationErrors((current) => ({
+                                  ...current,
+                                  [`entry_${actualIndex}_transaction`]: undefined,
+                                  [`entry_${actualIndex}_offsetHours`]: undefined,
+                                }));
+                              }}
+                            >
+                              <Text style={styles.offsetQuickSwitchBtnText}>Switch to Overtime (OT) instead</Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
+                      ) : null}
+                      {validationErrors[`entry_${actualIndex}_offsetHours`] ? (
+                        <Text style={styles.fieldError}>
+                          {validationErrors[`entry_${actualIndex}_offsetHours`]}
+                        </Text>
+                      ) : null}
+                    </View>
+                  ) : entry.timeFrom && entry.timeTo && hours >= MIN_OFFSETABLE_HOURS && !entryTransKeys.includes('use_offset') && !entryTransKeys.includes('ut') ? (
+                    <View style={styles.offsetFeedbackWrap}>
+                      <View style={styles.offsetEncouragementCard}>
+                        <View style={styles.offsetEncouragementCardHeader}>
+                          <Check size={14} color="#15803d" strokeWidth={2.4} />
+                          <Text style={styles.offsetEncouragementCardTitle}>
+                            Eligible for Offset
+                          </Text>
+                        </View>
+                        <Text style={styles.offsetEncouragementCardText}>
+                          You have {hours.toFixed(2)} offsetable hours. Don't forget to include or select Offset in Transaction Type so your hours will be credited to your offset balance.
+                        </Text>
+                        <Pressable
+                          style={styles.offsetAddBtn}
+                          onPress={() => {
+                            const newKeys = Array.from(new Set([...entryTransKeys, 'offset'])).join(',');
+                            updateEntry(actualIndex, { transaction: newKeys });
+                            setValidationErrors((current) => ({
+                              ...current,
+                              [`entry_${actualIndex}_transaction`]: undefined,
+                              [`entry_${actualIndex}_offsetHours`]: undefined,
+                            }));
+                          }}
+                        >
+                          <Plus size={13} color="#ffffff" strokeWidth={3} />
+                          <Text style={styles.offsetAddBtnText}>Select Offset</Text>
+                        </Pressable>
+                      </View>
                     </View>
                   ) : null}
 
@@ -1911,6 +2092,7 @@ export function ApplyEsarfScreen({
                     const isOtDisabled = option.key === 'ot' && !isOvertimeAllowedForPayroll(payrollClass);
                     const isConflictDisabled = !selected && isTransactionDisabled(option.key, currentSelectedKeys);
                     const disabled = isOtDisabled || isConflictDisabled;
+                    const activeEntryHours = getEntryTotalHours(entries[activeTransactionSelectIndex]);
 
                     return (
                       <Pressable
@@ -1932,6 +2114,9 @@ export function ApplyEsarfScreen({
                           setValidationErrors((current) => ({
                             ...current,
                             [`entry_${activeTransactionSelectIndex}_transaction`]: undefined,
+                            [`entry_${activeTransactionSelectIndex}_offsetHours`]: undefined,
+                            [`entry_${activeTransactionSelectIndex}_offsetBalance`]: undefined,
+                            [`entry_${activeTransactionSelectIndex}_dateTo`]: undefined,
                           }));
                         }}
                       >
@@ -1939,9 +2124,20 @@ export function ApplyEsarfScreen({
                           <View style={[styles.checkbox, selected ? styles.checkboxActive : null]}>
                             {selected ? <Check size={14} color="#0f172a" strokeWidth={3} /> : null}
                           </View>
-                          <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>
-                            {option.label}
-                          </Text>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>
+                              {option.label}
+                            </Text>
+                            {option.key === 'offset' && activeEntryHours >= MIN_OFFSETABLE_HOURS && !selected ? (
+                              <Text style={styles.transactionOptionHintText}>
+                                Eligible ({activeEntryHours.toFixed(2)} hrs) • Tap to credit to offset balance
+                              </Text>
+                            ) : option.key === 'offset' && activeEntryHours > 0 && activeEntryHours < MIN_OFFSETABLE_HOURS ? (
+                              <Text style={styles.transactionOptionWarningText}>
+                                Minimum {MIN_OFFSETABLE_HOURS.toFixed(2)} hrs required (current: {activeEntryHours.toFixed(2)} hrs)
+                              </Text>
+                            ) : null}
+                          </View>
                         </View>
                       </Pressable>
                     );
@@ -1958,25 +2154,35 @@ export function ApplyEsarfScreen({
           ) : null}
 
           {activeDateChoiceIndex !== null ? (
-            <DateRangePickerModal
-              key={`esarf-date-range-${activeDateChoiceIndex}-${entries[activeDateChoiceIndex]?.id || activeDateChoiceIndex}`}
-              visible
-              allowFutureDates={parseEntryTransactions(entries[activeDateChoiceIndex]?.transaction).includes('use_offset')}
-              initialStartDate={entries[activeDateChoiceIndex]?.dateFrom || ''}
-              initialEndDate={entries[activeDateChoiceIndex]?.dateTo || ''}
-              maxRangeDays={2}
-              onApply={(startYMD, endYMD) => {
-                const idx = activeDateChoiceIndex;
-                updateEntry(idx, { dateFrom: startYMD, dateTo: endYMD });
-                setValidationErrors((current) => ({
-                  ...current,
-                  [`entry_${idx}_dateFrom`]: undefined,
-                  [`entry_${idx}_dateTo`]: undefined,
-                }));
-                setActiveDateChoiceIndex(null);
-              }}
-              onClose={() => setActiveDateChoiceIndex(null)}
-            />
+            (() => {
+              const currentEntry = entries[activeDateChoiceIndex];
+              const entryTransKeys = parseEntryTransactions(currentEntry?.transaction);
+              const isEntryUseOffset = entryTransKeys.includes('use_offset');
+              return (
+                <DateRangePickerModal
+                  key={`esarf-date-range-${activeDateChoiceIndex}-${currentEntry?.id || activeDateChoiceIndex}`}
+                  visible
+                  allowFutureDates={isEntryUseOffset}
+                  initialStartDate={currentEntry?.dateFrom || ''}
+                  initialEndDate={isEntryUseOffset ? currentEntry?.dateFrom || '' : currentEntry?.dateTo || ''}
+                  maxRangeDays={isEntryUseOffset ? 1 : 2}
+                  onApply={(startYMD, endYMD) => {
+                    const idx = activeDateChoiceIndex;
+                    const finalEnd = isEntryUseOffset ? startYMD : endYMD;
+                    updateEntry(idx, { dateFrom: startYMD, dateTo: finalEnd });
+                    setValidationErrors((current) => ({
+                      ...current,
+                      [`entry_${idx}_dateFrom`]: undefined,
+                      [`entry_${idx}_dateTo`]: undefined,
+                      [`entry_${idx}_offsetHours`]: undefined,
+                      [`entry_${idx}_offsetBalance`]: undefined,
+                    }));
+                    setActiveDateChoiceIndex(null);
+                  }}
+                  onClose={() => setActiveDateChoiceIndex(null)}
+                />
+              );
+            })()
           ) : null}
 
           {activeScrollableTimePicker !== null ? (
@@ -1995,6 +2201,12 @@ export function ApplyEsarfScreen({
                 } else {
                   updateEntry(idx, { timeTo: time24 });
                 }
+                setValidationErrors((current) => ({
+                  ...current,
+                  [`entry_${idx}_timeFrom`]: undefined,
+                  [`entry_${idx}_timeTo`]: undefined,
+                  [`entry_${idx}_offsetHours`]: undefined,
+                }));
                 setActiveScrollableTimePicker(null);
               }}
               onCancel={() => setActiveScrollableTimePicker(null)}
@@ -2074,7 +2286,11 @@ const submissionNotes = [
   },
   {
     title: 'Offset & Use Offset',
-    description: 'Offset hours must be earned and approved beforehand. When using offset, ensure your current balance is sufficient to cover the requested duration.',
+    description: 'The minimum offsetable hours for a regular employee is 4.00 hours. Offset hours must be earned and approved beforehand. When using offset, ensure your current balance is sufficient to cover the requested duration.',
+  },
+  {
+    title: 'Regular Schedule & Lunch Break',
+    description: 'Official working hours for a regular schedule are 8.00 hours. 12:00 PM to 1:00 PM is designated lunch break time and is not counted towards worked hours.',
   },
   {
     title: 'Automatic Split',
@@ -2237,6 +2453,10 @@ function validateForm({
     const diff = getDaysBetweenYMD(dateFrom, dateTo);
     if (diff < 0) {
       errors.dateTo = 'Date To cannot be earlier than Date From';
+    } else if (transactions.includes('use_offset')) {
+      if (diff > 0) {
+        errors.dateTo = 'Use Offset can only be applied for a single day.';
+      }
     } else if (diff > 1) {
       errors.dateTo = 'Date range can only be for a single day or two consecutive days.';
     }
@@ -2245,6 +2465,9 @@ function validateForm({
   if (!timeTo) errors.timeTo = 'Time To is required.';
   if (transactions.includes('use_offset') && totalHours > offsetBalance) {
     errors.totalHours = `Use Offset cannot exceed your ${offsetBalance.toFixed(2)} hour offset balance.`;
+  }
+  if (transactions.includes('offset') && totalHours < MIN_OFFSETABLE_HOURS) {
+    errors.totalHours = `The minimum offsetable hours for a regular employee is ${MIN_OFFSETABLE_HOURS.toFixed(2)} hours (currently ${totalHours.toFixed(2)} hrs).`;
   }
   if (!reason.trim()) errors.reason = 'Reason is required.';
 
@@ -3789,5 +4012,103 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#16a34a',
     flex: 1,
+  },
+  offsetWarningCard: {
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fca5a5',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 4,
+  },
+  offsetWarningCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  offsetWarningCardTitle: {
+    fontSize: 12,
+    fontWeight: fontWeights.heavy,
+    color: '#dc2626',
+  },
+  offsetWarningCardText: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: fontWeights.medium,
+    color: '#b91c1c',
+  },
+  offsetQuickSwitchBtn: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    backgroundColor: '#fee2e2',
+    borderWidth: 1,
+    borderColor: '#f87171',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  offsetQuickSwitchBtnText: {
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+    color: '#991b1b',
+  },
+  offsetEncouragementCard: {
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 4,
+  },
+  offsetEncouragementCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  offsetEncouragementCardTitle: {
+    fontSize: 12,
+    fontWeight: fontWeights.heavy,
+    color: '#15803d',
+    flex: 1,
+  },
+  offsetEncouragementCardText: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: fontWeights.medium,
+    color: '#166534',
+  },
+  offsetAddBtn: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 8,
+    backgroundColor: '#16a34a',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  offsetAddBtnText: {
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+    color: '#ffffff',
+  },
+  inputWarning: {
+    borderBottomColor: '#dc2626',
+    borderColor: '#dc2626',
+  },
+  transactionOptionHintText: {
+    fontSize: 11,
+    fontWeight: fontWeights.medium,
+    color: '#16a34a',
+    marginTop: 2,
+  },
+  transactionOptionWarningText: {
+    fontSize: 11,
+    fontWeight: fontWeights.medium,
+    color: '#dc2626',
+    marginTop: 2,
   },
 });

@@ -134,7 +134,7 @@ assertEqual(
 );
 
 assertEqual(
-  'fio or ob without overtime counts full time range including break time',
+  'fio or ob without overtime counts full time range excluding 12pm to 1pm lunch',
   calculateRequestHours({
     requestType: 'overtime',
     dateFrom: '2026-05-20',
@@ -144,11 +144,11 @@ assertEqual(
     dayOff: 'Sun',
     isFullHours: true,
   }),
-  12,
+  11,
 );
 
 assertEqual(
-  'undertime 9am to 3pm counts rendered time including break time',
+  'undertime 9am to 3pm counts rendered time excluding 12pm to 1pm lunch',
   calculateRequestHours({
     requestType: 'overtime',
     dateFrom: '2026-05-20',
@@ -158,7 +158,7 @@ assertEqual(
     dayOff: 'Sun',
     isFullHours: true,
   }),
-  6,
+  5,
 );
 
 assertEqual(
@@ -173,6 +173,32 @@ assertEqual(
     isFullHours: true,
   }),
   3,
+);
+
+assertEqual(
+  'work during 12pm to 1pm lunch break is not counted',
+  calculateRequestHours({
+    requestType: 'use_offset',
+    dateFrom: '2026-05-20',
+    timeFrom: '12:00',
+    timeTo: '13:00',
+    timeSchedule: '9:00AM - 6:00PM',
+    dayOff: 'Sun',
+  }),
+  0,
+);
+
+assertEqual(
+  'work spanning across lunch break 11:30 to 13:30 deducts 1 hour lunch',
+  calculateRequestHours({
+    requestType: 'use_offset',
+    dateFrom: '2026-05-20',
+    timeFrom: '11:30',
+    timeTo: '13:30',
+    timeSchedule: '9:00AM - 6:00PM',
+    dayOff: 'Sun',
+  }),
+  1,
 );
 
 assertEqual('overnight request range', calculateRequestHours({
@@ -211,7 +237,7 @@ assertDeepEqual('parse multi-day off Sat / Sun', parseDayOffList('Sat / Sun'), [
 assertDeepEqual('parse multi-day off Sat & Sun', parseDayOffList('Sat & Sun'), ['Sat', 'Sun']);
 
 assertEqual(
-  'Saturday overtime 9am to 6pm with Saturday, Sunday dayOff credits 9 full worked hours',
+  'Saturday overtime 9am to 6pm with Saturday, Sunday dayOff credits 8 full worked hours',
   calculateRequestHours({
     requestType: 'overtime',
     dateFrom: '2026-08-15', // Saturday
@@ -220,11 +246,11 @@ assertEqual(
     timeSchedule: '9:00AM - 6:00PM',
     dayOff: 'Saturday, Sunday',
   }),
-  9,
+  8,
 );
 
 assertEqual(
-  'Sunday offset 9am to 6pm with Sat / Sun dayOff credits 9 full worked hours',
+  'Sunday offset 9am to 6pm with Sat / Sun dayOff credits 8 full worked hours',
   calculateRequestHours({
     requestType: 'offset_earn',
     dateFrom: '2026-08-16', // Sunday
@@ -233,7 +259,20 @@ assertEqual(
     timeSchedule: '9:00AM - 6:00PM',
     dayOff: 'Sat / Sun',
   }),
-  9,
+  8,
+);
+
+assertEqual(
+  'regular schedule 9am to 6pm Use Offset yields 8 hours (12pm to 1pm lunch excluded)',
+  calculateRequestHours({
+    requestType: 'use_offset',
+    dateFrom: '2026-08-17',
+    timeFrom: '09:00',
+    timeTo: '18:00',
+    timeSchedule: '9:00AM - 6:00PM',
+    dayOff: 'Sun',
+  }),
+  8,
 );
 
 assertEqual(

@@ -98,11 +98,11 @@ export function getHoursHint(
   isFullHours: boolean = false,
 ) {
   if (requestType === 'use_offset' || isFullHours) {
-    return 'Full selected time range will be counted.';
+    return 'Full selected time range will be counted (12:00 PM - 1:00 PM lunch break is excluded).';
   }
 
   if (isDateDayOff(dateFrom, dayOff)) {
-    return 'Day off date: full worked hours are counted.';
+    return 'Day off date: full worked hours are counted (12:00 PM - 1:00 PM lunch break is excluded).';
   }
 
   return 'Regular scheduled day: only hours outside official working hours (9:00 AM - 6:00 PM) are counted.';
@@ -180,14 +180,34 @@ function parseScheduleRange(scheduleText: string) {
   return { scheduleStart, scheduleEnd };
 }
 
-function computeWorkedMinutes(workStartBase: number, workEndBase: number) {
+export const LUNCH_START_MINUTES = 12 * 60; // 12:00 PM (720 min)
+export const LUNCH_END_MINUTES = 13 * 60;   // 1:00 PM (780 min)
+
+export function computeLunchBreakOverlap(workStart: number, workEnd: number) {
+  // Day 0 lunch break (12:00 PM - 1:00 PM)
+  const day0Overlap = Math.max(0, Math.min(workEnd, LUNCH_END_MINUTES) - Math.max(workStart, LUNCH_START_MINUTES));
+  // Day 1 lunch break (12:00 PM - 1:00 PM next day) if work spans overnight into next day
+  const day1Start = LUNCH_START_MINUTES + 24 * 60;
+  const day1End = LUNCH_END_MINUTES + 24 * 60;
+  const day1Overlap = Math.max(0, Math.min(workEnd, day1End) - Math.max(workStart, day1Start));
+
+  return day0Overlap + day1Overlap;
+}
+
+export function computeWorkedMinutes(workStartBase: number, workEndBase: number, deductLunch: boolean = true) {
   let workEnd = workEndBase;
 
   if (workEnd <= workStartBase) {
     workEnd += 24 * 60;
   }
 
-  return Math.max(0, workEnd - workStartBase);
+  const grossMinutes = Math.max(0, workEnd - workStartBase);
+  if (grossMinutes <= 0 || !deductLunch) {
+    return grossMinutes;
+  }
+
+  const lunchOverlap = computeLunchBreakOverlap(workStartBase, workEnd);
+  return Math.max(0, grossMinutes - lunchOverlap);
 }
 
 function alignWorkAndScheduleRanges(

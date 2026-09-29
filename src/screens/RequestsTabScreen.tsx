@@ -1355,7 +1355,14 @@ function normalizeDepartmentName(value?: string | null) {
 }
 
 function getRequestDate(item: MyRequest) {
-  const rawDate = item.request_type_code === 'leave' ? item.start_date || item.date_from || item.submitted_at : item.date_from || item.submitted_at;
+  let rawDate: string | null;
+  if (isEsarfRequest(item)) {
+    rawDate = item.submitted_at || item.date_from;
+  } else if (item.request_type_code === 'leave') {
+    rawDate = item.start_date || item.date_from || item.submitted_at;
+  } else {
+    rawDate = item.date_from || item.submitted_at;
+  }
 
   if (isAutoApprovedBirthdayGrant(item) && rawDate && rawDate.length >= 10) {
     const currentYearStr = new Date().getFullYear().toString();
@@ -1372,9 +1379,12 @@ function parseFilterDate(value: string | null, endOfDay = false) {
   const normalized = value.trim();
   if (!normalized) return null;
   const slashMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const normalizedIso = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(normalized)
+    ? normalized.replace(' ', 'T')
+    : normalized;
   const date = slashMatch
     ? new Date(Number(slashMatch[3]), Number(slashMatch[1]) - 1, Number(slashMatch[2]))
-    : new Date(normalized);
+    : new Date(normalizedIso);
   if (Number.isNaN(date.getTime())) return null;
   if (endOfDay) date.setHours(23, 59, 59, 999);
   return date.getTime();
@@ -1411,15 +1421,20 @@ function compactRange(start: string | null, end: string | null) {
 
 function formatCompactTime(value: string | null) {
   if (!value) return '--:--';
-  if (/^\d{2}:\d{2}/.test(value)) return value.slice(0, 5);
-  const date = new Date(value);
+  const trimmed = value.trim();
+  if (/^\d{2}:\d{2}/.test(trimmed)) return trimmed.slice(0, 5);
+  const normalized = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(trimmed)
+    ? trimmed.replace(' ', 'T')
+    : trimmed;
+  const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return '--:--';
   return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(date);
 }
 
 function formatSheetTime(value: string | null) {
   if (!value) return 'N/A';
-  const timeMatch = value.match(/^(\d{1,2}):(\d{2})/);
+  const trimmed = value.trim();
+  const timeMatch = trimmed.match(/^(\d{1,2}):(\d{2})/);
   if (timeMatch) {
     const hours = Number(timeMatch[1]);
     const minutes = Number(timeMatch[2]);
@@ -1430,7 +1445,10 @@ function formatSheetTime(value: string | null) {
     }
   }
 
-  const date = new Date(value);
+  const normalized = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(trimmed)
+    ? trimmed.replace(' ', 'T')
+    : trimmed;
+  const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return 'N/A';
   return new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit' }).format(date);
 }

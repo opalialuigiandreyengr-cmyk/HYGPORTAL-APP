@@ -15,6 +15,20 @@ type DeleteConfirmationModalProps = {
   onCancel: () => void;
 };
 
+function formatConfirmationDate(value?: string | null) {
+  if (!value) return null;
+  const normalized = value.trim();
+  const normalizedIso = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(normalized)
+    ? normalized.replace(' ', 'T')
+    : normalized;
+  const slashMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const parsed = slashMatch
+    ? new Date(Number(slashMatch[3]), Number(slashMatch[1]) - 1, Number(slashMatch[2]))
+    : new Date(normalizedIso);
+  if (Number.isNaN(parsed.getTime())) return normalized;
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(parsed);
+}
+
 export function DeleteConfirmationModal({
   visible,
   request,
@@ -27,7 +41,13 @@ export function DeleteConfirmationModal({
 
   const requestCode = formatUnifiedRequestCode(request, sequence);
   const requestType = formatUnifiedRequestType(request);
-  const requestDate = request.date_from || request.start_date || request.submitted_at || null;
+  const isEsarf = request.request_type_code !== 'leave' && request.request_type_code !== 'discount' && request.request_type_code !== 'charge';
+  const rawDate = isEsarf
+    ? request.submitted_at || request.date_from
+    : request.request_type_code === 'leave'
+      ? request.start_date || request.date_from || request.submitted_at
+      : request.date_from || request.submitted_at || null;
+  const requestDate = formatConfirmationDate(rawDate);
   const reason = request.reason?.trim() || null;
 
   return (

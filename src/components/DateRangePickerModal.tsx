@@ -69,12 +69,14 @@ export function DateRangePickerModal({
       const initDateObj = parseYMD(initialStartDate) || todayObj;
       setCurrentYear(initDateObj.getFullYear());
       setCurrentMonth(initDateObj.getMonth());
-      setStartDateStr(initialStartDate || '');
-      setEndDateStr(initialEndDate || '');
-      setSelectingStep(initialStartDate && !initialEndDate ? 'end' : 'start');
+      const effectiveStart = initialStartDate || '';
+      const effectiveEnd = maxRangeDays === 1 ? effectiveStart : (initialEndDate || '');
+      setStartDateStr(effectiveStart);
+      setEndDateStr(effectiveEnd);
+      setSelectingStep(effectiveStart && !effectiveEnd && maxRangeDays !== 1 ? 'end' : 'start');
       setWarningMsg('');
     }
-  }, [visible, initialStartDate, initialEndDate, todayObj]);
+  }, [visible, initialStartDate, initialEndDate, todayObj, maxRangeDays]);
 
   const isAtMaxMonth = currentYear > maxYear || (currentYear === maxYear && currentMonth >= maxMonth);
 
@@ -135,6 +137,13 @@ export function DateRangePickerModal({
     // Only past or current days can be selected if future dates not allowed
     if (!allowFutureDates && dateStr > todayStr) return;
 
+    if (maxRangeDays === 1) {
+      setStartDateStr(dateStr);
+      setEndDateStr(dateStr);
+      setSelectingStep('start');
+      return;
+    }
+
     if (!startDateStr || (startDateStr && endDateStr)) {
       setStartDateStr(dateStr);
       setEndDateStr('');
@@ -177,6 +186,17 @@ export function DateRangePickerModal({
   };
 
   const handleApply = () => {
+    if (maxRangeDays === 1) {
+      if (!startDateStr) {
+        setWarningMsg('Please select a date before applying.');
+        return;
+      }
+      setWarningMsg('');
+      onApply(startDateStr, startDateStr);
+      onClose();
+      return;
+    }
+
     if (!startDateStr && !endDateStr) {
       setWarningMsg('Please select Date From and Date To before applying.');
       return;
@@ -214,6 +234,12 @@ export function DateRangePickerModal({
   };
 
   const getRangeDisplay = () => {
+    if (maxRangeDays === 1) {
+      if (startDateStr) {
+        return `${formatReadable(startDateStr)} (Single Day)`;
+      }
+      return 'Select date (Single day for Use Offset)';
+    }
     if (startDateStr && endDateStr) {
       return `${formatReadable(startDateStr)} – ${formatReadable(endDateStr)}`;
     }
@@ -232,7 +258,9 @@ export function DateRangePickerModal({
       <View style={styles.backdrop}>
         <View style={styles.card}>
           {/* Centered Top Title Label */}
-          <Text style={styles.topModalTitle}>Set Date From-To</Text>
+          <Text style={styles.topModalTitle}>
+            {maxRangeDays === 1 ? 'Set Date (Single Day)' : 'Set Date From-To'}
+          </Text>
 
           {/* Header Bar */}
           <View style={styles.headerRow}>

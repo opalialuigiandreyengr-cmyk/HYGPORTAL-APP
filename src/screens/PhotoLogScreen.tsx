@@ -81,7 +81,7 @@ function isPhotoWatermarked(item?: PhotoProofItem | null): boolean {
   if (!item) return false;
   // Strictly applies to web/PWA where photos are captured onto the canvas with burned-in text.
   // Also checks explicit isWatermarked boolean if synced from web/PWA client.
-  return Platform.OS === 'web' || Boolean(item.isWatermarked);
+  return Boolean(item.isWatermarked);
 }
 
 async function createWatermarkedImageWeb(

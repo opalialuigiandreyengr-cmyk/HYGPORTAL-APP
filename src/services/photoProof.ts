@@ -350,7 +350,7 @@ export async function loadPhotoProofs(userFilter?: {
           driveFileId: row.drive_file_id,
           driveWebViewLink: row.drive_web_view_link,
           syncedToCloud: true,
-          isWatermarked: row.is_watermarked ?? true,
+          isWatermarked: row.is_watermarked ?? false,
         };
       });
 
@@ -395,7 +395,7 @@ export async function loadPhotoProofs(userFilter?: {
             ...cloud,
             photoUri: cloud.photoUri || matched.photoUri,
             syncedToCloud: true,
-            isWatermarked: true,
+            isWatermarked: matched.isWatermarked ?? cloud.isWatermarked ?? false,
           });
         } else {
           merged.push(cloud);

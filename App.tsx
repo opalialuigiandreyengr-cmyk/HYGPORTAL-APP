@@ -1992,7 +1992,6 @@ function RewardsPlaceholderScreen({
                   <Text style={styles.rewardsPointsTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72}>
                     HYG Points
                   </Text>
-                  <Text style={styles.rewardsConversion}>1 Point = P1.00</Text>
                 </View>
               </View>
             </View>
