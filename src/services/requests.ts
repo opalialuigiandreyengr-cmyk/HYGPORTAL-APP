@@ -259,38 +259,45 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
   // Fallback: update tables directly or via admin_update_request_data RPC
   let fallbackError: string | null = null;
 
-  // Determine if request_type_id should change based on transactionType or requestTypeCode
+  // Determine if request_type_id should change based on requestTypeCode or transactionType
   let targetTypeCode: string | null = params.requestTypeCode || null;
   if (!targetTypeCode && params.transactionType) {
-    const lower = params.transactionType.toLowerCase();
-    if (lower.includes('use_offset') || lower.includes('use offset')) {
+    const lowerTrans = params.transactionType.toLowerCase();
+    if (lowerTrans.includes('use offset') || lowerTrans.includes('use_offset')) {
       targetTypeCode = 'use_offset';
-    } else if (lower.includes('offset')) {
+    } else if (lowerTrans.includes('offset')) {
       targetTypeCode = 'offset_earn';
     }
   }
 
-  let requestTypeIdToUpdate: string | null = null;
+  let targetTypeId: string | null = null;
   if (targetTypeCode) {
     try {
-      const { data: rt } = await supabase
+      const { data: rtData } = await supabase
         .from('request_types')
         .select('id')
         .eq('code', targetTypeCode)
         .maybeSingle<{ id: string }>();
-      if (rt?.id) {
-        requestTypeIdToUpdate = rt.id;
+      if (rtData?.id) {
+        targetTypeId = rtData.id;
       }
     } catch {
       // ignore
     }
   }
 
-  // Update main requests table (request_type_id, updated_at)
+  // Always update main requests table (reason, total_hours, total_days, date_from, date_to, request_type_id, updated_at)
   const { error: mainReqErr } = await supabase
     .from('requests')
     .update({
-      ...(requestTypeIdToUpdate ? { request_type_id: requestTypeIdToUpdate } : {}),
+      ...(params.reason ? { reason: params.reason } : {}),
+      ...(params.totalHours !== undefined && params.totalHours !== null ? { total_hours: params.totalHours } : {}),
+      ...(params.totalDays !== undefined && params.totalDays !== null ? { total_days: params.totalDays } : {}),
+      ...(params.dateFrom ? { date_from: params.dateFrom } : {}),
+      ...(params.dateTo ? { date_to: params.dateTo } : {}),
+      ...(params.startDate ? { date_from: params.startDate } : {}),
+      ...(params.endDate ? { date_to: params.endDate } : {}),
+      ...(targetTypeId ? { request_type_id: targetTypeId } : {}),
       updated_at: new Date().toISOString(),
     })
     .eq('id', targetId);
