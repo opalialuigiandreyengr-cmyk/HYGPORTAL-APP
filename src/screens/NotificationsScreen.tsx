@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Dimensions, Image, type LayoutChangeEvent, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Animated, Dimensions, Image, type LayoutChangeEvent, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Bell, CalendarDays, CheckCheck, ChevronRight, Gift, Hourglass, Trash2, X } from 'lucide-react-native';
 
@@ -24,6 +24,7 @@ export function NotificationsScreen({
   onCountChange,
   onAssistant,
   onNotifications,
+  onHelpTutorials,
   onOpenProfile,
   onBackHome,
   onOpenApprovalRequest,
@@ -35,6 +36,7 @@ export function NotificationsScreen({
   onCountChange?: (count: number) => void;
   onAssistant?: () => void;
   onNotifications?: () => void;
+  onHelpTutorials?: () => void;
   onOpenProfile?: () => void;
   onBackHome?: () => void;
   onOpenApprovalRequest?: (requestId?: string | null) => void;
@@ -58,6 +60,17 @@ export function NotificationsScreen({
       setErrorMessage(err instanceof Error ? err.message : 'Failed to load notifications');
     }
   }, [onCountChange]);
+
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     void refresh();
@@ -136,11 +149,24 @@ export function NotificationsScreen({
         notificationCount={notificationCount}
         onMessages={onAssistant}
         onNotifications={onNotifications}
+        onHelpTutorials={onHelpTutorials}
         onOpenProfile={onOpenProfile}
         onOpenRewards={onOpenRewards}
         onBackHome={onBackHome}
       />
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handlePullRefresh}
+            colors={[colors.brand.gold, colors.primary]}
+            tintColor={colors.brand.gold}
+            progressBackgroundColor="#ffffff"
+          />
+        }
+      >
         <View style={styles.headerCard}>
           <View style={styles.headerRow}>
             <View style={styles.headerIconBubble}>

@@ -10,6 +10,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   Share,
   StyleSheet,
   Text,
@@ -44,7 +45,7 @@ import Svg, {
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { fontWeights, radius, spacing } from '../theme';
+import { colors, fontWeights, radius, spacing } from '../theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   deletePhotoProof,
@@ -259,8 +260,14 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
     };
   }, []);
 
-  const fetchLogs = async () => {
-    setIsLoading(true);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const fetchLogs = async (isPull = false) => {
+    if (isPull) {
+      setIsPullRefreshing(true);
+    } else {
+      setIsLoading(true);
+    }
     try {
       const items = await loadPhotoProofs({ employeeId, employeeName, userEmail });
       setLogs(items);
@@ -268,6 +275,7 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
       console.error('Error loading photo logs:', err);
     } finally {
       setIsLoading(false);
+      setIsPullRefreshing(false);
     }
   };
 
@@ -644,32 +652,43 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
           <ActivityIndicator size="large" color="#f5af00" />
           <Text style={styles.loadingText}>Loading photo logs...</Text>
         </View>
-      ) : logs.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <View style={styles.emptyIconCircle}>
-            <Camera size={36} color="#94a3b8" strokeWidth={2} />
-          </View>
-          <Text style={styles.emptyTitle}>No Photo Proofs Logged</Text>
-          <Text style={styles.emptySubtitle}>
-            Capture real-time events or store surroundings with live timestamp, date, and geolocation
-            stamping.
-          </Text>
-          <Pressable style={styles.emptyActionButton} onPress={onTakeNew}>
-            <Plus size={20} color="#0f172a" strokeWidth={2.5} />
-            <Text style={styles.emptyActionText}>Take Photo Proof</Text>
-          </Pressable>
-        </View>
       ) : (
         <FlatList
           data={logs}
           keyExtractor={(item) => item.id}
           contentContainerStyle={[
             styles.listContent,
+            logs.length === 0 && { flexGrow: 1, justifyContent: 'center' },
             {
               paddingBottom: Math.max(insets.bottom + 24, 40),
             },
           ]}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={isPullRefreshing}
+              onRefresh={() => fetchLogs(true)}
+              colors={[colors.brand.gold, colors.primary]}
+              tintColor={colors.brand.gold}
+              progressBackgroundColor="#ffffff"
+            />
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <View style={styles.emptyIconCircle}>
+                <Camera size={36} color="#94a3b8" strokeWidth={2} />
+              </View>
+              <Text style={styles.emptyTitle}>No Photo Proofs Logged</Text>
+              <Text style={styles.emptySubtitle}>
+                Capture real-time events or store surroundings with live timestamp, date, and geolocation
+                stamping.
+              </Text>
+              <Pressable style={styles.emptyActionButton} onPress={onTakeNew}>
+                <Plus size={20} color="#0f172a" strokeWidth={2.5} />
+                <Text style={styles.emptyActionText}>Take Photo Proof</Text>
+              </Pressable>
+            </View>
+          }
           renderItem={({ item }) => (
             <View style={styles.logCard}>
               {/* Image with overlay */}

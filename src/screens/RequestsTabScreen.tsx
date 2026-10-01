@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, AppState, type AppStateStatus, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, AppState, type AppStateStatus, Modal, PanResponder, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
 import { CalendarDays, Clock3, Eye, FileText, Funnel, Pencil, RefreshCcw, Search, Trash2, Users, X } from 'lucide-react-native';
@@ -47,6 +48,7 @@ type Props = {
   notificationCount?: number;
   onAssistant?: () => void;
   onNotifications?: () => void;
+  onHelpTutorials?: () => void;
   onOpenProfile?: () => void;
   onOpenSettings?: () => void;
   onOpenMyTeam?: () => void;
@@ -56,7 +58,7 @@ type Props = {
   pointsBalance?: number;
 };
 
-export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssistant, onNotifications, onOpenProfile, onOpenSettings, onOpenMyTeam, onOpenRewards, onEditRequest, refreshTrigger, pointsBalance = 0 }: Props) {
+export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssistant, onNotifications, onHelpTutorials, onOpenProfile, onOpenSettings, onOpenMyTeam, onOpenRewards, onEditRequest, refreshTrigger, pointsBalance = 0 }: Props) {
   const [items, setItems] = useState<MyRequest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
@@ -178,6 +180,17 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
       setIsLoading(false);
     }
   }
+
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await refresh(true);
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
 
   async function refreshSilently() {
     try {
@@ -408,8 +421,20 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} />
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+      <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onHelpTutorials={onHelpTutorials} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} />
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handlePullRefresh}
+            colors={[colors.brand.gold, colors.primary]}
+            tintColor={colors.brand.gold}
+            progressBackgroundColor="#ffffff"
+          />
+        }
+      >
         <View style={styles.filterPanel}>
           <View style={styles.searchRow}>
             <View style={styles.searchBox}>
@@ -856,6 +881,9 @@ function RequestDetailsSheet({
   onEdit?: (request: MyRequest) => void;
   onDelete?: (request: MyRequest) => void;
 }) {
+  const insets = useSafeAreaInsets();
+  const footerBottomPadding = Math.max(insets.bottom + 8, Platform.OS === 'ios' ? 24 : spacing.md);
+
   if (!request) return null;
 
   const { item, sequence } = request;
@@ -1034,7 +1062,7 @@ function RequestDetailsSheet({
               </View>
             )}
           </ScrollView>
-          <View style={styles.sheetFooter}>
+          <View style={[styles.sheetFooter, { paddingBottom: footerBottomPadding }]}>
             {itemStatusKey === 'pending' ? (
               <>
                 {!isPerk && onEdit ? (

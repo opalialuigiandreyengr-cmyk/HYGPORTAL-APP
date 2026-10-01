@@ -1,5 +1,5 @@
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Cake, Gift, PartyPopper, Sparkles, X } from 'lucide-react-native';
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Cake, CheckCircle2, Gift, Lock, PartyPopper, Sparkles, X } from 'lucide-react-native';
 
 import { fontWeights, radius, spacing } from '../theme';
 
@@ -7,14 +7,30 @@ type Props = {
   visible: boolean;
   employeeName: string;
   onClose: () => void;
+  onClaim?: () => void | Promise<void>;
+  isClaimDisabled?: boolean;
+  isClaiming?: boolean;
+  hasCompletedOneYear?: boolean;
 };
 
-export function BirthdayGreetingModal({ visible, employeeName, onClose }: Props) {
+export function BirthdayGreetingModal({
+  visible,
+  employeeName,
+  onClose,
+  onClaim,
+  isClaimDisabled = false,
+  isClaiming = false,
+  hasCompletedOneYear = true,
+}: Props) {
   if (!visible) {
     return null;
   }
 
-  const greetingMessage = `Wishing you a wonderful day filled with happiness, good health, and memorable moments. As a token of our appreciation for your hard work and dedication, we're delighted to grant you one (1) Birthday Leave, so you can celebrate your special day with your loved ones or simply take time to enjoy yourself. Thank you for being a valued member of our team. We hope your year ahead is filled with success, joy, and exciting opportunities. Have an amazing birthday!`;
+  const effectivelyDisabled = isClaimDisabled || !hasCompletedOneYear;
+
+  const greetingMessage = hasCompletedOneYear
+    ? `Wishing you a wonderful day filled with happiness, good health, and memorable moments. As a token of our appreciation for your hard work and dedication, we're delighted to grant you one (1) Birthday Leave, so you can celebrate your special day with your loved ones or simply take time to enjoy yourself. Thank you for being a valued member of our team. We hope your year ahead is filled with success, joy, and exciting opportunities. Have an amazing birthday!`
+    : `Wishing you a wonderful day filled with happiness, good health, and memorable moments. Thank you for being a valued member of our team. We hope your year ahead is filled with success, joy, and exciting opportunities. Have an amazing birthday!`;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -55,24 +71,99 @@ export function BirthdayGreetingModal({ visible, employeeName, onClose }: Props)
             <View style={styles.cardBox}>
               <Text style={styles.messageText}>{greetingMessage}</Text>
 
-              <View style={styles.perkGrantCard}>
-                <View style={styles.perkIconBox}>
-                  <Cake size={20} color="#0f172a" />
+              {!hasCompletedOneYear ? (
+                <View style={[styles.perkGrantCard, styles.perkGrantCardTenure]}>
+                  <View style={[styles.perkIconBox, styles.perkIconBoxTenure]}>
+                    <Lock size={18} color="#64748b" />
+                  </View>
+                  <View style={styles.perkTextGroup}>
+                    <View style={styles.perkTitleRow}>
+                      <Text style={styles.perkGrantTitle}>Birthday Leave Grant</Text>
+                      <View style={styles.tenureBadge}>
+                        <Text style={styles.tenureBadgeText}>1 Year Required</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.perkGrantSub}>
+                      Paid Birthday Leave is available after 1 year of service. You may apply manually for Birthday Leave without pay in the Requests screen.
+                    </Text>
+                  </View>
                 </View>
-                <View style={styles.perkTextGroup}>
-                  <Text style={styles.perkGrantTitle}>1 Birthday Leave Granted</Text>
-                  <Text style={styles.perkGrantSub}>Available in your Requests screen.</Text>
+              ) : (
+                <View style={[styles.perkGrantCard, isClaimDisabled && styles.perkGrantCardClaimed]}>
+                  <View style={[styles.perkIconBox, isClaimDisabled && styles.perkIconBoxClaimed]}>
+                    <Cake size={20} color={isClaimDisabled ? '#059669' : '#0f172a'} />
+                  </View>
+                  <View style={styles.perkTextGroup}>
+                    <View style={styles.perkTitleRow}>
+                      <Text style={styles.perkGrantTitle}>1 Birthday Leave Granted</Text>
+                      {isClaimDisabled && (
+                        <View style={styles.claimedBadge}>
+                          <CheckCircle2 size={11} color="#059669" />
+                          <Text style={styles.claimedBadgeText}>Claimed</Text>
+                        </View>
+                      )}
+                    </View>
+                    <Text style={styles.perkGrantSub}>
+                      {isClaimDisabled
+                        ? 'Already credited to your Requests screen.'
+                        : 'Available in your Requests screen.'}
+                    </Text>
+                  </View>
                 </View>
-              </View>
+              )}
             </View>
           </ScrollView>
 
           {/* Action Footer */}
           <View style={styles.footer}>
-            <Pressable style={styles.actionButton} onPress={onClose}>
-              <Sparkles size={18} color="#0f172a" />
-              <Text style={styles.actionButtonText}>Claim & Celebrate</Text>
+            <Pressable
+              style={({ pressed }) => [
+                styles.actionButton,
+                effectivelyDisabled && styles.actionButtonDisabled,
+                pressed && !effectivelyDisabled && !isClaiming && styles.actionButtonPressed,
+              ]}
+              onPress={effectivelyDisabled || isClaiming ? undefined : (onClaim ?? onClose)}
+              disabled={effectivelyDisabled || isClaiming}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: effectivelyDisabled || isClaiming }}
+            >
+              {isClaiming ? (
+                <>
+                  <ActivityIndicator size="small" color="#0f172a" />
+                  <Text style={styles.actionButtonText}>Claiming...</Text>
+                </>
+              ) : !hasCompletedOneYear ? (
+                <>
+                  <Lock size={18} color="#64748b" />
+                  <Text style={[styles.actionButtonText, styles.actionButtonTextDisabled]}>
+                    Claim & Celebrate (Under 1 Year Service)
+                  </Text>
+                </>
+              ) : isClaimDisabled ? (
+                <>
+                  <CheckCircle2 size={18} color="#64748b" />
+                  <Text style={[styles.actionButtonText, styles.actionButtonTextDisabled]}>
+                    Already Claimed
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <Sparkles size={18} color="#0f172a" />
+                  <Text style={styles.actionButtonText}>Claim & Celebrate</Text>
+                </>
+              )}
             </Pressable>
+            {!hasCompletedOneYear && (
+              <Pressable
+                style={({ pressed }) => [
+                  styles.dismissButton,
+                  pressed && styles.dismissButtonPressed,
+                ]}
+                onPress={onClose}
+              >
+                <Text style={styles.dismissButtonText}>Dismiss</Text>
+              </Pressable>
+            )}
           </View>
         </View>
       </View>
@@ -220,6 +311,10 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
     gap: spacing.sm,
   },
+  perkGrantCardClaimed: {
+    borderColor: '#a7f3d0',
+    backgroundColor: '#f0fdf4',
+  },
   perkIconBox: {
     width: 36,
     height: 36,
@@ -228,8 +323,32 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  perkIconBoxClaimed: {
+    backgroundColor: '#bbf7d0',
+  },
   perkTextGroup: {
     flex: 1,
+  },
+  perkTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  claimedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#dcfce7',
+    borderColor: '#86efac',
+    borderWidth: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  claimedBadgeText: {
+    color: '#15803d',
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
   },
   perkGrantTitle: {
     color: '#0f172a',
@@ -260,11 +379,67 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 4,
   },
+  actionButtonDisabled: {
+    backgroundColor: '#e2e8f0',
+    borderColor: '#cbd5e1',
+    borderWidth: 1,
+    shadowColor: 'transparent',
+    shadowOpacity: 0,
+    elevation: 0,
+    opacity: 0.95,
+  },
+  actionButtonPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.99 }],
+  },
   actionButtonText: {
     color: '#0f172a',
     fontSize: 15,
     fontWeight: fontWeights.heavy,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+  },
+  actionButtonTextDisabled: {
+    color: '#64748b',
+    fontWeight: fontWeights.bold,
+  },
+  perkGrantCardTenure: {
+    borderColor: '#cbd5e1',
+    backgroundColor: '#f1f5f9',
+  },
+  perkIconBoxTenure: {
+    backgroundColor: '#e2e8f0',
+  },
+  tenureBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#fef3c7',
+    borderColor: '#fde047',
+    borderWidth: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  tenureBadgeText: {
+    color: '#854d0e',
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+  },
+  dismissButton: {
+    marginTop: 8,
+    minHeight: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+  },
+  dismissButtonPressed: {
+    opacity: 0.7,
+  },
+  dismissButtonText: {
+    color: '#64748b',
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
   },
 });

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   AlertCircle,
   CalendarDays,
@@ -61,6 +62,7 @@ type Props = {
   notificationCount?: number;
   onAssistant?: () => void;
   onNotifications?: () => void;
+  onHelpTutorials?: () => void;
   onOpenProfile?: () => void;
   onOpenSettings?: () => void;
   onOpenMyTeam?: () => void;
@@ -77,6 +79,7 @@ export function ApprovalsScreen({
   notificationCount = 0,
   onAssistant,
   onNotifications,
+  onHelpTutorials,
   onOpenProfile,
   onOpenSettings,
   onOpenMyTeam,
@@ -126,6 +129,17 @@ export function ApprovalsScreen({
       setIsLoading(false);
     }
   }
+
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
 
 
   useEffect(() => {
@@ -411,9 +425,21 @@ export function ApprovalsScreen({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} />
+      <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onHelpTutorials={onHelpTutorials} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} />
 
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handlePullRefresh}
+            colors={[colors.brand.gold, colors.primary]}
+            tintColor={colors.brand.gold}
+            progressBackgroundColor="#ffffff"
+          />
+        }
+      >
         {/* Main Tab Switcher: Pending vs Approved */}
         <View style={styles.mainTabContainer}>
           <Pressable
@@ -738,6 +764,8 @@ function ApprovalDetailsSheet({
   const [rejectReason, setRejectReason] = useState('');
   const [rejectError, setRejectError] = useState('');
   const [isSubmittingReject, setIsSubmittingReject] = useState(false);
+  const insets = useSafeAreaInsets();
+  const footerBottomPadding = Math.max(insets.bottom + 8, Platform.OS === 'ios' ? 24 : 16);
 
   useEffect(() => {
     if (esarfEntries.length > 0) {
@@ -993,7 +1021,7 @@ function ApprovalDetailsSheet({
           </ScrollView>
 
           {isRejectingInline ? (
-            <View style={styles.inlineRejectPanel}>
+            <View style={[styles.inlineRejectPanel, { paddingBottom: footerBottomPadding }]}>
               <View style={styles.inlineRejectBanner}>
                 <View style={styles.inlineRejectIconCircle}>
                   <AlertCircle size={18} color="#dc2626" strokeWidth={2.4} />
@@ -1071,7 +1099,7 @@ function ApprovalDetailsSheet({
                 </View>
               ) : null}
 
-              <View style={styles.approverFooter}>
+              <View style={[styles.approverFooter, { paddingBottom: footerBottomPadding }]}>
                 <Pressable style={styles.approverRejectBtn} onPress={handleRejectAll}>
                   <Text style={styles.approverRejectText}>Reject All</Text>
                 </Pressable>
@@ -1108,6 +1136,8 @@ function ApprovedDetailsSheet({
   profile: EmployeeProfileSummary | null;
   onClose: () => void;
 }) {
+  const insets = useSafeAreaInsets();
+  const footerBottomPadding = Math.max(insets.bottom + 8, Platform.OS === 'ios' ? 24 : 16);
   const item = approval?.item ?? null;
   const sequence = approval?.sequence ?? 0;
   const isLeave = item?.request_type_code === 'leave';
@@ -1229,7 +1259,7 @@ function ApprovedDetailsSheet({
           </ScrollView>
 
           {/* Action Footer */}
-          <View style={styles.approvedSheetFooter}>
+          <View style={[styles.approvedSheetFooter, { paddingBottom: footerBottomPadding }]}>
             <Pressable style={styles.closeSheetBtn} onPress={onClose}>
               <Text style={styles.closeSheetText}>Close</Text>
             </Pressable>

@@ -5,6 +5,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -36,7 +37,7 @@ import { platformAlert } from '../utils/platformAlert';
 import { withTimeout } from '../utils/withTimeout';
 import type { AssistantDraft } from '../services/assistant';
 import { colors, fontWeights, radius, spacing } from '../theme';
-import { calculateLeaveDays, dateStringToDate, formatDateInput } from '../utils/dateTime';
+import { calculateLeaveDays, dateStringToDate, formatDateInput, hasCompletedOneYearOfService } from '../utils/dateTime';
 import { updateMyPendingRequest, type MyRequest } from '../services/requests';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
@@ -64,8 +65,11 @@ export type LeaveEntry = {
 type RequestLeaveProps = {
   name?: string | null;
   username?: string | null;
+  employeeId?: string | null;
+  userEmail?: string | null;
   photoUrl?: string | null;
   birthDate?: string | null;
+  dateHired?: string | null;
   leaveCreditRemaining?: number;
   initialDraft?: Extract<AssistantDraft, { intent: 'draft_leave_request' }> | null;
   editingRequest?: MyRequest | null;
@@ -75,13 +79,17 @@ type RequestLeaveProps = {
   onBack?: () => void;
   onToast?: (toast: AppToastMessage) => void;
   onSubmitted?: () => void | Promise<void>;
+  onRefresh?: () => void | Promise<void>;
 };
 
 const RequestLeave = ({
   name,
   username,
+  employeeId,
+  userEmail,
   photoUrl,
   birthDate,
+  dateHired,
   leaveCreditRemaining = 0,
   initialDraft,
   editingRequest,
@@ -91,19 +99,31 @@ const RequestLeave = ({
   onBack,
   onToast,
   onSubmitted,
+  onRefresh,
 }: RequestLeaveProps) => {
   const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const [effectiveBirthDate, setEffectiveBirthDate] = useState<string | null>(birthDate || null);
   const [hasAppliedBirthdayLeaveThisYear, setHasAppliedBirthdayLeaveThisYear] =
     useState<boolean>(false);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    if (!onRefresh) return;
+    setIsPullRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
 
   // Check if Birthday Leave has already been granted/applied for the current calendar year
   useEffect(() => {
     let isMounted = true;
     async function loadBirthdayGrantStatus() {
       try {
-        const identity = username || '';
-        const alreadyApplied = await checkBirthdayLeaveAppliedForYear(identity);
+        const identities = [username, employeeId, userEmail];
+        const alreadyApplied = await checkBirthdayLeaveAppliedForYear(identities);
         if (isMounted) {
           setHasAppliedBirthdayLeaveThisYear(alreadyApplied);
         }
@@ -115,7 +135,7 @@ const RequestLeave = ({
     return () => {
       isMounted = false;
     };
-  }, [username]);
+  }, [username, employeeId, userEmail]);
 
   // If already applied for Birthday Leave, ensure any unsubmitted draft doesn't default to it
   useEffect(() => {
@@ -175,6 +195,45 @@ const RequestLeave = ({
     }
     loadFallbackBirthDate();
   }, [birthDate]);
+
+  const [effectiveDateHired, setEffectiveDateHired] = useState<string | null>(dateHired || null);
+
+  // Fallback load dateHired from database if not passed as prop
+  useEffect(() => {
+    if (dateHired) {
+      setEffectiveDateHired(dateHired);
+      return;
+    }
+    async function loadFallbackDateHired() {
+      try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data: profile } = await supabase
+          .from('user_profiles')
+          .select('employee_id')
+          .eq('auth_user_id', user.id)
+          .single();
+        if (!profile?.employee_id) return;
+        const { data: assignment } = await supabase
+          .from('employee_assignments')
+          .select('effective_from')
+          .eq('employee_id', profile.employee_id)
+          .order('effective_from', { ascending: true })
+          .limit(1)
+          .maybeSingle();
+        if (assignment?.effective_from) {
+          setEffectiveDateHired(assignment.effective_from);
+        }
+      } catch {
+        // ignore fallback errors
+      }
+    }
+    loadFallbackDateHired();
+  }, [dateHired]);
+
+  const hasCompletedOneYear = hasCompletedOneYearOfService(effectiveDateHired);
 
   const [entries, setEntries] = useState<LeaveEntry[]>(() => {
     if (editingRequest) {
@@ -262,11 +321,14 @@ const RequestLeave = ({
   const submittedIndices = useRef<Set<number>>(new Set());
 
   // Calculates credits deducted from the employee's annual leave balance for an entry
-  // Birthday Leave grants 1 day With Pay for free (0 credits deducted from balance)
+  // Birthday Leave grants 1 day With Pay for free (0 credits deducted from balance) for employees with >= 1 year of service
   function getEntryCreditsDeducted(entry: LeaveEntry): number {
     const totalDays = calculateLeaveDays(entry.dateFrom, entry.dateTo);
     const bd = getLeaveBreakdown(entry.leaveType, totalDays, entry.paidDays, entry.unpaidDays);
     if (entry.leaveCategory === 'Birthday Leave') {
+      if (!hasCompletedOneYear) {
+        return bd.paidDays;
+      }
       return Math.max(0, bd.paidDays - 1);
     }
     return bd.paidDays;
@@ -434,7 +496,11 @@ const RequestLeave = ({
 
       let finalLeaveType = value;
       if (entry.leaveCategory === 'Birthday Leave') {
-        if (totalDays === 1) {
+        if (!hasCompletedOneYear) {
+          finalLeaveType = 'Without Pay';
+          nextPaidDays = '0';
+          nextUnpaidDays = String(totalDays);
+        } else if (totalDays === 1) {
           finalLeaveType = 'With Pay';
           nextPaidDays = '1';
           nextUnpaidDays = '0';
@@ -521,15 +587,15 @@ const RequestLeave = ({
         // Automatically set the date to the accurate birthday of the user or employee
         const newDateFrom = birthdayThisYear;
         const newDateTo = birthdayThisYear;
-        const newReason = entry.reason || 'Auto-approved Birthday Leave Grant';
+        const newReason = entry.reason || (hasCompletedOneYear ? 'Auto-approved Birthday Leave Grant' : 'Birthday Leave');
 
         updateEntry(index, {
           leaveCategory: value,
           dateFrom: newDateFrom,
           dateTo: newDateTo,
-          leaveType: 'With Pay',
-          paidDays: '1',
-          unpaidDays: '0',
+          leaveType: hasCompletedOneYear ? 'With Pay' : 'Without Pay',
+          paidDays: hasCompletedOneYear ? '1' : '0',
+          unpaidDays: hasCompletedOneYear ? '0' : '1',
           reason: newReason,
         });
 
@@ -617,37 +683,47 @@ const RequestLeave = ({
         platformAlert(
           'Must Include Birthday',
           bdayCheck.message ||
-            `Birthday Leave date range must cover your birthday (${bdayCheck.monthDay || ''}). Please select a date range that includes your birthday.`,
+          `Birthday Leave date range must cover your birthday (${bdayCheck.monthDay || ''}). Please select a date range that includes your birthday.`,
         );
         return;
       }
 
-      if (totalDays === 1) {
-        nextLeaveType = 'With Pay';
-        nextPaidDays = '1';
-        nextUnpaidDays = '0';
-        // Auto-populate system grant reason on single day if blank
-        if (!entry.reason || entry.reason.trim() === '') {
-          nextReason = 'Auto-approved Birthday Leave Grant';
-        }
-      } else if (totalDays > 1) {
-        // Multi-day: employee must be the one to enter the reason
-        if (entry.reason === 'Auto-approved Birthday Leave Grant') {
-          nextReason = '';
-        }
-        const otherDays = totalDays - 1;
-        if (availableCreditsForThis <= 0) {
-          nextLeaveType = 'Both';
-          nextPaidDays = '1';
-          nextUnpaidDays = String(otherDays);
-        } else if (availableCreditsForThis >= otherDays) {
+      if (hasCompletedOneYear) {
+        if (totalDays === 1) {
           nextLeaveType = 'With Pay';
-          nextPaidDays = String(totalDays);
+          nextPaidDays = '1';
           nextUnpaidDays = '0';
-        } else {
-          nextLeaveType = 'Both';
-          nextPaidDays = String(1 + availableCreditsForThis);
-          nextUnpaidDays = String(otherDays - availableCreditsForThis);
+          // Auto-populate system grant reason on single day if blank
+          if (!entry.reason || entry.reason.trim() === '') {
+            nextReason = 'Auto-approved Birthday Leave Grant';
+          }
+        } else if (totalDays > 1) {
+          // Multi-day: employee must be the one to enter the reason
+          if (entry.reason === 'Auto-approved Birthday Leave Grant') {
+            nextReason = '';
+          }
+          const otherDays = totalDays - 1;
+          if (availableCreditsForThis <= 0) {
+            nextLeaveType = 'Both';
+            nextPaidDays = '1';
+            nextUnpaidDays = String(otherDays);
+          } else if (availableCreditsForThis >= otherDays) {
+            nextLeaveType = 'With Pay';
+            nextPaidDays = String(totalDays);
+            nextUnpaidDays = '0';
+          } else {
+            nextLeaveType = 'Both';
+            nextPaidDays = String(1 + availableCreditsForThis);
+            nextUnpaidDays = String(otherDays - availableCreditsForThis);
+          }
+        }
+      } else {
+        // Employee below 1 year of service: Always Without Pay
+        nextLeaveType = 'Without Pay';
+        nextPaidDays = '0';
+        nextUnpaidDays = String(totalDays);
+        if (entry.reason === 'Auto-approved Birthday Leave Grant') {
+          nextReason = 'Birthday Leave';
         }
       }
     } else {
@@ -713,6 +789,10 @@ const RequestLeave = ({
         if (!bdayCheck.isVerified) {
           nextErrors[`entry_${idx}_dateFrom`] =
             bdayCheck.message || 'Must fall on your birthday';
+        }
+        if (!hasCompletedOneYear && entry.leaveType !== 'Without Pay') {
+          nextErrors[`entry_${idx}_leaveType`] =
+            'Employees with under 1 year of service can only apply for Birthday Leave without pay.';
         }
       }
 
@@ -860,7 +940,7 @@ const RequestLeave = ({
         const ent = entries[i];
         const tDays = calculateLeaveDays(ent.dateFrom, ent.dateTo);
         const bd = getLeaveBreakdown(ent.leaveType, tDays, ent.paidDays, ent.unpaidDays);
-        const isSingleDayBirthday = ent.leaveCategory === 'Birthday Leave' && tDays === 1;
+        const isSingleDayBirthday = ent.leaveCategory === 'Birthday Leave' && tDays === 1 && hasCompletedOneYear;
 
         const res = await withTimeout<{ data: any; error: any }>(
           Promise.resolve(
@@ -938,9 +1018,11 @@ const RequestLeave = ({
         }
 
         if (ent.leaveCategory === 'Birthday Leave') {
-          const identity = username || '';
-          if (identity) {
-            await markBirthdayLeaveGrantedForYear(identity, bdayRequestRecord);
+          const identities = [username, employeeId, userEmail];
+          if (bdayRequestRecord) {
+            await markBirthdayLeaveGrantedForYear(identities, bdayRequestRecord);
+          } else {
+            await markBirthdayLeaveGrantedForYear(identities);
           }
           setHasAppliedBirthdayLeaveThisYear(true);
         }
@@ -1013,7 +1095,8 @@ const RequestLeave = ({
     const isSingleDayBirthday =
       entries.length === 1 &&
       firstEntry.leaveCategory === 'Birthday Leave' &&
-      calculateLeaveDays(firstEntry.dateFrom, firstEntry.dateTo) === 1;
+      calculateLeaveDays(firstEntry.dateFrom, firstEntry.dateTo) === 1 &&
+      hasCompletedOneYear;
 
     let confirmMsg: string;
     if (isEdit) {
@@ -1023,6 +1106,9 @@ const RequestLeave = ({
         'Your 1-day Birthday Leave will be auto-approved with pay by HYG Portal System without deducting leave credits. Proceed?';
     } else if (entries.length > 1) {
       confirmMsg = `Are you sure you want to submit these ${entries.length} leave requests?`;
+    } else if (firstEntry.leaveCategory === 'Birthday Leave' && !hasCompletedOneYear) {
+      confirmMsg =
+        'Are you sure you want to submit this Birthday Leave request (without pay)? It will be sent to your supervisor for approval.';
     } else {
       confirmMsg = `Are you sure you want to submit this request for ${calculateLeaveDays(
         firstEntry.dateFrom,
@@ -1065,22 +1151,24 @@ const RequestLeave = ({
 
   const disabledLeaveTypesForActiveEntry =
     activeEntry?.leaveCategory === 'Birthday Leave'
-      ? activeEntryDays === 1
-        ? ['Without Pay', 'Both'] // 1-day Birthday Leave is locked to With Pay
-        : availableForActiveEntry <= 0
-        ? ['With Pay', 'Without Pay'] // If 0 credits for extra days, must be Both
-        : ['Without Pay'] // Birthday is always granted with pay, so only With Pay and Both apply
+      ? !hasCompletedOneYear
+        ? ['With Pay', 'Both'] // Only Without Pay allowed for employees below 1 year
+        : activeEntryDays === 1
+          ? ['Without Pay', 'Both'] // 1-day Birthday Leave is locked to With Pay
+          : availableForActiveEntry <= 0
+            ? ['With Pay', 'Without Pay'] // If 0 credits for extra days, must be Both
+            : ['Without Pay'] // Birthday is always granted with pay, so only With Pay and Both apply
       : getDisabledLeaveTypes(activeEntryDays, availableForActiveEntry);
 
   const selectSheet =
     activeSelect && activeEntry
       ? getSelectSheet(
-          activeSelect.field,
-          activeEntry.leaveType,
-          activeEntry.leaveCategory,
-          disabledLeaveTypesForActiveEntry,
-          disabledLeaveCategoriesForActiveEntry,
-        )
+        activeSelect.field,
+        activeEntry.leaveType,
+        activeEntry.leaveCategory,
+        disabledLeaveTypesForActiveEntry,
+        disabledLeaveCategoriesForActiveEntry,
+      )
       : null;
 
   return (
@@ -1108,6 +1196,17 @@ const RequestLeave = ({
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            onRefresh ? (
+              <RefreshControl
+                refreshing={isPullRefreshing}
+                onRefresh={handlePullRefresh}
+                colors={[colors.brand.gold, colors.primary]}
+                tintColor={colors.brand.gold}
+                progressBackgroundColor="#ffffff"
+              />
+            ) : undefined
+          }
         >
           {/* Available Paid Leave card */}
           <View style={styles.creditPanel}>
@@ -1199,7 +1298,21 @@ const RequestLeave = ({
                 </View>
 
                 {/* Birthday Leave Festive Banner */}
-                {isBirthday && totalDays === 1 ? (
+                {isBirthday && !hasCompletedOneYear ? (
+                  <View style={styles.birthdayNoticeBanner}>
+                    <View style={styles.birthdayIconBox}>
+                      <Cake size={18} color="#b45309" strokeWidth={2.4} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <Text style={styles.birthdayNoticeTitle}>Birthday Leave (Without Pay)</Text>
+                      </View>
+                      <Text style={styles.birthdayNoticeSubtitle}>
+                        Employees below 1 year of service can apply for Birthday Leave without pay. Subject to manager’s approval.
+                      </Text>
+                    </View>
+                  </View>
+                ) : isBirthday && totalDays === 1 ? (
                   <View style={styles.birthdayNoticeBanner}>
                     <View style={styles.birthdayIconBox}>
                       <Cake size={18} color="#b45309" strokeWidth={2.4} />
@@ -1236,13 +1349,13 @@ const RequestLeave = ({
                   {/* Leave Type */}
                   <View style={styles.underlineField}>
                     <Pressable
-                      disabled={isBirthday && totalDays === 1}
+                      disabled={isBirthday && (!hasCompletedOneYear || totalDays === 1)}
                       style={[
                         styles.underlineBox,
                         validationErrors[`entry_${actualIndex}_leaveType`]
                           ? styles.underlineBoxError
                           : null,
-                        isBirthday && totalDays === 1 ? styles.underlineBoxDisabled : null,
+                        isBirthday && (!hasCompletedOneYear || totalDays === 1) ? styles.underlineBoxDisabled : null,
                       ]}
                       onPress={() => setActiveSelect({ index: actualIndex, field: 'leave_type' })}
                     >
@@ -1255,7 +1368,7 @@ const RequestLeave = ({
                       >
                         {entry.leaveType || 'Select leave type'}
                       </Text>
-                      {isBirthday && totalDays === 1 ? (
+                      {isBirthday && (!hasCompletedOneYear || totalDays === 1) ? (
                         <Check size={16} color="#16a34a" strokeWidth={2.6} />
                       ) : (
                         <ChevronDown size={16} color="#64748b" strokeWidth={2.4} />
@@ -1367,7 +1480,7 @@ const RequestLeave = ({
                       style={[
                         styles.underlineBox,
                         validationErrors[`entry_${actualIndex}_dateFrom`] ||
-                        validationErrors[`entry_${actualIndex}_dateTo`]
+                          validationErrors[`entry_${actualIndex}_dateTo`]
                           ? styles.underlineBoxError
                           : null,
                       ]}
@@ -1416,9 +1529,11 @@ const RequestLeave = ({
                     }}
                     placeholder={
                       isBirthday
-                        ? totalDays > 1
-                          ? 'Enter reason for leave...'
-                          : 'Auto-approved Birthday Leave Grant'
+                        ? !hasCompletedOneYear
+                          ? 'Enter reason for birthday leave...'
+                          : totalDays > 1
+                            ? 'Enter reason for leave...'
+                            : 'Auto-approved Birthday Leave Grant'
                         : 'Enter reason for leave...'
                     }
                     placeholderTextColor="#94a3b8"
@@ -1469,10 +1584,10 @@ const RequestLeave = ({
                 {isSubmitting
                   ? 'Submitting...'
                   : editingRequest
-                  ? 'Update Request'
-                  : entries.length > 1
-                  ? `Submit ${entries.length} Requests`
-                  : 'Submit Request'}
+                    ? 'Update Request'
+                    : entries.length > 1
+                      ? `Submit ${entries.length} Requests`
+                      : 'Submit Request'}
               </Text>
             </Pressable>
           </View>
@@ -1669,7 +1784,7 @@ const leaveGuidelinesNotes = [
   {
     title: 'Birthday Leave Grant',
     description:
-      'Employees are entitled to 1 day Birthday Leave with pay on their birthday without deducting leave credits. Single-day Birthday Leave is auto-approved by HYG Portal System. Multi-day leaves require approver review.',
+      'Employees with at least 1 year of service from date hired are entitled to 1 auto-approved Birthday Leave with pay on their birthday without deducting leave credits. Employees with under 1 year of service can apply for Birthday Leave without pay.',
   },
   {
     title: 'Filing in Advance',

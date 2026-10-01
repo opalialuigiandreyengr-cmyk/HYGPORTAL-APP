@@ -1,11 +1,10 @@
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, DeviceEventEmitter, Easing, Image, Linking, Modal, Platform, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Bell, ChartNoAxesColumnIncreasing, Check, ChevronLeft, ChevronRight, ExternalLink, Info, LogOut, Menu, MessageCircle, RefreshCw, Settings, ShieldCheck, Sparkles, UsersRound, X } from 'lucide-react-native';
+import { Bell, ChartNoAxesColumnIncreasing, Check, ChevronLeft, ChevronRight, CircleHelp, ExternalLink, Info, LogOut, Menu, MessageCircle, RefreshCw, Settings, ShieldCheck, Sparkles, UsersRound, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { NATIVE_APP_VERSION } from '../services/appUpdates';
 import { colors, fontWeights } from '../theme';
-import { getInstallCopy, isPwaInstalled, openPlatformInstall } from '../constants/download';
 import { Avatar } from './Avatar';
 
 const hygHorizontalLogo = require('../../assets/hyghorizontal.png');
@@ -20,6 +19,7 @@ type Props = {
   pointsBalance?: number;
   notificationCount?: number;
   onNotifications?: () => void;
+  onHelpTutorials?: () => void;
   onMessages?: () => void;
   onAvatar?: () => void;
   onOpenProfile?: () => void;
@@ -42,6 +42,7 @@ export function TopBar({
   pointsBalance = 0,
   notificationCount = 0,
   onNotifications,
+  onHelpTutorials,
   onAvatar,
   onOpenProfile,
   onOpenSettings,
@@ -62,10 +63,8 @@ export function TopBar({
   const sidebarUsername = username?.trim() || initials || name || '?';
   const visibleNotificationCount = Math.max(0, Math.floor(notificationCount));
   const notificationLabel = visibleNotificationCount > 99 ? '99+' : String(visibleNotificationCount);
-  const containerSafeTop = Platform.OS === 'web' ? 0 : Math.max(insets.top, 10);
+  const containerSafeTop = Platform.OS === 'web' ? insets.top : Math.max(insets.top, 10);
   const openProfile = onOpenProfile ?? onAvatar;
-  const installCopy = getInstallCopy();
-  const showInstallBanner = Platform.OS === 'web' && !isPwaInstalled();
 
   useEffect(() => {
     Animated.timing(sidebarProgress, {
@@ -113,23 +112,6 @@ export function TopBar({
 
   return (
     <View style={styles.shell}>
-      {showInstallBanner ? (
-        <View style={[styles.downloadBanner, { paddingTop: insets.top + 7 }]}>
-          <View style={styles.downloadBrand}>
-            <View style={styles.downloadLogoFrame}>
-              <TopBarLogo style={styles.downloadLogo} />
-            </View>
-            <View style={styles.downloadTextBlock}>
-              <Text style={styles.downloadTitle} numberOfLines={1}>HYG Portal System</Text>
-              <Text style={styles.downloadSubtitle} numberOfLines={1}>{installCopy.subtitle}</Text>
-            </View>
-          </View>
-          <Pressable style={styles.downloadButton} onPress={openPlatformInstall}>
-            <Text style={styles.downloadButtonText}>{installCopy.action}</Text>
-          </Pressable>
-        </View>
-      ) : null}
-
       <View style={[styles.container, { paddingTop: containerSafeTop + 10 }]}>
         <View style={styles.left}>
           <Pressable style={[styles.menuBtn, onBackHome ? styles.backBtn : null]} onPress={onBackHome ?? openSidebar} hitSlop={10}>
@@ -171,14 +153,26 @@ export function TopBar({
               <Info size={21} color={colors.primary} strokeWidth={2.7} />
             </Pressable>
           ) : !backTitle ? (
-            <TouchableOpacity activeOpacity={0.72} style={styles.iconBtn} hitSlop={10} onPress={onNotifications}>
-              <Bell size={20} color={colors.text} strokeWidth={2} />
-              {visibleNotificationCount > 0 ? (
-                <View style={styles.notificationBadge}>
-                  <Text style={styles.notificationBadgeText}>{notificationLabel}</Text>
-                </View>
-              ) : null}
-            </TouchableOpacity>
+            <>
+              <TouchableOpacity
+                activeOpacity={0.72}
+                style={styles.iconBtn}
+                hitSlop={10}
+                onPress={onHelpTutorials}
+                accessibilityRole="button"
+                accessibilityLabel="HYG Portal Tutorials"
+              >
+                <CircleHelp size={20} color={colors.text} strokeWidth={2} />
+              </TouchableOpacity>
+              <TouchableOpacity activeOpacity={0.72} style={styles.iconBtn} hitSlop={10} onPress={onNotifications}>
+                <Bell size={20} color={colors.text} strokeWidth={2} />
+                {visibleNotificationCount > 0 ? (
+                  <View style={styles.notificationBadge}>
+                    <Text style={styles.notificationBadgeText}>{notificationLabel}</Text>
+                  </View>
+                ) : null}
+              </TouchableOpacity>
+            </>
           ) : null}
         </View>
       </View>
@@ -192,7 +186,7 @@ export function TopBar({
             style={[
               styles.sidebarPanel,
               {
-                marginTop: Platform.OS === 'web' ? 0 : Math.max(insets.top, 10),
+                marginTop: Platform.OS === 'web' ? insets.top : Math.max(insets.top, 10),
                 transform: [{ translateX: sidebarTranslateX }],
               },
             ]}
@@ -240,6 +234,14 @@ export function TopBar({
                 label="My Team"
                 value="Team schedules and members"
                 onPress={() => openSidebarAction(onOpenMyTeam)}
+              />
+            ) : null}
+            {onHelpTutorials ? (
+              <SidebarRow
+                icon={<CircleHelp size={20} color={colors.primary} strokeWidth={2.6} />}
+                label="Tutorials"
+                value="HYG Portal video guides"
+                onPress={() => openSidebarAction(onHelpTutorials)}
               />
             ) : null}
             <SidebarRow
@@ -367,62 +369,6 @@ const TopBarLogo = memo(function TopBarLogo({ style }: { style?: any }) {
 const styles = StyleSheet.create({
   shell: {
     backgroundColor: colors.surface,
-  },
-  downloadBanner: {
-    minHeight: 54,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingBottom: 8,
-    backgroundColor: colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eef2f7',
-  },
-  downloadBrand: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  downloadLogoFrame: {
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  downloadLogo: {
-    width: 56,
-    height: 30,
-  },
-  downloadTextBlock: {
-    flex: 1,
-    minWidth: 0,
-  },
-  downloadTitle: {
-    color: colors.brand.panel,
-    fontSize: 15,
-    fontWeight: fontWeights.heavy,
-  },
-  downloadSubtitle: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: fontWeights.medium,
-  },
-  downloadButton: {
-    minHeight: 34,
-    borderRadius: 8,
-    backgroundColor: colors.brand.gold,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 14,
-  },
-  downloadButtonText: {
-    color: colors.brand.ink,
-    fontSize: 12,
-    fontWeight: fontWeights.heavy,
-    textTransform: 'uppercase',
   },
   container: {
     flexDirection: 'row',

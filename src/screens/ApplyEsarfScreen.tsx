@@ -6,6 +6,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -193,6 +194,7 @@ export function ApplyEsarfScreen({
   onToast,
   notificationCount,
   onNotifications,
+  onRefresh,
 }: {
   name?: string | null;
   username?: string | null;
@@ -211,8 +213,20 @@ export function ApplyEsarfScreen({
   onToast?: (toast: { tone: 'success' | 'error' | 'warning'; title: string; message: string }) => void;
   notificationCount?: number;
   onNotifications?: () => void;
+  onRefresh?: () => void | Promise<void>;
 }) {
   const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    if (!onRefresh) return;
+    setIsPullRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
   const isOperationsDepartment = normalizeDepartmentName(profileDepartmentName).includes('operation');
   const operationsScopeLabel = isOperationsDepartment
     ? formatOperationsScopeLabel(profileDepartmentName, profileStoreName)
@@ -589,6 +603,20 @@ export function ApplyEsarfScreen({
     });
   }
 
+  const effectiveOffsetBalance = useMemo(() => {
+    let base = Math.max(0, offsetBalance ?? 0);
+    if (editingRequest) {
+      const isEditingUseOffset =
+        editingRequest.request_type_code === 'use_offset' ||
+        (editingRequest.transaction_type || '').toLowerCase().includes('use offset') ||
+        (editingRequest.reason || '').toLowerCase().includes('use offset');
+      if (isEditingUseOffset && editingRequest.total_hours) {
+        base += Number(editingRequest.total_hours);
+      }
+    }
+    return base;
+  }, [offsetBalance, editingRequest]);
+
   type UseOffsetBreakdown = {
     priorBalance: number;
     entryHours: number;
@@ -598,7 +626,7 @@ export function ApplyEsarfScreen({
   };
 
   const useOffsetBreakdowns = useMemo(() => {
-    let runningBalance = Math.max(0, offsetBalance ?? 0);
+    let runningBalance = effectiveOffsetBalance;
     const breakdownMap: Record<number, UseOffsetBreakdown> = {};
 
     entries.forEach((entry, idx) => {
@@ -623,7 +651,7 @@ export function ApplyEsarfScreen({
     });
 
     return breakdownMap;
-  }, [entries, offsetBalance, schedule, dayOff, primaryDateFrom]);
+  }, [entries, effectiveOffsetBalance, schedule, dayOff, primaryDateFrom]);
 
   function valueForEntryPicker(index: number, kind: 'date_from' | 'date_to' | 'time_from' | 'time_to') {
     const entry = entries[index];
@@ -876,7 +904,7 @@ export function ApplyEsarfScreen({
     if (!isValidDayOffValue(dayOff)) errors.dayOff = 'Day off is required.';
     if (!payrollClassOptions.includes(payrollClass)) errors.payrollClass = 'Payroll class is required.';
 
-    let runningOffsetBalance = Math.max(0, offsetBalance ?? 0);
+    let runningOffsetBalance = effectiveOffsetBalance;
 
     entries.forEach((entry, i) => {
       const num = i + 1;
@@ -904,7 +932,7 @@ export function ApplyEsarfScreen({
       const hours = getEntryTotalHours(entry);
       if (transKeys.includes('use_offset')) {
         const priorBalance = runningOffsetBalance;
-        if ((offsetBalance ?? 0) <= 0) {
+        if (effectiveOffsetBalance <= 0) {
           errors[`entry_${i}_offsetBalance`] = `Request #${num}: You have no available offset balance (0.00 hrs).`;
         } else if (priorBalance <= 0) {
           errors[`entry_${i}_offsetBalance`] = `Request #${num}: No available offset balance remaining for this entry (already allocated to previous entries).`;
@@ -935,8 +963,8 @@ export function ApplyEsarfScreen({
     const totalUseOffsetHours = entries
       .filter((e) => parseEntryTransactions(e.transaction).includes('use_offset'))
       .reduce((sum, e) => sum + getEntryTotalHours(e), 0);
-    if (totalUseOffsetHours > (offsetBalance ?? 0)) {
-      errors.total_use_offset = `Total Use Offset duration (${totalUseOffsetHours.toFixed(2)} hrs) exceeds your available offset balance (${(offsetBalance ?? 0).toFixed(2)} hrs).`;
+    if (totalUseOffsetHours > effectiveOffsetBalance) {
+      errors.total_use_offset = `Total Use Offset duration (${totalUseOffsetHours.toFixed(2)} hrs) exceeds your available offset balance (${effectiveOffsetBalance.toFixed(2)} hrs).`;
     }
 
     return errors;
@@ -1204,9 +1232,12 @@ export function ApplyEsarfScreen({
 
       submittedGroupIndices.current.clear();
 
+      const totalUseOffsetHours = useOffsetEntries.reduce((sum, e) => sum + getEntryTotalHours(e), 0);
+      const offsetDeductedNote = totalUseOffsetHours > 0 ? ` (${totalUseOffsetHours.toFixed(1)}h deducted from offset balance)` : '';
+
       const successMessage = groupsToSubmit.length > 1
-        ? `Submitted ${groupsToSubmit.length} separate ESARF requests (${regularEntries.length} regular entry(ies) and ${useOffsetEntries.length} Use Offset entry(ies)).`
-        : `Submitted ESARF request with ${entries.length} entry(ies).`;
+        ? `Submitted ${groupsToSubmit.length} separate ESARF requests (${regularEntries.length} regular entry(ies) and ${useOffsetEntries.length} Use Offset entry(ies)${offsetDeductedNote}).`
+        : `Submitted ESARF request with ${entries.length} entry(ies)${offsetDeductedNote}.`;
 
       setSubmitStatus(successMessage);
       onToast?.({
@@ -1246,11 +1277,20 @@ export function ApplyEsarfScreen({
     const hasUseOffset = entries.some((e) => parseEntryTransactions(e.transaction).includes('use_offset'));
     const isSplit = !isEdit && hasRegular && hasUseOffset;
 
+    const totalUseOffsetHours = entries
+      .filter((e) => parseEntryTransactions(e.transaction).includes('use_offset'))
+      .reduce((sum, e) => sum + getEntryTotalHours(e), 0);
+
+    let offsetNote = '';
+    if (hasUseOffset && totalUseOffsetHours > 0) {
+      offsetNote = `\n\n• ${totalUseOffsetHours.toFixed(2)} hr(s) will be automatically deducted from your offset balance upon submission. If the request is rejected, the deducted hours will be credited back.`;
+    }
+
     const confirmMsg = isEdit
-      ? 'Are you sure you want to update this ESARF request?'
+      ? `Are you sure you want to update this ESARF request?${offsetNote}`
       : isSplit
-        ? `Your request contains both regular ESARF entries and Use Offset. These will be automatically split and submitted as 2 separate requests for approval.`
-        : `Are you sure you want to submit this ESARF request with ${entries.length} entry(ies)?`;
+        ? `Your request contains both regular ESARF entries and Use Offset. These will be automatically split and submitted as 2 separate requests for approval.${offsetNote}`
+        : `Are you sure you want to submit this ESARF request with ${entries.length} entry(ies)?${offsetNote}`;
 
     platformAlert(confirmTitle, confirmMsg, [
       { text: 'Cancel', style: 'cancel' },
@@ -1297,6 +1337,17 @@ export function ApplyEsarfScreen({
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            onRefresh ? (
+              <RefreshControl
+                refreshing={isPullRefreshing}
+                onRefresh={handlePullRefresh}
+                colors={[colors.brand.gold, colors.primary]}
+                tintColor={colors.brand.gold}
+                progressBackgroundColor="#ffffff"
+              />
+            ) : undefined
+          }
         >
           <View
             style={[
@@ -1679,7 +1730,7 @@ export function ApplyEsarfScreen({
                         <View style={styles.offsetSuccessBadge}>
                           <Check size={13} color="#16a34a" strokeWidth={2.4} />
                           <Text style={styles.offsetSuccessBadgeText}>
-                            Using {hours.toFixed(2)} hrs • {(offsetInfo?.balanceRemaining ?? 0).toFixed(2)} hrs balance remaining
+                            Using {hours.toFixed(2)} hrs • {(offsetInfo?.balanceRemaining ?? 0).toFixed(2)} hrs balance remaining (deducted upon submission)
                           </Text>
                         </View>
                       ) : null}
@@ -1723,7 +1774,7 @@ export function ApplyEsarfScreen({
                         </Text>
                       ) : null}
                     </View>
-                  ) : entry.timeFrom && entry.timeTo && hours >= MIN_OFFSETABLE_HOURS && !entryTransKeys.includes('use_offset') && !entryTransKeys.includes('ut') ? (
+                  ) : entry.timeFrom && entry.timeTo && hours >= MIN_OFFSETABLE_HOURS && !entryTransKeys.includes('use_offset') && !entryTransKeys.includes('ut') && !entryTransKeys.includes('ot') ? (
                     <View style={styles.offsetFeedbackWrap}>
                       <View style={styles.offsetEncouragementCard}>
                         <View style={styles.offsetEncouragementCardHeader}>

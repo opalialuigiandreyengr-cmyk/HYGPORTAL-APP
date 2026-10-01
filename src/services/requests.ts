@@ -443,6 +443,33 @@ export async function deleteMyPendingRequest(requestId: string, isPerk = false) 
         throw new Error(error.message);
       }
     } else {
+      // If Use Offset request had deducted balance, restore it before deleting
+      try {
+        const { data: offsetTx } = await supabase
+          .from('offset_transactions')
+          .select('employee_id, hours')
+          .eq('request_id', requestId)
+          .eq('transaction_type', 'use');
+        if (offsetTx && offsetTx.length > 0) {
+          const empId = offsetTx[0].employee_id;
+          const totalRefund = offsetTx.reduce((sum, tx) => sum + Number(tx.hours ?? 0), 0);
+          if (empId && totalRefund > 0) {
+            const { data: curBal } = await supabase
+              .from('offset_balances')
+              .select('balance_hours')
+              .eq('employee_id', empId)
+              .maybeSingle<{ balance_hours: number | null }>();
+            const newBal = Number(curBal?.balance_hours ?? 0) + totalRefund;
+            await supabase
+              .from('offset_balances')
+              .update({ balance_hours: newBal, updated_at: new Date().toISOString() })
+              .eq('employee_id', empId);
+          }
+        }
+      } catch {
+        // ignore
+      }
+
       await supabase.from('approval_push_outbox').delete().eq('request_id', requestId);
       await supabase.from('offset_transactions').delete().eq('request_id', requestId);
       await supabase.from('leave_transactions').delete().eq('request_id', requestId);

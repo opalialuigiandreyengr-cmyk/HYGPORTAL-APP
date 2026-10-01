@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { AppState, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { AppState, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import {
   ArrowRight,
   BadgePercent,
   CalendarDays,
   CheckCircle2,
+  ChevronRight,
   Clock3,
   FileText,
   ListChecks,
-  RefreshCw,
   Tag,
   UserCheck,
 } from 'lucide-react-native';
@@ -17,15 +17,23 @@ import {
 import { colors, fontWeights, spacing, radius } from '../theme';
 import { TopBar } from '../components/TopBar';
 import { BirthdayGreetingModal } from '../components/BirthdayGreetingModal';
+import { BalanceHistoryModal } from '../components/BalanceHistoryModal';
 import { DashboardFab } from '../components/DashboardFab';
 import type { DashboardSummary } from '../services/dashboard';
 import { loadPerkUsage, type PerkUsage } from '../services/perks';
 import { loadMyRequests, type MyRequest } from '../services/requests';
 import { addAppNotification } from '../services/notificationCenter';
-import { ensureBirthdayLeaveGrant, isAutoApprovedBirthdayGrant } from '../services/birthdayLeave';
+import {
+  checkBirthdayLeaveAppliedForYear,
+  ensureBirthdayLeaveGrant,
+  hasBirthdayModalBeenShownForYear,
+  isAutoApprovedBirthdayGrant,
+  markBirthdayModalShownForYear,
+} from '../services/birthdayLeave';
 import { formatUnifiedRequestType } from '../components/EsarfDetailsView';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
-import { formatDateInput } from '../utils/dateTime';
+import { formatDateInput, hasCompletedOneYearOfService } from '../utils/dateTime';
+import { supabase } from '../lib/supabase';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
 type Props = {
@@ -42,6 +50,7 @@ type Props = {
   notificationCount?: number;
   onAssistant?: () => void;
   onNotifications?: () => void;
+  onHelpTutorials?: () => void;
   onApplyEsarf?: () => void;
   onRequestLeave?: () => void;
   onApplyPerks?: () => void;
@@ -66,6 +75,7 @@ export function DashboardScreen({
   notificationCount = 0,
   onAssistant,
   onNotifications,
+  onHelpTutorials,
   onApplyEsarf,
   onRequestLeave,
   onApplyPerks,
@@ -78,8 +88,23 @@ export function DashboardScreen({
   const [perkUsage, setPerkUsage] = useState<PerkUsage | null>(null);
   const [recentRequests, setRecentRequests] = useState<MyRequest[]>([]);
   const [showBirthdayModal, setShowBirthdayModal] = useState(false);
+  const [isBirthdayLeaveClaimed, setIsBirthdayLeaveClaimed] = useState(false);
+  const [isClaimingBirthdayLeave, setIsClaimingBirthdayLeave] = useState(false);
+  const [hasCompletedOneYearService, setHasCompletedOneYearService] = useState(true);
+  const [balanceHistoryVisible, setBalanceHistoryVisible] = useState(false);
+  const [balanceHistoryTab, setBalanceHistoryTab] = useState<'offset' | 'leave'>('offset');
   const { width } = useWindowDimensions();
   const isCompactDashboard = width < 390;
+
+  const handleOpenOffsetHistory = () => {
+    setBalanceHistoryTab('offset');
+    setBalanceHistoryVisible(true);
+  };
+
+  const handleOpenLeaveHistory = () => {
+    setBalanceHistoryTab('leave');
+    setBalanceHistoryVisible(true);
+  };
 
   const refreshSupplemental = async () => {
     try {
@@ -96,6 +121,21 @@ export function DashboardScreen({
     onRefreshDashboard();
     onRefreshProfile();
     void refreshSupplemental();
+  };
+
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await Promise.allSettled([
+        Promise.resolve(onRefreshDashboard()),
+        Promise.resolve(onRefreshProfile()),
+        refreshSupplemental(),
+      ]);
+    } finally {
+      setIsPullRefreshing(false);
+    }
   };
 
   useEffect(() => {
@@ -129,8 +169,36 @@ export function DashboardScreen({
       .slice(0, 3);
   }, [recentRequests]);
 
+  const hasBirthdayLeaveInRecentRequests = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    return recentRequests.some((req) => {
+      if (req.status === 'rejected' || req.status === 'cancelled') return false;
+      const isBday =
+        isAutoApprovedBirthdayGrant(req) ||
+        req.leave_category === 'Birthday Leave' ||
+        req.leave_category === 'Birthday Leave Grant' ||
+        req.reason === 'Auto-approved Birthday Leave Grant' ||
+        req.request_id?.startsWith('bday_leave_') === true;
+      if (!isBday) return false;
+      const reqDate = req.start_date || req.date_from || req.submitted_at;
+      if (!reqDate) return true;
+      return new Date(reqDate).getFullYear() === currentYear;
+    });
+  }, [recentRequests]);
+
+  const isBirthdayLeaveEffectivelyClaimed =
+    isBirthdayLeaveClaimed || hasBirthdayLeaveInRecentRequests;
+
   useEffect(() => {
-    const processBirthdayGrant = async () => {
+    if (profile?.dateHired) {
+      setHasCompletedOneYearService(hasCompletedOneYearOfService(profile.dateHired));
+    }
+  }, [profile?.dateHired]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const processBirthdayGreeting = async () => {
       if (!profile?.birthDate) {
         return;
       }
@@ -139,37 +207,129 @@ export function DashboardScreen({
         return;
       }
 
-      const identityKey = (profile.employeeId || userEmail).trim().toLowerCase();
-      const emailKey = userEmail.trim().toLowerCase();
+      let effectiveHired = profile?.dateHired;
+      if (!effectiveHired && profile?.employeeId) {
+        try {
+          const { data: assignment } = await supabase
+            .from('employee_assignments')
+            .select('effective_from')
+            .eq('employee_id', profile.employeeId)
+            .order('effective_from', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+          if (assignment?.effective_from) {
+            effectiveHired = assignment.effective_from;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      const hasCompletedOneYear = hasCompletedOneYearOfService(effectiveHired);
+      if (isMounted) {
+        setHasCompletedOneYearService(hasCompletedOneYear);
+      }
+
+      const identities = [profile.employeeId, userEmail, profile.username];
       const year = new Date().getFullYear();
-      const dismissCacheKey = `birthday_modal_dismissed_${identityKey}_${year}`;
-      const userEmailDismissCacheKey = `birthday_modal_dismissed_${emailKey}_${year}`;
 
-      const isDismissed =
-        (await getCacheJSON<boolean>(dismissCacheKey)) ||
-        (await getCacheJSON<boolean>(userEmailDismissCacheKey));
+      // Check whether user already claimed or manually applied for an auto-approved birthday leave grant
+      const alreadyIncurred =
+        hasBirthdayLeaveInRecentRequests ||
+        (await checkBirthdayLeaveAppliedForYear(identities, year));
 
-      if (!isDismissed) {
-        await ensureBirthdayLeaveGrant(profile, userEmail);
-        setShowBirthdayModal(true);
+      if (isMounted) {
+        setIsBirthdayLeaveClaimed(alreadyIncurred);
+      }
+
+      const modalAlreadyShown = await hasBirthdayModalBeenShownForYear(identities, year);
+
+      if (alreadyIncurred) {
+        // Only the birthday greeting modal should appear or popup in the dashboard for once if the user already incurred the birthday leave grant
+        if (!modalAlreadyShown) {
+          if (isMounted) {
+            setShowBirthdayModal(true);
+          }
+          await markBirthdayModalShownForYear(identities, year);
+        }
+      } else if (!hasCompletedOneYear) {
+        // Below 1 year: modal still appears on their birthday once upon logging in, but claim button is disabled
+        if (!modalAlreadyShown) {
+          if (isMounted) {
+            setShowBirthdayModal(true);
+          }
+          await markBirthdayModalShownForYear(identities, year);
+        }
+      } else {
+        // Not incurred yet and >= 1 year -> show greeting modal so user can claim
+        if (!modalAlreadyShown) {
+          if (isMounted) {
+            setShowBirthdayModal(true);
+          }
+        }
       }
     };
-    void processBirthdayGrant();
-  }, [profile?.birthDate, profile?.employeeId, userEmail]);
+
+    void processBirthdayGreeting();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [
+    profile?.birthDate,
+    profile?.employeeId,
+    profile?.username,
+    profile?.dateHired,
+    userEmail,
+    hasBirthdayLeaveInRecentRequests,
+  ]);
+
+  const handleClaimBirthdayLeave = async () => {
+    if (isBirthdayLeaveEffectivelyClaimed || isClaimingBirthdayLeave || !hasCompletedOneYearService) {
+      return;
+    }
+
+    const identities = [profile?.employeeId, userEmail, profile?.username];
+    const year = new Date().getFullYear();
+
+    setIsClaimingBirthdayLeave(true);
+    try {
+      await ensureBirthdayLeaveGrant(profile, userEmail);
+      setIsBirthdayLeaveClaimed(true);
+      await markBirthdayModalShownForYear(identities, year);
+
+      const greetingTitle = `Happy Birthday ${employeeName}! 🎉`;
+      const greetingBody = `Happy Birthday ${employeeName}! 🎉 Wishing you a wonderful day filled with happiness, good health, and memorable moments. As a token of our appreciation for your hard work and dedication, we're delighted to grant you one (1) Birthday Leave, so you can celebrate your special day with your loved ones or simply take time to enjoy yourself. Thank you for being a valued member of our team. We hope your year ahead is filled with success, joy, and exciting opportunities. Have an amazing birthday! 🎂🎁`;
+
+      try {
+        await addAppNotification({
+          title: greetingTitle,
+          body: greetingBody,
+        });
+        onBirthdayGreetingClosed?.();
+      } catch (err) {
+        console.error('Unable to store birthday notification:', err);
+      }
+
+      await refreshSupplemental();
+      onRefreshDashboard();
+      setShowBirthdayModal(false);
+    } catch (err) {
+      console.warn('Failed to claim birthday leave:', err);
+    } finally {
+      setIsClaimingBirthdayLeave(false);
+    }
+  };
 
   const handleCloseBirthdayModal = async () => {
     setShowBirthdayModal(false);
-    const identityKey = (profile?.employeeId || userEmail).trim().toLowerCase();
-    const emailKey = userEmail.trim().toLowerCase();
+    const identities = [profile?.employeeId, userEmail, profile?.username];
     const year = new Date().getFullYear();
 
-    await setCacheJSON(`birthday_modal_dismissed_${identityKey}_${year}`, true);
-    await setCacheJSON(`birthday_modal_dismissed_${emailKey}_${year}`, true);
-
-    await ensureBirthdayLeaveGrant(profile, userEmail);
+    await markBirthdayModalShownForYear(identities, year);
 
     const greetingTitle = `Happy Birthday ${employeeName}! 🎉`;
-    const greetingBody = `Happy Birthday ${employeeName} !🎉 Wishing you a wonderful day filled with happiness, good health, and memorable moments. As a token of our appreciation for your hard work and dedication, we're delighted to grant you one (1) Birthday Leave, so you can celebrate your special day with your loved ones or simply take time to enjoy yourself. Thank you for being a valued member of our team. We hope your year ahead is filled with success, joy, and exciting opportunities. Have an amazing birthday! 🎂🎁`;
+    const greetingBody = `Happy Birthday ${employeeName}! 🎉 Wishing you a wonderful day filled with happiness, good health, and memorable moments. As a token of our appreciation for your hard work and dedication, we're delighted to grant you one (1) Birthday Leave, so you can celebrate your special day with your loved ones or simply take time to enjoy yourself. Thank you for being a valued member of our team. We hope your year ahead is filled with success, joy, and exciting opportunities. Have an amazing birthday! 🎂🎁`;
 
     try {
       await addAppNotification({
@@ -193,13 +353,26 @@ export function DashboardScreen({
         notificationCount={notificationCount}
         onMessages={onAssistant}
         onNotifications={onNotifications}
+        onHelpTutorials={onHelpTutorials}
         onOpenProfile={onOpenProfile}
         onOpenSettings={onOpenSettings}
         onOpenMyTeam={onOpenMyTeam}
         onOpenRewards={onOpenRewards}
         onSignOut={onSignOut}
       />
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handlePullRefresh}
+            colors={[colors.brand.gold, colors.primary]}
+            tintColor={colors.brand.gold}
+            progressBackgroundColor="#ffffff"
+          />
+        }
+      >
         <View style={styles.heroPanel}>
           <View style={styles.heroTopRow}>
             <View style={styles.heroTextBlock}>
@@ -207,9 +380,6 @@ export function DashboardScreen({
               <Text style={styles.heroTitle} numberOfLines={1}>{employeeName}</Text>
               <Text style={styles.heroSub} numberOfLines={1}>{roleLine}</Text>
             </View>
-            <Pressable style={styles.refreshButton} onPress={refreshDashboard}>
-              <RefreshCw size={18} color={colors.brand.ink} strokeWidth={2.5} />
-            </Pressable>
           </View>
         </View>
 
@@ -243,6 +413,7 @@ export function DashboardScreen({
             fillColor="#16a34a"
             ratio={Math.min(summary.offset_balance / 16, 1)}
             compact={isCompactDashboard}
+            onPressHistory={handleOpenOffsetHistory}
           />
           <BalanceCard
             icon={<CalendarDays size={19} color="#6d28d9" strokeWidth={2.5} />}
@@ -260,6 +431,7 @@ export function DashboardScreen({
               1,
             )}
             compact={isCompactDashboard}
+            onPressHistory={handleOpenLeaveHistory}
           />
         </View>
 
@@ -290,7 +462,21 @@ export function DashboardScreen({
       <BirthdayGreetingModal
         visible={showBirthdayModal}
         employeeName={employeeName}
+        isClaimDisabled={isBirthdayLeaveEffectivelyClaimed || !hasCompletedOneYearService}
+        hasCompletedOneYear={hasCompletedOneYearService}
+        isClaiming={isClaimingBirthdayLeave}
+        onClaim={handleClaimBirthdayLeave}
         onClose={handleCloseBirthdayModal}
+      />
+
+      <BalanceHistoryModal
+        visible={balanceHistoryVisible}
+        initialTab={balanceHistoryTab}
+        offsetBalance={summary.offset_balance}
+        leaveRemaining={summary.leave_credit_remaining}
+        annualCreditDays={summary.annual_credit_days}
+        onClose={() => setBalanceHistoryVisible(false)}
+        onRefreshDashboard={refreshDashboard}
       />
 
       {!hideFab && (
@@ -474,6 +660,7 @@ function BalanceCard({
   fillColor,
   ratio,
   compact,
+  onPressHistory,
 }: {
   icon: ReactNode;
   label: string;
@@ -483,7 +670,10 @@ function BalanceCard({
   fillColor: string;
   ratio: number;
   compact?: boolean;
+  onPressHistory?: () => void;
 }) {
+  const isOffset = fillColor === '#16a34a';
+
   return (
     <View style={[styles.metricCard, compact ? styles.metricCardCompact : null]}>
       <View style={styles.metricHeader}>
@@ -493,6 +683,30 @@ function BalanceCard({
       <Text style={styles.metricValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72}>{value}</Text>
       <Text style={styles.metricDetail} numberOfLines={2}>{detail}</Text>
       <ProgressBar ratio={ratio} trackColor={trackColor} fillColor={fillColor} />
+      {onPressHistory ? (
+        <TouchableOpacity
+          style={[
+            styles.metricHistoryBtn,
+            {
+              backgroundColor: isOffset ? '#f0fdf4' : '#faf5ff',
+              borderColor: isOffset ? '#bbf7d0' : '#ddd6fe',
+            },
+          ]}
+          onPress={onPressHistory}
+          activeOpacity={0.75}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+          accessibilityLabel={`View ${label} history`}
+        >
+          {isOffset ? (
+            <Clock3 size={11} color={fillColor} strokeWidth={2.4} />
+          ) : (
+            <CalendarDays size={11} color={fillColor} strokeWidth={2.4} />
+          )}
+          <Text style={[styles.metricHistoryBtnText, { color: fillColor }]}>History</Text>
+          <ChevronRight size={12} color={fillColor} strokeWidth={2.4} />
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }
@@ -743,14 +957,6 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     fontWeight: fontWeights.medium,
   },
-  refreshButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 8,
-    backgroundColor: colors.brand.gold,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   quickActionRow: {
     flexDirection: 'row',
     flexWrap: 'nowrap',
@@ -854,7 +1060,7 @@ const styles = StyleSheet.create({
   },
   metricCard: {
     flex: 1,
-    minHeight: 142,
+    minHeight: 154,
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
@@ -862,7 +1068,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   metricCardCompact: {
-    minHeight: 126,
+    minHeight: 140,
     padding: spacing.sm,
   },
   metricHeader: {
@@ -917,6 +1123,22 @@ const styles = StyleSheet.create({
   progressFill: {
     height: 7,
     borderRadius: 4,
+  },
+  metricHistoryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    marginTop: spacing.sm,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+  },
+  metricHistoryBtnText: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: fontWeights.bold,
   },
   perksPanel: {
     borderRadius: radius.md,

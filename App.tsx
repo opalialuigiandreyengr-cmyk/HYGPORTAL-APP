@@ -100,6 +100,7 @@ import { CreateEmployeeProfileScreen } from './src/screens/CreateEmployeeProfile
 import { DashboardScreen } from './src/screens/DashboardScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { NotificationsScreen } from './src/screens/NotificationsScreen';
+import { TutorialsScreen } from './src/screens/TutorialsScreen';
 import { PhotoProofScreen } from './src/screens/PhotoProofScreen';
 import { PhotoLogScreen } from './src/screens/PhotoLogScreen';
 import { ProfileTabScreen } from './src/screens/ProfileTabScreen';
@@ -130,7 +131,7 @@ import {
   getLeaveBreakdown,
 } from './src/utils/requestCalculations';
 
-type PortalTab = 'home' | 'requests' | 'approvals' | 'notifications' | 'perks' | 'profile' | 'settings' | 'rewards' | 'my_team';
+type PortalTab = 'home' | 'requests' | 'approvals' | 'notifications' | 'perks' | 'profile' | 'settings' | 'rewards' | 'my_team' | 'tutorials';
 type PublicScreen = 'login' | 'create_profile' | 'register_account';
 type AdminScreen = 'home' | 'authority' | 'departments' | 'routes' | 'approvers' | 'clusters';
 type QuickRequestScreen = 'assistant' | 'apply_esarf' | 'request_leave' | 'apply_discount' | 'photo_proof' | 'photo_log';
@@ -791,6 +792,12 @@ export default function App() {
     setActiveTab('notifications');
   }
 
+  function openTutorials() {
+    setAssistantDraft(null);
+    setActiveQuickRequestScreen(null);
+    setActiveTab('tutorials');
+  }
+
   async function handleOpenPhotoProof() {
     try {
       void requestCameraAndLocationPermissions();
@@ -1237,6 +1244,7 @@ export default function App() {
           notificationCount={notificationUnreadCount}
           onAssistant={openAssistant}
           onNotifications={openNotifications}
+          onHelpTutorials={openTutorials}
           onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
@@ -1253,6 +1261,7 @@ export default function App() {
           notificationCount={notificationUnreadCount}
           onAssistant={openAssistant}
           onNotifications={openNotifications}
+          onHelpTutorials={openTutorials}
           onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
@@ -1271,12 +1280,27 @@ export default function App() {
           notificationCount={notificationUnreadCount}
           onAssistant={openAssistant}
           onNotifications={openNotifications}
+          onHelpTutorials={openTutorials}
           onOpenProfile={() => setActiveTab('profile')}
           onOpenRewards={openRewards}
           onBackHome={() => setActiveTab('home')}
           onCountChange={setNotificationUnreadCount}
           onOpenApprovalRequest={openApprovalFromNotification}
           onClaimSuccess={refreshDashboard}
+        />
+      );
+    } else if (activeTab === 'tutorials') {
+      tabContent = (
+        <TutorialsScreen
+          profileResult={profileResult}
+          notificationCount={notificationUnreadCount}
+          pointsBalance={dashboardSummary.hyg_points_balance}
+          onAssistant={openAssistant}
+          onNotifications={openNotifications}
+          onOpenProfile={() => setActiveTab('profile')}
+          onOpenRewards={openRewards}
+          onBackHome={() => setActiveTab('home')}
+          onToast={setAppToast}
         />
       );
     } else if (activeTab === 'perks') {
@@ -1311,6 +1335,7 @@ export default function App() {
           notificationCount={notificationUnreadCount}
           onAssistant={openAssistant}
           onNotifications={openNotifications}
+          onHelpTutorials={openTutorials}
           onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
@@ -1512,6 +1537,7 @@ export default function App() {
           notificationCount={notificationUnreadCount}
           onAssistant={openAssistant}
           onNotifications={openNotifications}
+          onHelpTutorials={openTutorials}
           onOpenProfile={() => setActiveTab('profile')}
           onOpenSettings={() => setActiveTab('settings')}
           onOpenMyTeam={openMyTeam}
@@ -1560,6 +1586,7 @@ export default function App() {
           onSignOut={signOut}
           onAssistant={openAssistant}
           onNotifications={openNotifications}
+          onHelpTutorials={openTutorials}
           onApplyEsarf={() => openQuickRequest('apply_esarf')}
           onRequestLeave={() => openQuickRequest('request_leave')}
           onApplyPerks={() => openQuickRequest('apply_discount')}
@@ -1576,7 +1603,7 @@ export default function App() {
     return withToast(
       <View style={{ flex: 1 }}>
         {tabContent}
-        {activeTab !== 'settings' && activeTab !== 'notifications' && activeTab !== 'my_team' ? (
+        {activeTab !== 'settings' && activeTab !== 'notifications' && activeTab !== 'my_team' && activeTab !== 'tutorials' ? (
           <BottomTabBar
             activeTab={activeTab}
             onChange={setActiveTab}
@@ -1617,6 +1644,7 @@ export default function App() {
             onNotifications={openNotifications}
             onBack={closeQuickRequest}
             onToast={setAppToast}
+            onRefresh={refreshDashboard}
             onSubmitted={async () => {
               closeQuickRequest();
               setActiveTab('requests');
@@ -1630,8 +1658,11 @@ export default function App() {
           <RequestLeave
             name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
             username={currentUsername}
+            employeeId={profileResult?.status === 'linked' ? profileResult.profile.employeeId : null}
+            userEmail={signedInUser.email}
             photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
             birthDate={profileResult?.status === 'linked' ? profileResult.profile.birthDate : null}
+            dateHired={profileResult?.status === 'linked' ? profileResult.profile.dateHired : null}
             leaveCreditRemaining={dashboardSummary.leave_credit_remaining}
             initialDraft={assistantDraft?.intent === 'draft_leave_request' ? assistantDraft : null}
             editingRequest={editingRequest}
@@ -1640,6 +1671,7 @@ export default function App() {
             onNotifications={openNotifications}
             onBack={closeQuickRequest}
             onToast={setAppToast}
+            onRefresh={refreshDashboard}
             onSubmitted={async () => {
               closeQuickRequest();
               setActiveTab('requests');
@@ -1660,6 +1692,7 @@ export default function App() {
             onNotifications={openNotifications}
             onBack={closeQuickRequest}
             onToast={setAppToast}
+            onRefresh={refreshDashboard}
             onSubmitted={async () => {
               closeQuickRequest();
               setActiveTab('requests');
@@ -1787,6 +1820,7 @@ function RewardsPlaceholderScreen({
   notificationCount = 0,
   onAssistant,
   onNotifications,
+  onHelpTutorials,
   onOpenProfile,
   onOpenSettings,
   onOpenMyTeam,
@@ -1804,6 +1838,7 @@ function RewardsPlaceholderScreen({
   notificationCount?: number;
   onAssistant?: () => void;
   onNotifications?: () => void;
+  onHelpTutorials?: () => void;
   onOpenProfile: () => void;
   onOpenSettings: () => void;
   onOpenMyTeam?: () => void;
@@ -1955,6 +1990,7 @@ function RewardsPlaceholderScreen({
         notificationCount={notificationCount}
         onMessages={onAssistant}
         onNotifications={onNotifications}
+        onHelpTutorials={onHelpTutorials}
         onOpenProfile={onOpenProfile}
         onOpenSettings={onOpenSettings}
         onOpenMyTeam={onOpenMyTeam}
@@ -2383,6 +2419,17 @@ function MyTeamPlaceholderScreen({
     }
   }
 
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await refreshTeam();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
+
   useEffect(() => {
     void refreshTeam();
   }, []);
@@ -2490,7 +2537,19 @@ function MyTeamPlaceholderScreen({
         onOpenRewards={onOpenRewards}
         onSignOut={onSignOut}
       />
-      <ScrollView contentContainerStyle={[styles.settingsScroll, styles.myTeamScroll]} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.settingsScroll, styles.myTeamScroll]}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handlePullRefresh}
+            colors={[colors.brand.gold, colors.primary]}
+            tintColor={colors.brand.gold}
+            progressBackgroundColor="#ffffff"
+          />
+        }
+      >
         <View style={styles.settingsHeroCard}>
           <View style={styles.myTeamHeroInline}>
             <Text style={styles.profileTitle}>My Team</Text>
@@ -3590,6 +3649,17 @@ function SettingsTabScreen({
     }
   }
 
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await handleCheckForUpdate();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
+
   return (
     <View style={styles.settingsRoot}>
       <StatusBar style="dark" />
@@ -3606,7 +3676,19 @@ function SettingsTabScreen({
         onOpenRewards={onOpenRewards}
         onSignOut={onSignOut}
       />
-      <ScrollView contentContainerStyle={styles.settingsTabScroll} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.settingsTabScroll}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handlePullRefresh}
+            colors={[colors.brand.gold, colors.primary]}
+            tintColor={colors.brand.gold}
+            progressBackgroundColor="#ffffff"
+          />
+        }
+      >
         <View style={styles.settingsHeroCard}>
           <Text style={styles.profileTitle}>Settings</Text>
           <Text style={styles.profileMuted}>Security and app preferences.</Text>
@@ -4040,6 +4122,17 @@ function AdminRoutesScreen({ onBack }: { onBack: () => void }) {
     }
   }
 
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
+
   useEffect(() => {
     refresh();
   }, []);
@@ -4185,7 +4278,19 @@ function AdminRoutesScreen({ onBack }: { onBack: () => void }) {
   return (
     <View style={styles.adminSafeArea}>
       <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={styles.adminPage} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.adminPage}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handlePullRefresh}
+            colors={[colors.brand.gold, colors.primary]}
+            tintColor={colors.brand.gold}
+            progressBackgroundColor="#ffffff"
+          />
+        }
+      >
         <View style={styles.toolTopBar}>
           <Pressable style={styles.toolBackButton} onPress={onBack}>
             <Text style={styles.toolBackText}>Back</Text>
@@ -4335,6 +4440,17 @@ function AdminClustersScreen({ onBack }: { onBack: () => void }) {
     }
   }
 
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
+
   useEffect(() => {
     refresh();
   }, []);
@@ -4394,7 +4510,19 @@ function AdminClustersScreen({ onBack }: { onBack: () => void }) {
   return (
     <View style={styles.adminSafeArea}>
       <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={styles.adminPage} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.adminPage}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handlePullRefresh}
+            colors={[colors.brand.gold, colors.primary]}
+            tintColor={colors.brand.gold}
+            progressBackgroundColor="#ffffff"
+          />
+        }
+      >
         <View style={styles.toolTopBar}>
           <Pressable style={styles.toolBackButton} onPress={onBack}>
             <Text style={styles.toolBackText}>Back</Text>
@@ -4529,6 +4657,17 @@ function AdminApproversScreen({ onBack }: { onBack: () => void }) {
     }
   }
 
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
+
   useEffect(() => {
     refresh();
   }, []);
@@ -4580,7 +4719,19 @@ function AdminApproversScreen({ onBack }: { onBack: () => void }) {
   return (
     <View style={styles.adminSafeArea}>
       <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={styles.adminPage} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.adminPage}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handlePullRefresh}
+            colors={[colors.brand.gold, colors.primary]}
+            tintColor={colors.brand.gold}
+            progressBackgroundColor="#ffffff"
+          />
+        }
+      >
         <View style={styles.toolTopBar}>
           <Pressable style={styles.toolBackButton} onPress={onBack}>
             <Text style={styles.toolBackText}>Back</Text>
@@ -4675,6 +4826,17 @@ function AdminDepartmentsScreen({ onBack }: { onBack: () => void }) {
       setIsLoading(false);
     }
   }
+
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     refresh();
@@ -4785,7 +4947,19 @@ function AdminDepartmentsScreen({ onBack }: { onBack: () => void }) {
   return (
     <View style={styles.adminSafeArea}>
       <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={styles.adminPage} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.adminPage}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handlePullRefresh}
+            colors={[colors.brand.gold, colors.primary]}
+            tintColor={colors.brand.gold}
+            progressBackgroundColor="#ffffff"
+          />
+        }
+      >
         <View style={styles.toolTopBar}>
           <Pressable style={styles.toolBackButton} onPress={onBack}>
             <Text style={styles.toolBackText}>Back</Text>
@@ -5018,6 +5192,17 @@ function AdminAuthorityScreen({ onBack }: { onBack: () => void }) {
     }
   }
 
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
+
   useEffect(() => {
     refresh();
   }, []);
@@ -5088,7 +5273,19 @@ function AdminAuthorityScreen({ onBack }: { onBack: () => void }) {
   return (
     <View style={styles.adminSafeArea}>
       <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={styles.adminPage} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.adminPage}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handlePullRefresh}
+            colors={[colors.brand.gold, colors.primary]}
+            tintColor={colors.brand.gold}
+            progressBackgroundColor="#ffffff"
+          />
+        }
+      >
         <View style={styles.toolTopBar}>
           <Pressable style={styles.toolBackButton} onPress={onBack}>
             <Text style={styles.toolBackText}>Back</Text>

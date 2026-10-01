@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
@@ -48,6 +48,7 @@ export function ApplyDiscountScreen({
   onBack,
   onToast,
   onSubmitted,
+  onRefresh,
 }: {
   name?: string | null;
   username?: string | null;
@@ -59,7 +60,21 @@ export function ApplyDiscountScreen({
   onBack: () => void;
   onToast?: (toast: AppToastMessage) => void;
   onSubmitted?: () => void | Promise<void>;
+  onRefresh?: () => void | Promise<void>;
 }) {
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await Promise.allSettled([
+        loadPerkUsage().then((res) => setUsage(res)),
+        Promise.resolve(onRefresh?.()),
+      ]);
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
   const [mode, setMode] = useState<DiscountMode>(initialDraft?.fields.mode ?? 'cash');
   const [transactionDate, setTransactionDate] = useState(initialDraft?.fields.transactionDate ?? today);
   const [activePicker, setActivePicker] = useState(false);
@@ -375,6 +390,15 @@ export function ApplyDiscountScreen({
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handlePullRefresh}
+            colors={[colors.brand.gold, colors.primary]}
+            tintColor={colors.brand.gold}
+            progressBackgroundColor="#ffffff"
+          />
+        }
       >
         <View style={styles.modeGrid}>
           <ModeCard

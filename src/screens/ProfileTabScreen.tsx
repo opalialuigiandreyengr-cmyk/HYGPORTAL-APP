@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
@@ -49,6 +49,7 @@ type Props = {
   notificationCount?: number;
   onAssistant?: () => void;
   onNotifications?: () => void;
+  onHelpTutorials?: () => void;
   onOpenProfile?: () => void;
   onOpenSettings?: () => void;
   onOpenMyTeam?: () => void;
@@ -133,7 +134,7 @@ const PROFILE_SECTION_TABS: {
   { key: 'children', label: 'Children Information', icon: Baby, color: '#4f46e5' },
 ];
 
-export function ProfileTabScreen({ email, username, isLoading, result, onToast, onSignOut, onProfileUpdated, notificationCount = 0, onAssistant, onNotifications, onOpenProfile, onOpenSettings, onOpenMyTeam, onOpenRewards, pointsBalance = 0 }: Props) {
+export function ProfileTabScreen({ email, username, isLoading, result, onToast, onSignOut, onProfileUpdated, notificationCount = 0, onAssistant, onNotifications, onHelpTutorials, onOpenProfile, onOpenSettings, onOpenMyTeam, onOpenRewards, pointsBalance = 0 }: Props) {
   const resultProfile = result?.status === 'linked' ? result.profile : null;
   const [localProfile, setLocalProfile] = useState<EmployeeProfileSummary | null>(resultProfile);
   const profile = localProfile;
@@ -163,6 +164,17 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
   const ActiveSectionIcon = activeTab.icon;
   const isInlineEditing = inlineEditSection === activeProfileSection;
   const canEditActiveSection = activeProfileSection !== 'employment';
+
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await onProfileUpdated?.();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     setLocalProfile(resultProfile);
@@ -461,7 +473,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
     return (
       <View style={styles.root}>
         <StatusBar style="dark" />
-        <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} onSignOut={onSignOut} />
+        <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onHelpTutorials={onHelpTutorials} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} onSignOut={onSignOut} />
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#eab308" />
           <Text style={styles.loadingText}>Loading profile...</Text>
@@ -477,13 +489,22 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
       style={styles.root}
     >
       <StatusBar style="dark" />
-      <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} onSignOut={onSignOut} />
+      <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onHelpTutorials={onHelpTutorials} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} onSignOut={onSignOut} />
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handlePullRefresh}
+            colors={[colors.brand.gold, colors.primary]}
+            tintColor={colors.brand.gold}
+            progressBackgroundColor="#ffffff"
+          />
+        }
       >
         <View style={styles.card}>
           <View style={styles.cardBody}>

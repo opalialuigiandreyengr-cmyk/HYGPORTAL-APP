@@ -170,5 +170,43 @@ export function parse12HourDisplayTo24(timeStr?: string | null): string | null {
   if (period === 'AM' && h === 12) h = 0;
   return `${String(h).padStart(2, '0')}:${m}`;
 }
+/**
+ * Checks if an employee has completed at least 1 full year of service
+ * from their date hired.
+ */
+export function hasCompletedOneYearOfService(
+  dateHired: string | null | undefined,
+  referenceDate: Date = new Date(),
+): boolean {
+  if (!dateHired) return false;
+  const clean = dateHired.trim();
+  if (clean.length < 4) return false;
 
+  const match = clean.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  let hireYear: number;
+  let hireMonth: number;
+  let hireDay: number;
 
+  if (match) {
+    hireYear = parseInt(match[1], 10);
+    hireMonth = parseInt(match[2], 10);
+    hireDay = parseInt(match[3], 10);
+  } else {
+    const d = new Date(clean);
+    if (isNaN(d.getTime())) return false;
+    hireYear = d.getFullYear();
+    hireMonth = d.getMonth() + 1;
+    hireDay = d.getDate();
+  }
+
+  const refYear = referenceDate.getFullYear();
+  const refMonth = referenceDate.getMonth() + 1;
+  const refDay = referenceDate.getDate();
+
+  if (refYear - hireYear > 1) return true;
+  if (refYear - hireYear === 1) {
+    if (refMonth > hireMonth) return true;
+    if (refMonth === hireMonth && refDay >= hireDay) return true;
+  }
+  return false;
+}
