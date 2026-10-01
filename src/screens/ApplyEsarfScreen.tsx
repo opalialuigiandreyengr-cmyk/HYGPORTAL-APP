@@ -576,11 +576,9 @@ export function ApplyEsarfScreen({
       return 0;
     }
     const transKeys = parseEntryTransactions(entry.transaction);
-    const isOt = transKeys.includes('ot');
     const isUseOffset = transKeys.includes('use_offset');
     const isOffsetEarn = transKeys.includes('offset');
-    const hasFullHoursTransaction = transKeys.some((key) => key === 'fio' || key === 'ob' || key === 'ut');
-    const isFullHours = (hasFullHoursTransaction && !isOt) || isUseOffset;
+    const isFullHours = isUseOffset;
 
     let requestType: RequestTypeCode = 'overtime';
     if (isUseOffset) {

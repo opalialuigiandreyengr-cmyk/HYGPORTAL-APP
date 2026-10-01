@@ -29,38 +29,75 @@ async function resolveEmployeeId(userId?: string, employeeId?: string): Promise<
   return data?.employee_id ?? undefined;
 }
 
-export async function fetchOffsetHistory(userId?: string, employeeId?: string): Promise<BalanceHistoryItem[]> {
-  await ensureFreshSession().catch(() => {});
+function parseEarnedOffsetHoursFromReason(reason?: string | null, fallbackHours: number = 0): number {
+  if (!reason || !reason.includes('[Entry')) {
+    return fallbackHours;
+  }
+  const blocks = reason.split(/(?=\[Entry\s+\d+\])/i);
+  let totalEarned = 0;
+  let hasValidMatch = false;
 
-  // 1. Try RPC get_my_offset_history first
-  try {
-    const { data: rpcData, error: rpcError } = await supabase.rpc('get_my_offset_history');
-    if (!rpcError && Array.isArray(rpcData) && rpcData.length > 0) {
-      return rpcData.map((row: any) => ({
-        id: String(row.id ?? Math.random()),
-        type: 'offset',
-        category: (row.category as BalanceHistoryItem['category']) || (Number(row.hours ?? 0) < 0 ? 'use' : 'earn'),
-        title: row.title || (Number(row.hours ?? 0) < 0 ? 'Offset Deducted' : 'Offset Earned'),
-        subtitle: row.subtitle || 'Offset transaction',
-        amount: Number(row.hours ?? 0),
-        unit: 'h',
-        balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
-        date: row.created_at || new Date().toISOString(),
-        status: row.request_status || null,
-        requestId: row.request_id || null,
-        reason: row.reason || null,
-        dateFrom: row.date_from || null,
-        dateTo: row.date_to || null,
-      }));
+  for (const block of blocks) {
+    if (!block.trim().startsWith('[Entry')) continue;
+    const match = block.match(/\[Entry\s+\d+\]\s*\(([^)]+)\).*?\(([0-9.]+)\s*hrs?\)/i);
+    if (match) {
+      hasValidMatch = true;
+      const entryType = match[1].toLowerCase().trim();
+      const hrs = parseFloat(match[2]) || 0;
+      const isRejected = block.toLowerCase().includes('[rejected]');
+
+      if (entryType.includes('offset') && !entryType.includes('use') && !isRejected) {
+        totalEarned += hrs;
+      }
     }
-  } catch {
-    // Fall back to direct table queries
   }
 
-  // 2. Direct table fallback: query offset_transactions
+  return hasValidMatch ? Number(totalEarned.toFixed(2)) : fallbackHours;
+}
+
+export async function fetchOffsetHistory(userId?: string, employeeId?: string): Promise<BalanceHistoryItem[]> {
+  await ensureFreshSession().catch(() => {});
   const empId = await resolveEmployeeId(userId, employeeId);
   if (!empId) return [];
 
+  const itemsMap = new Map<string, BalanceHistoryItem>();
+
+  // 1. Try RPC get_my_offset_history
+  try {
+    const { data: rpcData, error: rpcError } = await supabase.rpc('get_my_offset_history');
+    if (!rpcError && Array.isArray(rpcData) && rpcData.length > 0) {
+      rpcData.forEach((row: any) => {
+        const rawAmount = Number(row.hours ?? 0);
+        const category = (row.category as BalanceHistoryItem['category']) || (rawAmount < 0 ? 'use' : 'earn');
+        let finalAmount = rawAmount;
+        if (category === 'earn' && row.reason) {
+          finalAmount = parseEarnedOffsetHoursFromReason(row.reason, Math.abs(rawAmount));
+        }
+
+        const key = row.request_id ? String(row.request_id) : String(row.id);
+        itemsMap.set(key, {
+          id: String(row.id ?? Math.random()),
+          type: 'offset',
+          category,
+          title: row.title || (finalAmount < 0 ? 'Offset Deducted' : 'Offset Earned'),
+          subtitle: row.subtitle || 'Offset transaction',
+          amount: finalAmount,
+          unit: 'h',
+          balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
+          date: row.created_at || new Date().toISOString(),
+          status: row.request_status || 'approved',
+          requestId: row.request_id || null,
+          reason: row.reason || null,
+          dateFrom: row.date_from || null,
+          dateTo: row.date_to || null,
+        });
+      });
+    }
+  } catch {
+    // Fall back to direct table queries below
+  }
+
+  // 2. Direct table query on offset_transactions
   try {
     const { data: otRows } = await supabase
       .from('offset_transactions')
@@ -69,7 +106,6 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
       .order('created_at', { ascending: false });
 
     if (otRows && otRows.length > 0) {
-      // Gather request details for richer labels
       const requestIds = otRows.map((r) => r.request_id).filter(Boolean) as string[];
       let requestMap: Record<string, { status?: string; reason?: string; transaction_type?: string; date_from?: string; date_to?: string }> = {};
 
@@ -96,33 +132,42 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
             });
           }
         } catch {
-          // ignore enrichment failure
+          // ignore
         }
       }
 
-      return otRows.map((row) => {
+      otRows.forEach((row) => {
+        const key = row.request_id ? String(row.request_id) : String(row.id);
+        if (itemsMap.has(key)) return;
+
         const reqDetail = row.request_id ? requestMap[row.request_id] : null;
         const txType = (row.transaction_type ?? '').toLowerCase();
         const isUse = txType === 'use';
         const isRefund = txType === 'adjustment' || txType === 'refund';
         const rawHours = Number(row.hours ?? 0);
-        const signedHours = isUse ? -Math.abs(rawHours) : Math.abs(rawHours);
 
         let title = 'Offset Earned';
         let category: BalanceHistoryItem['category'] = 'earn';
+        let signedHours = Math.abs(rawHours);
+
         if (isUse) {
           title = 'Offset Deducted';
           category = 'use';
+          signedHours = -Math.abs(rawHours);
         } else if (isRefund) {
           title = 'Offset Refunded';
           category = 'refund';
+        } else {
+          if (reqDetail?.reason) {
+            signedHours = parseEarnedOffsetHoursFromReason(reqDetail.reason, Math.abs(rawHours));
+          }
         }
 
         const subtitle =
           reqDetail?.transaction_type ||
           (isUse ? 'Use Offset Request' : isRefund ? 'Credited back upon rejection' : 'ESARF Offset Credit');
 
-        return {
+        itemsMap.set(key, {
           id: String(row.id ?? Math.random()),
           type: 'offset',
           category,
@@ -132,43 +177,51 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
           unit: 'h',
           balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
           date: row.created_at || new Date().toISOString(),
-          status: reqDetail?.status || null,
+          status: reqDetail?.status || 'approved',
           requestId: row.request_id || null,
           reason: reqDetail?.reason || null,
           dateFrom: reqDetail?.date_from || null,
           dateTo: reqDetail?.date_to || null,
-        };
+        });
       });
     }
+  } catch {
+    // ignore
+  }
 
-    // Fallback: If no offset_transactions exist yet, check approved/pending requests with offset
+  // 3. Supplement with time_request_details for any missing offset requests (pending, approved, validated)
+  try {
     const { data: timeReqs } = await supabase
       .from('time_request_details')
       .select('request_id, total_hours, transaction_type, reason, date_from, date_to, requests!inner(id, status, submitted_at, submitted_by_employee_id)')
       .eq('requests.submitted_by_employee_id', empId)
-      .not('total_hours', 'is', null)
       .order('date_from', { ascending: false })
-      .limit(20);
+      .limit(50);
 
     if (timeReqs && timeReqs.length > 0) {
-      const items: BalanceHistoryItem[] = [];
       for (const item of timeReqs) {
+        const reqId = String(item.request_id);
+        if (itemsMap.has(reqId)) continue;
+
         const txType = (item.transaction_type ?? '').toLowerCase();
-        const isOffset = txType.includes('offset');
+        const reasonStr = (item.reason ?? '').toLowerCase();
+        const isOffset = txType.includes('offset') || reasonStr.includes('offset');
         if (!isOffset) continue;
 
-        const isUse = txType.includes('use');
+        const isUse = txType.includes('use') || reasonStr.includes('use offset') || reasonStr.includes('use_offset');
         const req = (item as any).requests;
-        const hours = Number(item.total_hours ?? 0);
-        if (hours <= 0) continue;
+        const rawHours = Number(item.total_hours ?? 0);
 
-        items.push({
-          id: String(item.request_id),
+        const calculatedEarn = !isUse ? parseEarnedOffsetHoursFromReason(item.reason, rawHours) : rawHours;
+        if (calculatedEarn <= 0 && isUse) continue;
+
+        itemsMap.set(reqId, {
+          id: reqId,
           type: 'offset',
           category: isUse ? 'use' : 'earn',
           title: isUse ? 'Offset Deducted' : 'Offset Earned',
           subtitle: item.transaction_type || (isUse ? 'Use Offset Request' : 'Offset ESARF'),
-          amount: isUse ? -hours : hours,
+          amount: isUse ? -Math.abs(calculatedEarn) : Math.abs(calculatedEarn),
           unit: 'h',
           date: req?.submitted_at || item.date_from || new Date().toISOString(),
           status: req?.status || null,
@@ -178,13 +231,14 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
           dateTo: item.date_to || null,
         });
       }
-      return items;
     }
   } catch {
     // ignore
   }
 
-  return [];
+  const result = Array.from(itemsMap.values());
+  result.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  return result;
 }
 
 export async function fetchLeaveHistory(userId?: string, employeeId?: string): Promise<BalanceHistoryItem[]> {
