@@ -33,7 +33,7 @@ function parseEarnedOffsetHoursFromReason(reason?: string | null, fallbackHours:
   if (!reason || !reason.includes('[Entry')) {
     return fallbackHours;
   }
-  const blocks = reason.split(/(?=[Entry\s+\d+\])/i);
+  const blocks = reason.split(/(?=\[Entry\s+\d+\])/i);
   let totalEarned = 0;
   let hasValidMatch = false;
 
