@@ -19,6 +19,7 @@ import * as Location from 'expo-location';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { manipulateAsync, FlipType, SaveFormat } from 'expo-image-manipulator';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getSafeBottomInset } from '../utils/safeArea';
 import { fontWeights, radius, spacing } from '../theme';
 import {
   formatProofTimestamp,
@@ -670,6 +671,7 @@ export function PhotoProofScreen({
       clearTimeout(savedModalTimerRef.current);
     }
     setCapturedPhotoUri(null);
+    setLastSavedItem(null);
     setShowSavedModal(false);
     if (Platform.OS === 'web') {
       void startWebCamera(facingMode);
@@ -708,13 +710,13 @@ export function PhotoProofScreen({
       <View style={styles.viewfinderContainer}>
         {Platform.OS === 'web' ? (
           capturedPhotoUri ? (
-            <Image source={{ uri: capturedPhotoUri }} style={styles.viewfinderMedia} resizeMode="contain" />
+            <Image source={{ uri: capturedPhotoUri }} style={styles.viewfinderMedia} resizeMode="cover" />
           ) : (
             <div
               style={{
                 width: '100%',
                 height: '100%',
-                backgroundColor: '#0f172a',
+                backgroundColor: '#ffffff',
                 position: 'relative',
                 overflow: 'hidden',
               }}
@@ -741,7 +743,7 @@ export function PhotoProofScreen({
             </div>
           )
         ) : capturedPhotoUri ? (
-          <Image source={{ uri: capturedPhotoUri }} style={styles.viewfinderMedia} resizeMode="contain" />
+          <Image source={{ uri: capturedPhotoUri }} style={styles.viewfinderMedia} resizeMode="cover" />
         ) : (
           <CameraView
             ref={nativeCameraRef}
@@ -818,28 +820,33 @@ export function PhotoProofScreen({
           <View style={styles.watermarkContainer} pointerEvents="box-none">
             <View style={styles.watermarkTimeRow} pointerEvents="none">
               <Text style={styles.watermarkTime}>
-                {currentTimestamp.timeDigits}
-                <Text style={styles.watermarkPeriod}> {currentTimestamp.timePeriod}</Text>
+                {capturedPhotoUri && lastSavedItem ? lastSavedItem.timeDigits : currentTimestamp.timeDigits}
+                <Text style={styles.watermarkPeriod}> {capturedPhotoUri && lastSavedItem ? lastSavedItem.timePeriod : currentTimestamp.timePeriod}</Text>
               </Text>
               <View style={styles.watermarkDivider} />
               <View style={styles.watermarkDateCol}>
-                <Text style={styles.watermarkDate}>{currentTimestamp.dateFormatted}</Text>
-                <Text style={styles.watermarkDay}>{currentTimestamp.dayFormatted}</Text>
+                <Text style={styles.watermarkDate}>{capturedPhotoUri && lastSavedItem ? lastSavedItem.dateFormatted : currentTimestamp.dateFormatted}</Text>
+                <Text style={styles.watermarkDay}>{capturedPhotoUri && lastSavedItem ? lastSavedItem.dayFormatted : currentTimestamp.dayFormatted}</Text>
               </View>
             </View>
             <Pressable
               style={styles.watermarkLocationRow}
               onPress={() => {
-                setTempAddress(locationText);
-                setShowEditAddressModal(true);
+                if (!capturedPhotoUri) {
+                  setTempAddress(locationText);
+                  setShowEditAddressModal(true);
+                }
               }}
+              disabled={Boolean(capturedPhotoUri)}
             >
               <Text style={styles.watermarkLocation} numberOfLines={4}>
-                {locationText}
+                {capturedPhotoUri && lastSavedItem ? lastSavedItem.locationText : locationText}
               </Text>
-              <View style={styles.editLocationBadge}>
-                <Pencil size={12} color="#ffffff" strokeWidth={2.5} />
-              </View>
+              {!capturedPhotoUri && (
+                <View style={styles.editLocationBadge}>
+                  <Pencil size={12} color="#ffffff" strokeWidth={2.5} />
+                </View>
+              )}
             </Pressable>
           </View>
         )}
@@ -861,8 +868,8 @@ export function PhotoProofScreen({
         style={[
           styles.bottomBar,
           {
-            paddingBottom: Platform.OS === 'web' ? 12 : Math.max(insets.bottom, 12),
-            minHeight: Platform.OS === 'web' ? 140 : Math.max(120 + insets.bottom, 140),
+            paddingBottom: Platform.OS === 'web' ? 12 : getSafeBottomInset(insets.bottom, 12),
+            minHeight: Platform.OS === 'web' ? 140 : Math.max(120 + getSafeBottomInset(insets.bottom, 0), 140),
           },
         ]}
       >
@@ -1097,7 +1104,7 @@ const styles = StyleSheet.create({
   viewfinderContainer: {
     flex: 1,
     position: 'relative',
-    backgroundColor: '#0f172a',
+    backgroundColor: '#ffffff',
     overflow: 'hidden',
   },
   viewfinderMedia: {
@@ -1107,7 +1114,7 @@ const styles = StyleSheet.create({
   nativeCameraPlaceholder: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#0f172a',
+    backgroundColor: '#ffffff',
   },
   viewfinderTopBar: {
     position: 'absolute',

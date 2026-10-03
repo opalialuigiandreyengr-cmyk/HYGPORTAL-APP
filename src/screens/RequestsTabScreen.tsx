@@ -7,6 +7,7 @@ import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
 import { CalendarDays, Clock3, Eye, FileText, Funnel, Pencil, RefreshCcw, Search, Trash2, Users, X } from 'lucide-react-native';
 
 import { colors, fontWeights, spacing, radius } from '../theme';
+import { getSafeBottomInset, getScreenBottomPadding } from '../utils/safeArea';
 import { Avatar } from '../components/Avatar';
 import { TopBar } from '../components/TopBar';
 import { deleteMyPendingRequest, loadMyRequests, loadMyRequestsCached, type MyRequest } from '../services/requests';
@@ -76,6 +77,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
   const [requestToDelete, setRequestToDelete] = useState<{ item: MyRequest; sequence: number } | null>(null);
   const [swipedCardId, setSwipedCardId] = useState<string | null>(null);
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
+  const insets = useSafeAreaInsets();
 
   async function handleEditRequest(item: MyRequest) {
     if (!onEditRequest) return;
@@ -423,7 +425,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
       <StatusBar style="dark" />
       <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onHelpTutorials={onHelpTutorials} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} />
       <ScrollView
-        contentContainerStyle={styles.scroll}
+        contentContainerStyle={[styles.scroll, { paddingBottom: getScreenBottomPadding(insets.bottom, true, 28) }]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -882,7 +884,7 @@ function RequestDetailsSheet({
   onDelete?: (request: MyRequest) => void;
 }) {
   const insets = useSafeAreaInsets();
-  const footerBottomPadding = Math.max(insets.bottom + 8, Platform.OS === 'ios' ? 24 : spacing.md);
+  const footerBottomPadding = getSafeBottomInset(insets.bottom, Platform.OS === 'ios' ? 24 : spacing.md);
 
   if (!request) return null;
 

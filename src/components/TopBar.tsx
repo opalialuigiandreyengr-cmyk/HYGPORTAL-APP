@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, DeviceEventEmitter, Easing, Image, Linking, Modal, Platform, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Bell, ChartNoAxesColumnIncreasing, Check, ChevronLeft, ChevronRight, CircleHelp, ExternalLink, Info, LogOut, Menu, MessageCircle, RefreshCw, Settings, ShieldCheck, Sparkles, UsersRound, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getSafeBottomInset } from '../utils/safeArea';
 
 import { NATIVE_APP_VERSION } from '../services/appUpdates';
 import { colors, fontWeights } from '../theme';
@@ -300,7 +301,7 @@ export function TopBar({
                 />
               </View>
             ) : null}
-            <View style={styles.sidebarBrandFooter}>
+            <View style={[styles.sidebarBrandFooter, { paddingBottom: getSafeBottomInset(insets.bottom, 14) }]}>
               <View style={styles.sidebarBrandIcon}>
                 <ShieldCheck size={25} color={colors.primary} strokeWidth={2.5} />
               </View>

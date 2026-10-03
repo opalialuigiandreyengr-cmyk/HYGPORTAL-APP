@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, AppState, type AppStateStatus, BackHandler, DeviceEventEmitter, Dimensions, Image, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, useWindowDimensions, View } from 'react-native';
+import { Alert, Animated, AppState, type AppStateStatus, BackHandler, DeviceEventEmitter, Dimensions, Easing, Image, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, useWindowDimensions, View } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Notifications from 'expo-notifications';
@@ -8,7 +8,7 @@ import * as XLSX from 'xlsx';
 import type { User } from '@supabase/supabase-js';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Activity, Bell, BriefcaseBusiness, CalendarDays, Check, ChevronRight, ClipboardCheck, Download, Eye, EyeOff, Fingerprint, Gift, KeyRound, Layers3, ListChecks, LogOut, Moon, Plus, Route, ShieldCheck, Smartphone, Trash2, UsersRound, X } from 'lucide-react-native';
-import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaProvider, initialWindowMetrics, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PickerField, SelectButton } from './src/components/formControls';
 import { ProfilePanel, RequestTile, SummaryCard } from './src/components/portalCards';
@@ -130,6 +130,7 @@ import {
   getHoursHint,
   getLeaveBreakdown,
 } from './src/utils/requestCalculations';
+import { getSafeBottomInset, getScreenBottomPadding } from './src/utils/safeArea';
 
 type PortalTab = 'home' | 'requests' | 'approvals' | 'notifications' | 'perks' | 'profile' | 'settings' | 'rewards' | 'my_team' | 'tutorials';
 type PublicScreen = 'login' | 'create_profile' | 'register_account';
@@ -167,6 +168,20 @@ Notifications.setNotificationHandler({
 
 function isApprovalBadgeItem(item: PendingApproval) {
   return item.request_type_code !== 'employee_perk';
+}
+
+if (Platform.OS === 'web' && typeof document !== 'undefined') {
+  try {
+    let meta = document.querySelector('meta[name="referrer"]');
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.setAttribute('name', 'referrer');
+      document.head.appendChild(meta);
+    }
+    meta.setAttribute('content', 'no-referrer');
+  } catch {
+    // ignore
+  }
 }
 
 export default function App() {
@@ -555,7 +570,7 @@ export default function App() {
 
   function withToast(screen: ReactNode) {
     return (
-      <SafeAreaProvider>
+      <SafeAreaProvider initialMetrics={initialWindowMetrics}>
         <View style={styles.appShell}>
           {screen}
           <AppToast toast={appToast} onDismiss={dismissAppToast} />
@@ -808,6 +823,7 @@ export default function App() {
   }
 
   async function completeLogin(user: User) {
+    Keyboard.dismiss();
     setPublicScreen('login');
     setSignedInUser(user);
     if ((user.email ?? '').toLowerCase() !== SUPER_ADMIN_EMAIL) {
@@ -826,6 +842,7 @@ export default function App() {
   }
 
   async function signIn() {
+    Keyboard.dismiss();
     if (!isSupabaseConfigured) {
       setAppToast({
         tone: 'warning',
@@ -891,6 +908,7 @@ export default function App() {
   }
 
   async function signInWithBiometric() {
+    Keyboard.dismiss();
     if (!isSupabaseConfigured) {
       setAppToast({
         tone: 'warning',
@@ -1606,7 +1624,10 @@ export default function App() {
         {activeTab !== 'settings' && activeTab !== 'notifications' && activeTab !== 'my_team' && activeTab !== 'tutorials' ? (
           <BottomTabBar
             activeTab={activeTab}
-            onChange={setActiveTab}
+            onChange={(tab) => {
+              closeQuickRequest();
+              setActiveTab(tab);
+            }}
             requestCount={dashboardSummary.pending_requests}
             approvalCount={pendingApprovalCount}
             showApprovals={canUseApprovals}
@@ -1631,6 +1652,10 @@ export default function App() {
             name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
             username={currentUsername}
             photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
+            employeeId={profileResult?.status === 'linked' ? profileResult.profile.employeeId : (signedInUser?.id ?? null)}
+            employeeName={profileResult?.status === 'linked' ? profileResult.profile.fullName : (signedInUser?.email ?? 'Employee')}
+            userEmail={signedInUser?.email ?? null}
+            authUserId={signedInUser?.id ?? null}
             offsetBalance={dashboardSummary.offset_balance}
             profilePayrollClass={profileResult?.status === 'linked' ? profileResult.profile.payrollClass : null}
             profileSchedule={profileResult?.status === 'linked' ? profileResult.profile.timeSchedule : null}
@@ -1753,8 +1778,6 @@ export default function App() {
   );
 }
 
-const SCREEN_WIDTH = Dimensions.get('window').width;
-
 function SlideOverlayContainer({
   visible,
   children,
@@ -1762,28 +1785,47 @@ function SlideOverlayContainer({
   visible: boolean;
   children: ReactNode;
 }) {
+  const { width: windowWidth } = useWindowDimensions();
+  const screenWidth = windowWidth > 0 ? windowWidth : Dimensions.get('window').width || 400;
+
   const [shouldRender, setShouldRender] = useState(visible);
-  const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
+  const slideAnim = useRef(new Animated.Value(visible ? 0 : screenWidth)).current;
+  const isFirstMount = useRef(true);
+
+  // Synchronously ensure shouldRender is true in the current render pass when visible becomes true
+  if (visible && !shouldRender) {
+    setShouldRender(true);
+  }
 
   useEffect(() => {
+    if (isFirstMount.current) {
+      isFirstMount.current = false;
+      if (!visible) {
+        return;
+      }
+    }
+
     if (visible) {
-      setShouldRender(true);
-      slideAnim.setValue(SCREEN_WIDTH);
+      slideAnim.setValue(screenWidth);
       Animated.timing(slideAnim, {
         toValue: 0,
-        duration: 350,
+        duration: 320,
+        easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }).start();
     } else {
       Animated.timing(slideAnim, {
-        toValue: SCREEN_WIDTH,
-        duration: 300,
+        toValue: screenWidth,
+        duration: 260,
+        easing: Easing.in(Easing.cubic),
         useNativeDriver: true,
-      }).start(() => {
-        setShouldRender(false);
+      }).start(({ finished }) => {
+        if (finished) {
+          setShouldRender(false);
+        }
       });
     }
-  }, [visible, slideAnim]);
+  }, [visible, screenWidth, slideAnim]);
 
   if (!shouldRender) {
     return null;
@@ -1863,6 +1905,7 @@ function RewardsPlaceholderScreen({
   const [walletStatus, setWalletStatus] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const rewardsCardWidth = Math.max(0, (width - spacing.md * 2 - spacing.sm) / 2);
   const effectivePointsBalance = wallet.balance;
 
@@ -1931,7 +1974,7 @@ function RewardsPlaceholderScreen({
           onSignOut={onSignOut}
         />
         <ScrollView
-          contentContainerStyle={styles.settingsScroll}
+          contentContainerStyle={[styles.settingsScroll, { paddingBottom: getScreenBottomPadding(insets.bottom, true, 28) }]}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl
@@ -1997,7 +2040,7 @@ function RewardsPlaceholderScreen({
         onSignOut={onSignOut}
       />
       <ScrollView
-        contentContainerStyle={[styles.settingsScroll, styles.myTeamScroll]}
+        contentContainerStyle={[styles.settingsScroll, styles.myTeamScroll, { paddingBottom: getScreenBottomPadding(insets.bottom, true, 28) }]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -3168,6 +3211,7 @@ function ScheduleComposerModal({
   onCancel: () => void;
   onSubmit: () => void;
 }) {
+  const insets = useSafeAreaInsets();
   const [isEmployeeDropdownOpen, setIsEmployeeDropdownOpen] = useState(false);
   const [activeTimePicker, setActiveTimePicker] = useState<'from' | 'to' | null>(null);
   const [digitalHour, setDigitalHour] = useState('9');
@@ -3213,7 +3257,7 @@ function ScheduleComposerModal({
     <Modal transparent animationType="fade" visible={visible} onRequestClose={onCancel}>
       <View style={styles.scheduleComposerBackdrop}>
         <Pressable style={styles.scheduleComposerDismiss} onPress={onCancel} />
-        <View style={styles.scheduleComposerSheet}>
+        <View style={[styles.scheduleComposerSheet, { paddingBottom: getSafeBottomInset(insets.bottom, spacing.md) }]}>
           <View style={styles.scheduleComposerHeader}>
             <View>
               <Text style={styles.scheduleComposerTitle}>Add Schedule</Text>
@@ -5079,7 +5123,7 @@ function DepartmentPositionPicker({
   const androidScrollRef = useRef<ScrollView>(null);
   const wheelItemHeight = 44;
   const [value, setValue] = useState(options[0]?.position_id || '');
-  const bottomPadding = Math.max(insets.bottom, spacing.sm);
+  const bottomPadding = getSafeBottomInset(insets.bottom, spacing.sm);
 
   useEffect(() => {
     setValue(options[0]?.position_id || '');
@@ -5427,7 +5471,7 @@ function LevelPositionPicker({
   const androidScrollRef = useRef<ScrollView>(null);
   const wheelItemHeight = 44;
   const [iosValue, setIosValue] = useState(selectedPositionId || options[0]?.position_id || '');
-  const bottomPadding = Math.max(insets.bottom, spacing.sm);
+  const bottomPadding = getSafeBottomInset(insets.bottom, spacing.sm);
   const title = level ? `Add to Level ${level}` : 'Add to Level';
 
   useEffect(() => {
@@ -6145,7 +6189,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     padding: spacing.md,
     paddingTop: spacing.xl,
-    paddingBottom: spacing.xl,
+    paddingBottom: Platform.OS === 'android' ? 68 : spacing.xl,
   },
   adminTopBar: {
     flexDirection: 'row',
@@ -7035,6 +7079,7 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 0,
     borderBottomRightRadius: 0,
     borderBottomWidth: 0,
+    paddingBottom: Platform.OS === 'android' ? 52 : 0,
   },
   adminPickerSheetAndroid: {
     maxHeight: '82%',
@@ -7136,6 +7181,7 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
     borderTopWidth: 1,
     padding: spacing.sm,
+    paddingBottom: Platform.OS === 'android' ? 56 : spacing.sm,
   },
   adminPickerCancel: {
     flex: 1,

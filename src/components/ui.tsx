@@ -12,6 +12,8 @@ import {
 } from 'react-native';
 
 import { colors, fontWeights, radius, spacing, typography } from '../theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getSafeBottomInset } from '../utils/safeArea';
 
 export function AppScreen({
   children,
@@ -22,9 +24,15 @@ export function AppScreen({
   variant?: 'default' | 'dark';
   keyboardAware?: boolean;
 }) {
+  const insets = useSafeAreaInsets();
   const content = (
     <ScrollView
-      contentContainerStyle={styles.page}
+      contentContainerStyle={[
+        styles.page,
+        {
+          paddingBottom: getSafeBottomInset(insets.bottom, spacing.xl) + spacing.md,
+        },
+      ]}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="on-drag"
       showsVerticalScrollIndicator={false}

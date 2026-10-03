@@ -264,6 +264,7 @@ export function isProofOwnedByUser(
     employeeId?: string | null;
     employeeName?: string | null;
     userEmail?: string | null;
+    authUserId?: string | null;
   }
 ): boolean {
   if (!user) return true;
@@ -273,17 +274,21 @@ export function isProofOwnedByUser(
   const targetEmpId = clean(user.employeeId);
   const targetName = clean(user.employeeName);
   const targetEmail = clean(user.userEmail);
+  const targetAuthId = clean(user.authUserId);
 
   // If no user filter criteria were provided at all, allow all
-  if (!targetEmpId && !targetName && !targetEmail) return true;
+  if (!targetEmpId && !targetName && !targetEmail && !targetAuthId) return true;
 
   const itemEmpId = clean(item.employeeId);
   const itemName = clean(item.employeeName);
   const itemEmail = clean(item.userEmail);
   const itemStore = clean(item.storeName);
 
-  // 1. Direct Employee ID match
+  // 1. Direct Employee ID or Auth User ID match
   if (targetEmpId && itemEmpId && targetEmpId === itemEmpId) {
+    return true;
+  }
+  if (targetAuthId && itemEmpId && targetAuthId === itemEmpId) {
     return true;
   }
 
@@ -299,10 +304,19 @@ export function isProofOwnedByUser(
     targetName &&
     targetName !== 'employee' &&
     itemName &&
-    itemName !== 'employee' &&
-    targetName === itemName
+    itemName !== 'employee'
   ) {
-    return true;
+    if (targetName === itemName) return true;
+
+    // Word set match: e.g. "Juan Dela Cruz" vs "Cruz, Juan Dela"
+    const targetWords = targetName.split(/[\s,]+/).filter((w) => w.length > 2);
+    const itemWords = itemName.split(/[\s,]+/).filter((w) => w.length > 2);
+    if (targetWords.length > 0 && itemWords.length > 0) {
+      const matchCount = targetWords.filter((w) => itemWords.includes(w)).length;
+      if (matchCount >= Math.min(targetWords.length, itemWords.length) && matchCount >= 2) {
+        return true;
+      }
+    }
   }
 
   return false;
@@ -312,6 +326,7 @@ export async function loadPhotoProofs(userFilter?: {
   employeeId?: string | null;
   employeeName?: string | null;
   userEmail?: string | null;
+  authUserId?: string | null;
 }): Promise<PhotoProofItem[]> {
   let localList: PhotoProofItem[] = [];
   try {
@@ -328,7 +343,7 @@ export async function loadPhotoProofs(userFilter?: {
       .from('photo_proofs')
       .select('*')
       .order('timestamp', { ascending: false })
-      .limit(100);
+      .limit(200);
 
     if (!error && data && data.length > 0) {
       const cloudItems: PhotoProofItem[] = data.map((row: any) => {
@@ -666,6 +681,169 @@ export function extractDriveFileId(uri?: string | null): string | null {
   // If it's already a raw Drive file ID (20-50 alphanumeric chars with hyphens/underscores)
   if (/^[a-zA-Z0-9_-]{20,50}$/.test(uri)) {
     return uri;
+  }
+
+  return null;
+}
+
+function mapRowToPhotoProofItem(row: any): PhotoProofItem {
+  const driveImage = row.drive_file_id ? `https://lh3.googleusercontent.com/d/${row.drive_file_id}` : '';
+  return {
+    id: row.id,
+    photoUri: row.photo_url || driveImage || row.drive_web_view_link || '',
+    timestamp: row.timestamp,
+    timeDigits: row.time_digits || '',
+    timePeriod: row.time_period || '',
+    dateFormatted: row.date_formatted || '',
+    dayFormatted: row.day_formatted || '',
+    locationText: row.location_text || '',
+    latitude: row.latitude,
+    longitude: row.longitude,
+    employeeId: row.employee_id,
+    employeeName: row.employee_name,
+    storeName: row.store_name,
+    driveFileId: row.drive_file_id,
+    driveWebViewLink: row.drive_web_view_link,
+    syncedToCloud: true,
+    isWatermarked: row.is_watermarked ?? false,
+  };
+}
+
+export async function fetchPhotoProofDetails(
+  proofUrlOrId?: string | null,
+  hints?: {
+    timestamp?: string;
+    locationText?: string;
+    proofId?: string;
+    fallbackDateStr?: string;
+    fallbackTimeStr?: string;
+    employeeName?: string;
+  }
+): Promise<PhotoProofItem | null> {
+  if (!proofUrlOrId && !hints?.proofId && !hints?.timestamp) return null;
+
+  const driveId = extractDriveFileId(proofUrlOrId);
+
+  // 1. Check local cache first
+  let localMatch: PhotoProofItem | null = null;
+  try {
+    const localList = await getCacheJSON<PhotoProofItem[]>(PHOTO_PROOFS_KEY);
+    if (localList && Array.isArray(localList)) {
+      const match = localList.find((loc) => {
+        if (hints?.proofId && loc.id === hints.proofId) return true;
+        if (proofUrlOrId && loc.id === proofUrlOrId) return true;
+        if (driveId && loc.driveFileId === driveId) return true;
+        if (proofUrlOrId && (loc.photoUri === proofUrlOrId || loc.driveWebViewLink === proofUrlOrId)) return true;
+        if (driveId && (loc.photoUri?.includes(driveId) || loc.driveWebViewLink?.includes(driveId))) return true;
+        if (hints?.timestamp && loc.timestamp === hints.timestamp) return true;
+        return false;
+      });
+      if (match) {
+        localMatch = match;
+        // If local match already has Google Drive details, return immediately
+        if (match.driveFileId || match.driveWebViewLink) {
+          return match;
+        }
+      }
+    }
+  } catch (err) {
+    // ignore
+  }
+
+  // 2. Query Supabase photo_proofs table
+  try {
+    let cloudRow: any = null;
+
+    if (hints?.proofId) {
+      const { data } = await supabase
+        .from('photo_proofs')
+        .select('*')
+        .eq('id', hints.proofId)
+        .limit(1)
+        .maybeSingle();
+      if (data) cloudRow = data;
+    }
+
+    if (!cloudRow && driveId) {
+      const { data } = await supabase
+        .from('photo_proofs')
+        .select('*')
+        .or(`drive_file_id.eq.${driveId},drive_web_view_link.ilike.%${driveId}%,photo_url.ilike.%${driveId}%`)
+        .limit(1)
+        .maybeSingle();
+      if (data) cloudRow = data;
+    }
+
+    if (!cloudRow && proofUrlOrId && !proofUrlOrId.startsWith('data:') && !proofUrlOrId.startsWith('file:')) {
+      const { data } = await supabase
+        .from('photo_proofs')
+        .select('*')
+        .or(`id.eq.${proofUrlOrId},drive_web_view_link.eq.${proofUrlOrId},photo_url.eq.${proofUrlOrId}`)
+        .limit(1)
+        .maybeSingle();
+      if (data) cloudRow = data;
+    }
+
+    if (!cloudRow && hints?.timestamp) {
+      const { data } = await supabase
+        .from('photo_proofs')
+        .select('*')
+        .eq('timestamp', hints.timestamp)
+        .limit(1)
+        .maybeSingle();
+      if (data) cloudRow = data;
+    }
+
+    if (cloudRow) {
+      const mapped = mapRowToPhotoProofItem(cloudRow);
+      if (localMatch) {
+        try {
+          const localList = (await getCacheJSON<PhotoProofItem[]>(PHOTO_PROOFS_KEY)) || [];
+          const updated = localList.map((p) => (p.id === localMatch!.id ? { ...p, ...mapped } : p));
+          await setCacheJSON(PHOTO_PROOFS_KEY, updated);
+        } catch {
+          // ignore
+        }
+      }
+      return mapped;
+    }
+  } catch (err) {
+    console.warn('[PhotoProof] Failed to fetch photo proof details from Supabase:', err);
+  }
+
+  // If local match exists (even without drive link), return it
+  if (localMatch) {
+    return localMatch;
+  }
+
+  // 3. Fallback synthesis from hints and date/time if no cloud record was found
+  let parsedDate: Date | null = null;
+  if (hints?.timestamp) {
+    const d = new Date(hints.timestamp);
+    if (!isNaN(d.getTime())) parsedDate = d;
+  }
+  if (!parsedDate && hints?.fallbackDateStr && hints.fallbackDateStr !== '--') {
+    const d = new Date(hints.fallbackDateStr);
+    if (!isNaN(d.getTime())) parsedDate = d;
+  }
+
+  if (proofUrlOrId || hints?.locationText || parsedDate) {
+    const dt = parsedDate || new Date();
+    const formatted = formatProofTimestamp(dt);
+    return {
+      id: hints?.proofId || `proof_${Date.now()}`,
+      photoUri: proofUrlOrId || '',
+      timestamp: hints?.timestamp || dt.toISOString(),
+      timeDigits: formatted.timeDigits,
+      timePeriod: formatted.timePeriod,
+      dateFormatted: formatted.dateFormatted,
+      dayFormatted: formatted.dayFormatted,
+      locationText: hints?.locationText || 'Tacloban City, Leyte, 6500',
+      employeeName: hints?.employeeName || null,
+      driveFileId: driveId || null,
+      driveWebViewLink: proofUrlOrId || null,
+      isWatermarked: false,
+    };
   }
 
   return null;

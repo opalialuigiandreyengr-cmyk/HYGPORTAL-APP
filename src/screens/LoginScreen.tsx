@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { type ReactNode, useEffect, useState } from 'react';
-import { Image, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Keyboard, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { CalendarCheck, Download, Eye, EyeOff, FileCheck2, Fingerprint, LockKeyhole, Mail, ShieldCheck, Smartphone, X } from 'lucide-react-native';
 
 import { AppScreen, Card, IconTextField, PrimaryButton } from '../components/ui';
@@ -283,7 +283,10 @@ export function LoginScreen({
               secureTextEntry: !showPassword,
               placeholder: 'Password',
               returnKeyType: 'done',
-              onSubmitEditing: onSubmit,
+              onSubmitEditing: () => {
+                Keyboard.dismiss();
+                onSubmit();
+              },
             }}
           />
 
@@ -297,7 +300,10 @@ export function LoginScreen({
             label={isSubmitting ? 'Please wait...' : 'Sign In'}
             disabled={isSubmitting}
             variant="gold"
-            onPress={onSubmit}
+            onPress={() => {
+              Keyboard.dismiss();
+              onSubmit();
+            }}
           />
 
           {canUseBiometric ? (

@@ -24,6 +24,7 @@ import { Avatar } from '../components/Avatar';
 import type { AppToastMessage } from '../components/AppToast';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { platformAlert } from '../utils/platformAlert';
+import { getSafeBottomInset, getScreenBottomPadding } from '../utils/safeArea';
 import {
   decideApprovalStep,
   loadApprovedApprovals,
@@ -101,6 +102,7 @@ export function ApprovalsScreen({
   const [selectedApproval, setSelectedApproval] = useState<{ item: PendingApproval; sequence: number } | null>(null);
   const [selectedApproved, setSelectedApproved] = useState<{ item: ApprovedApproval; sequence: number } | null>(null);
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
+  const insets = useSafeAreaInsets();
 
   async function refresh() {
     setIsLoading(true);
@@ -428,7 +430,7 @@ export function ApprovalsScreen({
       <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onHelpTutorials={onHelpTutorials} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} />
 
       <ScrollView
-        contentContainerStyle={styles.scroll}
+        contentContainerStyle={[styles.scroll, { paddingBottom: getScreenBottomPadding(insets.bottom, true, 28) }]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -765,7 +767,7 @@ function ApprovalDetailsSheet({
   const [rejectError, setRejectError] = useState('');
   const [isSubmittingReject, setIsSubmittingReject] = useState(false);
   const insets = useSafeAreaInsets();
-  const footerBottomPadding = Math.max(insets.bottom + 8, Platform.OS === 'ios' ? 24 : 16);
+  const footerBottomPadding = getSafeBottomInset(insets.bottom, Platform.OS === 'ios' ? 24 : 16);
 
   useEffect(() => {
     if (esarfEntries.length > 0) {
@@ -1137,7 +1139,7 @@ function ApprovedDetailsSheet({
   onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const footerBottomPadding = Math.max(insets.bottom + 8, Platform.OS === 'ios' ? 24 : 16);
+  const footerBottomPadding = getSafeBottomInset(insets.bottom, Platform.OS === 'ios' ? 24 : 16);
   const item = approval?.item ?? null;
   const sequence = approval?.sequence ?? 0;
   const isLeave = item?.request_type_code === 'leave';

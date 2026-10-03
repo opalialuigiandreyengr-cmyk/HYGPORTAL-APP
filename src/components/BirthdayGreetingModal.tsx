@@ -2,6 +2,8 @@ import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View
 import { Cake, CheckCircle2, Gift, Lock, PartyPopper, Sparkles, X } from 'lucide-react-native';
 
 import { fontWeights, radius, spacing } from '../theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getSafeBottomInset } from '../utils/safeArea';
 
 type Props = {
   visible: boolean;
@@ -22,6 +24,7 @@ export function BirthdayGreetingModal({
   isClaiming = false,
   hasCompletedOneYear = true,
 }: Props) {
+  const insets = useSafeAreaInsets();
   if (!visible) {
     return null;
   }
@@ -34,7 +37,7 @@ export function BirthdayGreetingModal({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.overlay}>
+      <View style={[styles.overlay, { paddingBottom: getSafeBottomInset(insets.bottom, spacing.md) }]}>
         <View style={styles.container}>
           {/* Top Decorative Header */}
           <View style={styles.header}>

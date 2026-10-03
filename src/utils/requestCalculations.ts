@@ -117,8 +117,26 @@ function parseDayNumber(value: string) {
   return Math.round(parsed * 100) / 100;
 }
 
-function parseTimeToMinutes(value: string) {
-  const parts = value.split(':').map(Number);
+export function parseTimeToMinutes(value: string): number | null {
+  if (!value) return null;
+  const clean = value.trim();
+
+  // 12-hour format with AM/PM (e.g. "09:00:00 AM", "09:00 AM", "11:00:00 PM", "11:00 PM", "9:00 am")
+  const ampmMatch = clean.toUpperCase().replace(/\s+/g, ' ').match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)$/);
+  if (ampmMatch) {
+    let hour = Number(ampmMatch[1]);
+    const min = Number(ampmMatch[2]);
+    const sec = Number(ampmMatch[3] || 0);
+    const ampm = ampmMatch[4];
+    if (Number.isNaN(hour) || Number.isNaN(min) || hour < 1 || hour > 12 || min < 0 || min > 59) {
+      return null;
+    }
+    if (hour === 12) hour = 0;
+    if (ampm === 'PM') hour += 12;
+    return hour * 60 + min + sec / 60;
+  }
+
+  const parts = clean.split(':').map(Number);
   const rawHour = parts[0];
   const rawMinute = parts[1];
   const rawSecond = parts[2] || 0;
@@ -324,4 +342,79 @@ function roundHours(minutes: number) {
     return 0;
   }
   return Math.round((minutes / 60) * 100) / 100;
+}
+
+export const MIN_OFFSETABLE_HOURS = 4;
+export const WHOLE_DAY_OFFSET_HOURS = 8;
+
+/**
+ * Calculates how many hours will be credited to an employee's offset balance
+ * based on the offset transaction crediting rules:
+ * - Minimum requirement is 4.00 hours (half day) and 8.00 hours (whole day).
+ * - If total hours < 4: 0 hours credited (validation warning "Minimum Offset Hours Not Met" appears).
+ * - If total hours is 4 to < 8 (e.g. 4, 5, 6, 7): only 4.00 hours credited (half day).
+ * - If total hours is >= 8 (e.g. 8, 9, 10, 11+): only 8.00 hours credited (whole day).
+ */
+export function calculateCreditedOffsetHours(totalHours: number): number {
+  if (totalHours < MIN_OFFSETABLE_HOURS) {
+    return 0;
+  }
+  if (totalHours < WHOLE_DAY_OFFSET_HOURS) {
+    return 4;
+  }
+  return 8;
+}
+
+/**
+ * Computes actual overtime (OT) hours for an offset request, strictly excluding the scheduled shift.
+ * If working on a scheduled workday, only hours outside the shift are counted.
+ * If working on a day off, full worked hours are counted.
+ */
+export function computeOffsetOvertimeHours({
+  timeFrom,
+  timeTo,
+  dateFrom,
+  timeSchedule,
+  dayOff,
+}: {
+  timeFrom?: string | null;
+  timeTo?: string | null;
+  dateFrom?: string | null;
+  timeSchedule?: string | null;
+  dayOff?: string | null;
+}): number | null {
+  if (!timeFrom || !timeTo) return null;
+
+  const hours = calculateRequestHours({
+    requestType: 'overtime',
+    dateFrom: dateFrom || new Date().toISOString().slice(0, 10),
+    timeFrom,
+    timeTo,
+    timeSchedule: timeSchedule && timeSchedule !== 'No Schedule' ? timeSchedule : DEFAULT_OFFICIAL_SCHEDULE,
+    dayOff: dayOff && dayOff !== 'No Day Off' ? dayOff : '',
+  });
+
+  return hours > 0 ? hours : null;
+}
+
+export const HALF_DAY_OFFSET_HOURS = 4;
+
+export function isValidUseOffsetHours(hours: number): boolean {
+  return hours === HALF_DAY_OFFSET_HOURS || hours === WHOLE_DAY_OFFSET_HOURS;
+}
+
+export function getUseOffsetValidationWarning(hours: number): string | null {
+  if (hours <= 0) {
+    return 'Time From and Time To must result in a valid duration.';
+  }
+  if (hours < HALF_DAY_OFFSET_HOURS) {
+    return `The minimum Use Offset duration is ${HALF_DAY_OFFSET_HOURS.toFixed(2)} hrs (half day). This request currently has ${hours.toFixed(2)} hrs.`;
+  }
+  if (hours > WHOLE_DAY_OFFSET_HOURS) {
+    return `Use Offset cannot exceed ${WHOLE_DAY_OFFSET_HOURS.toFixed(2)} hrs (whole day / total working hours). This request currently has ${hours.toFixed(2)} hrs.`;
+  }
+  if (!isValidUseOffsetHours(hours)) {
+    return `Use Offset must be set to ${HALF_DAY_OFFSET_HOURS.toFixed(2)} hrs (half day) or ${WHOLE_DAY_OFFSET_HOURS.toFixed(2)} hrs (whole day). This request currently has ${hours.toFixed(2)} hrs.`;
+  }
+  return null;
 }

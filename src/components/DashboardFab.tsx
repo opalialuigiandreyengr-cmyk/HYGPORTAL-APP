@@ -9,6 +9,8 @@ import {
 } from 'react-native';
 import { Camera, Plus } from 'lucide-react-native';
 import Svg, { Line, Rect } from 'react-native-svg';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getBottomTabBarHeight } from '../utils/safeArea';
 
 type DashboardFabProps = {
   onPhotoProof?: () => void;
@@ -17,6 +19,9 @@ type DashboardFabProps = {
 };
 
 export function DashboardFab({ onPhotoProof, onPhotoLog, onActivityLog }: DashboardFabProps) {
+  const insets = useSafeAreaInsets();
+  const baseBottom = getBottomTabBarHeight(insets.bottom) + 16;
+  const subBottom = baseBottom + 5;
   const [isOpen, setIsOpen] = useState(false);
   const animation = useRef(new Animated.Value(0)).current;
 
@@ -110,6 +115,7 @@ export function DashboardFab({ onPhotoProof, onPhotoLog, onActivityLog }: Dashbo
         style={[
           styles.subActionWrapper,
           {
+            bottom: subBottom,
             opacity: activityLogOpacity,
             transform: [
               { translateX: activityLogTranslateX },
@@ -155,6 +161,7 @@ export function DashboardFab({ onPhotoProof, onPhotoLog, onActivityLog }: Dashbo
         style={[
           styles.subActionWrapper,
           {
+            bottom: subBottom,
             opacity: photoProofOpacity,
             transform: [
               { translateX: photoProofTranslateX },
@@ -179,7 +186,7 @@ export function DashboardFab({ onPhotoProof, onPhotoLog, onActivityLog }: Dashbo
       </Animated.View>
 
       {/* Main Floating Action Button */}
-      <View style={styles.mainButtonWrapper} pointerEvents="box-none">
+      <View style={[styles.mainButtonWrapper, { bottom: baseBottom }]} pointerEvents="box-none">
         <Pressable
           style={({ pressed }) => [
             styles.mainButton,

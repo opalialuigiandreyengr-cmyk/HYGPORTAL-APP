@@ -47,6 +47,7 @@ import * as Sharing from 'expo-sharing';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getSafeBottomInset } from '../utils/safeArea';
 import {
   deletePhotoProof,
   loadPhotoProofs,
@@ -660,7 +661,7 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
             styles.listContent,
             logs.length === 0 && { flexGrow: 1, justifyContent: 'center' },
             {
-              paddingBottom: Math.max(insets.bottom + 24, 40),
+              paddingBottom: getSafeBottomInset(insets.bottom, 24) + 24,
             },
           ]}
           showsVerticalScrollIndicator={false}
@@ -824,7 +825,7 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
                 <Image
                   source={{ uri: selectedPhoto.photoUri }}
                   style={styles.viewfinderMedia}
-                  resizeMode="contain"
+                  resizeMode="cover"
                 />
               ) : (
                 <View style={[styles.viewfinderMedia, styles.viewerPlaceholder]}>
@@ -971,7 +972,7 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
             style={[
               styles.viewerBottomBar,
               {
-                paddingBottom: Platform.OS === 'web' ? 16 : Math.max(insets.bottom, 16),
+                paddingBottom: Platform.OS === 'web' ? 16 : getSafeBottomInset(insets.bottom, 16),
               },
             ]}
           >
@@ -1252,14 +1253,14 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 240,
     position: 'relative',
-    backgroundColor: '#0f172a',
+    backgroundColor: '#ffffff',
   },
   imagePlaceholder: {
     width: '100%',
     height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#1e293b',
+    backgroundColor: '#f8fafc',
     padding: 20,
     gap: 8,
   },
@@ -1273,6 +1274,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 12,
+    backgroundColor: '#ffffff',
   },
   viewerPlaceholderText: {
     fontSize: 14,
@@ -1512,7 +1514,7 @@ const styles = StyleSheet.create({
   viewfinderContainer: {
     flex: 1,
     position: 'relative',
-    backgroundColor: '#0f172a',
+    backgroundColor: '#ffffff',
     overflow: 'hidden',
   },
   viewfinderMedia: {

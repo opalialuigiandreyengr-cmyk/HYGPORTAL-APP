@@ -31,34 +31,148 @@ async function resolveEmployeeId(userId?: string, employeeId?: string): Promise<
 
 export async function fetchOffsetHistory(userId?: string, employeeId?: string): Promise<BalanceHistoryItem[]> {
   await ensureFreshSession().catch(() => {});
+  const empId = await resolveEmployeeId(userId, employeeId);
 
   // 1. Try RPC get_my_offset_history first
   try {
     const { data: rpcData, error: rpcError } = await supabase.rpc('get_my_offset_history');
     if (!rpcError && Array.isArray(rpcData) && rpcData.length > 0) {
-      return rpcData.map((row: any) => ({
-        id: String(row.id ?? Math.random()),
-        type: 'offset',
-        category: (row.category as BalanceHistoryItem['category']) || (Number(row.hours ?? 0) < 0 ? 'use' : 'earn'),
-        title: row.title || (Number(row.hours ?? 0) < 0 ? 'Offset Deducted' : 'Offset Earned'),
-        subtitle: row.subtitle || 'Offset transaction',
-        amount: Number(row.hours ?? 0),
-        unit: 'h',
-        balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
-        date: row.created_at || new Date().toISOString(),
-        status: row.request_status || null,
-        requestId: row.request_id || null,
-        reason: row.reason || null,
-        dateFrom: row.date_from || null,
-        dateTo: row.date_to || null,
-      }));
+      // Check for unlinked rows (no request_id) which could be admin adjustments
+      const unlinkedIds = rpcData.filter((r: any) => !r.request_id).map((r: any) => String(r.id));
+      let rawHoursMap: Record<string, { hours: number; txType: string }> = {};
+
+      if (unlinkedIds.length > 0) {
+        try {
+          const { data: rawRows } = await supabase
+            .from('offset_transactions')
+            .select('id, hours, transaction_type')
+            .in('id', unlinkedIds);
+          if (rawRows) {
+            rawRows.forEach((rr: any) => {
+              rawHoursMap[String(rr.id)] = {
+                hours: Number(rr.hours ?? 0),
+                txType: (rr.transaction_type ?? '').toLowerCase(),
+              };
+            });
+          }
+        } catch {
+          // ignore enrichment failure
+        }
+      }
+
+      const mappedItems: BalanceHistoryItem[] = rpcData.map((row: any) => {
+        const rawInfo = rawHoursMap[String(row.id)];
+        const rawHours = rawInfo !== undefined ? rawInfo.hours : Number(row.hours ?? 0);
+        const txType = (rawInfo?.txType || row.transaction_type || '').toLowerCase();
+        const hasRequestId = Boolean(row.request_id);
+
+        let category: BalanceHistoryItem['category'] = (row.category as BalanceHistoryItem['category']) || 'adjustment';
+        let title = row.title || 'Offset Transaction';
+        let subtitle = row.subtitle || 'Offset transaction';
+        let amount = Number(row.hours ?? 0);
+
+        if (!hasRequestId) {
+          // Admin adjustment: determine if deduction or credit
+          if (rawHours < 0 || txType === 'deduct' || txType === 'deduction' || title.toLowerCase().includes('deduct')) {
+            category = 'use';
+            title = 'Offset Deducted';
+            subtitle = 'Admin deduction';
+            amount = -Math.abs(rawHours);
+          } else {
+            category = 'earn';
+            title = 'Offset Added';
+            subtitle = 'Admin credit adjustment';
+            amount = Math.abs(rawHours);
+          }
+        } else {
+          // Request-linked transaction
+          if (category === 'use' || txType === 'use' || amount < 0) {
+            category = 'use';
+            title = 'Offset Deducted';
+            subtitle = subtitle || 'Use Offset Request';
+            amount = -Math.abs(amount);
+          } else if (category === 'refund' || txType === 'adjustment' || txType === 'refund') {
+            category = 'refund';
+            title = 'Offset Refunded';
+            subtitle = subtitle || 'Credited back (Rejected request)';
+            amount = Math.abs(amount);
+          } else {
+            category = 'earn';
+            title = 'Offset Earned';
+            subtitle = subtitle || 'ESARF Offset Credit';
+            amount = Math.abs(amount);
+          }
+        }
+
+        return {
+          id: String(row.id ?? Math.random()),
+          type: 'offset',
+          category,
+          title,
+          subtitle,
+          amount,
+          unit: 'h',
+          balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
+          date: row.created_at || new Date().toISOString(),
+          status: row.request_status || null,
+          requestId: row.request_id || null,
+          reason: row.reason || null,
+          dateFrom: row.date_from || null,
+          dateTo: row.date_to || null,
+        };
+      });
+
+      // Enrich with any approved offset requests not yet recorded in offset_transactions
+      if (empId) {
+        try {
+          const recordedReqIds = new Set(mappedItems.map((it) => it.requestId).filter(Boolean));
+          const { data: approvedOffsetReqs } = await supabase
+            .from('time_request_details')
+            .select('request_id, total_hours, transaction_type, reason, date_from, date_to, requests!inner(id, status, submitted_at, updated_at, submitted_by_employee_id)')
+            .eq('requests.submitted_by_employee_id', empId)
+            .eq('requests.status', 'approved')
+            .gt('total_hours', 0);
+
+          if (approvedOffsetReqs && approvedOffsetReqs.length > 0) {
+            approvedOffsetReqs.forEach((item: any) => {
+              if (recordedReqIds.has(item.request_id)) return;
+              const txnType = (item.transaction_type || '').toLowerCase();
+              const reason = (item.reason || '').toLowerCase();
+              const isEarn = (txnType.includes('offset') || reason.includes('(offset)')) && !txnType.includes('use') && !reason.includes('use');
+              if (isEarn) {
+                const hours = Number(item.total_hours ?? 0);
+                mappedItems.push({
+                  id: String(item.request_id),
+                  type: 'offset',
+                  category: 'earn',
+                  title: 'Offset Earned',
+                  subtitle: item.transaction_type || 'ESARF Offset Credit',
+                  amount: Math.abs(hours),
+                  unit: 'h',
+                  date: item.requests?.updated_at || item.requests?.submitted_at || new Date().toISOString(),
+                  status: 'approved',
+                  requestId: item.request_id,
+                  reason: item.reason || null,
+                  dateFrom: item.date_from || null,
+                  dateTo: item.date_to || null,
+                });
+                recordedReqIds.add(item.request_id);
+              }
+            });
+            mappedItems.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          }
+        } catch {
+          // ignore enrichment error
+        }
+      }
+
+      return mappedItems;
     }
   } catch {
     // Fall back to direct table queries
   }
 
   // 2. Direct table fallback: query offset_transactions
-  const empId = await resolveEmployeeId(userId, employeeId);
   if (!empId) return [];
 
   try {
@@ -67,6 +181,8 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
       .select('id, employee_id, request_id, transaction_type, hours, balance_after, created_at')
       .eq('employee_id', empId)
       .order('created_at', { ascending: false });
+
+    const items: BalanceHistoryItem[] = [];
 
     if (otRows && otRows.length > 0) {
       // Gather request details for richer labels
@@ -100,29 +216,54 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
         }
       }
 
-      return otRows.map((row) => {
+      otRows.forEach((row) => {
         const reqDetail = row.request_id ? requestMap[row.request_id] : null;
         const txType = (row.transaction_type ?? '').toLowerCase();
-        const isUse = txType === 'use';
-        const isRefund = txType === 'adjustment' || txType === 'refund';
+        const hasRequestId = Boolean(row.request_id);
         const rawHours = Number(row.hours ?? 0);
-        const signedHours = isUse ? -Math.abs(rawHours) : Math.abs(rawHours);
 
         let title = 'Offset Earned';
+        let subtitle = 'Offset transaction';
         let category: BalanceHistoryItem['category'] = 'earn';
-        if (isUse) {
-          title = 'Offset Deducted';
-          category = 'use';
-        } else if (isRefund) {
-          title = 'Offset Refunded';
-          category = 'refund';
+        let signedHours = rawHours;
+
+        if (!hasRequestId) {
+          // Admin adjustment
+          if (rawHours < 0 || txType === 'deduct' || txType === 'deduction') {
+            title = 'Offset Deducted';
+            subtitle = 'Admin deduction';
+            category = 'use';
+            signedHours = -Math.abs(rawHours);
+          } else {
+            title = 'Offset Added';
+            subtitle = 'Admin credit adjustment';
+            category = 'earn';
+            signedHours = Math.abs(rawHours);
+          }
+        } else {
+          // Request-linked transaction
+          const isUse = txType === 'use' || (txType.includes('use') && rawHours < 0);
+          const isRefund = txType === 'adjustment' || txType === 'refund';
+          if (isUse) {
+            title = 'Offset Deducted';
+            subtitle = reqDetail?.transaction_type || 'Use Offset Request';
+            category = 'use';
+            signedHours = -Math.abs(rawHours);
+          } else if (isRefund) {
+            title = 'Offset Refunded';
+            subtitle = 'Credited back upon rejection';
+            category = 'refund';
+            signedHours = Math.abs(rawHours);
+          } else {
+            // txType === 'earn' or approved offset credit
+            title = 'Offset Earned';
+            subtitle = reqDetail?.transaction_type || 'ESARF Offset Credit';
+            category = 'earn';
+            signedHours = Math.abs(rawHours);
+          }
         }
 
-        const subtitle =
-          reqDetail?.transaction_type ||
-          (isUse ? 'Use Offset Request' : isRefund ? 'Credited back upon rejection' : 'ESARF Offset Credit');
-
-        return {
+        items.push({
           id: String(row.id ?? Math.random()),
           type: 'offset',
           category,
@@ -137,49 +278,53 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
           reason: reqDetail?.reason || null,
           dateFrom: reqDetail?.date_from || null,
           dateTo: reqDetail?.date_to || null,
-        };
+        });
       });
     }
 
-    // Fallback: If no offset_transactions exist yet, check approved/pending requests with offset
-    const { data: timeReqs } = await supabase
-      .from('time_request_details')
-      .select('request_id, total_hours, transaction_type, reason, date_from, date_to, requests!inner(id, status, submitted_at, submitted_by_employee_id)')
-      .eq('requests.submitted_by_employee_id', empId)
-      .not('total_hours', 'is', null)
-      .order('date_from', { ascending: false })
-      .limit(20);
+    // Enrich with any approved offset requests not yet recorded in offset_transactions
+    try {
+      const recordedReqIds = new Set(items.map((it) => it.requestId).filter(Boolean));
+      const { data: approvedOffsetReqs } = await supabase
+        .from('time_request_details')
+        .select('request_id, total_hours, transaction_type, reason, date_from, date_to, requests!inner(id, status, submitted_at, updated_at, submitted_by_employee_id)')
+        .eq('requests.submitted_by_employee_id', empId)
+        .eq('requests.status', 'approved')
+        .gt('total_hours', 0);
 
-    if (timeReqs && timeReqs.length > 0) {
-      const items: BalanceHistoryItem[] = [];
-      for (const item of timeReqs) {
-        const txType = (item.transaction_type ?? '').toLowerCase();
-        const isOffset = txType.includes('offset');
-        if (!isOffset) continue;
-
-        const isUse = txType.includes('use');
-        const req = (item as any).requests;
-        const hours = Number(item.total_hours ?? 0);
-        if (hours <= 0) continue;
-
-        items.push({
-          id: String(item.request_id),
-          type: 'offset',
-          category: isUse ? 'use' : 'earn',
-          title: isUse ? 'Offset Deducted' : 'Offset Earned',
-          subtitle: item.transaction_type || (isUse ? 'Use Offset Request' : 'Offset ESARF'),
-          amount: isUse ? -hours : hours,
-          unit: 'h',
-          date: req?.submitted_at || item.date_from || new Date().toISOString(),
-          status: req?.status || null,
-          requestId: item.request_id,
-          reason: item.reason || null,
-          dateFrom: item.date_from || null,
-          dateTo: item.date_to || null,
+      if (approvedOffsetReqs && approvedOffsetReqs.length > 0) {
+        approvedOffsetReqs.forEach((item: any) => {
+          if (recordedReqIds.has(item.request_id)) return;
+          const txnType = (item.transaction_type || '').toLowerCase();
+          const reason = (item.reason || '').toLowerCase();
+          const isEarn = (txnType.includes('offset') || reason.includes('(offset)')) && !txnType.includes('use') && !reason.includes('use');
+          if (isEarn) {
+            const hours = Number(item.total_hours ?? 0);
+            items.push({
+              id: String(item.request_id),
+              type: 'offset',
+              category: 'earn',
+              title: 'Offset Earned',
+              subtitle: item.transaction_type || 'ESARF Offset Credit',
+              amount: Math.abs(hours),
+              unit: 'h',
+              date: item.requests?.updated_at || item.requests?.submitted_at || new Date().toISOString(),
+              status: 'approved',
+              requestId: item.request_id,
+              reason: item.reason || null,
+              dateFrom: item.date_from || null,
+              dateTo: item.date_to || null,
+            });
+            recordedReqIds.add(item.request_id);
+          }
         });
+        items.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       }
-      return items;
+    } catch {
+      // ignore enrichment error
     }
+
+    return items;
   } catch {
     // ignore
   }
@@ -194,28 +339,72 @@ export async function fetchLeaveHistory(userId?: string, employeeId?: string): P
   try {
     const { data: rpcData, error: rpcError } = await supabase.rpc('get_my_leave_history');
     if (!rpcError && Array.isArray(rpcData) && rpcData.length > 0) {
-      return rpcData.map((row: any) => ({
-        id: String(row.id ?? Math.random()),
-        type: 'leave',
-        category: (row.category as BalanceHistoryItem['category']) || (Number(row.days ?? 0) < 0 ? 'use' : 'grant'),
-        title: row.title || (Number(row.days ?? 0) < 0 ? 'Leave Deducted' : 'Leave Credit Grant'),
-        subtitle: row.subtitle || 'Leave transaction',
-        amount: Number(row.days ?? 0),
-        unit: 'd',
-        balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
-        date: row.created_at || new Date().toISOString(),
-        status: row.request_status || null,
-        requestId: row.request_id || null,
-        reason: row.reason || null,
-        dateFrom: row.start_date || null,
-        dateTo: row.end_date || null,
-      }));
+      return rpcData.map((row: any) => {
+        const rawDays = Number(row.days ?? 0);
+        const txType = (row.transaction_type ?? '').toLowerCase();
+        const titleLower = (row.title ?? '').toLowerCase();
+        const hasRequestId = Boolean(row.request_id);
+
+        const isDeduction =
+          rawDays < 0 ||
+          row.category === 'use' ||
+          titleLower.includes('deduct') ||
+          txType === 'deduct' ||
+          txType === 'deduction' ||
+          txType === 'use_paid';
+
+        const isReimburse =
+          row.category === 'refund' ||
+          txType === 'reimburse' ||
+          titleLower.includes('reimburse');
+
+        const isGrant =
+          row.category === 'grant' ||
+          ['grant', 'credit', 'set_credits', 'annual_credit'].includes(txType) ||
+          titleLower.includes('grant') ||
+          titleLower.includes('allocation');
+
+        let category: BalanceHistoryItem['category'] = isDeduction ? 'use' : isReimburse ? 'refund' : isGrant ? 'grant' : 'adjustment';
+        let title = row.title;
+        let subtitle = row.subtitle;
+
+        if (isDeduction) {
+          category = 'use';
+          title = title || 'Leave Deducted';
+          subtitle = subtitle || (!hasRequestId ? 'Admin deduction' : 'Approved paid leave');
+        } else if (isReimburse) {
+          category = 'refund';
+          title = title || 'Credit Reimbursed';
+          subtitle = subtitle || (!hasRequestId ? 'Admin reimbursement' : 'Credits reimbursed');
+        } else if (isGrant) {
+          category = 'grant';
+          title = title || 'Annual Leave Credits Granted';
+          subtitle = subtitle || 'Annual leave allocation';
+        }
+
+        return {
+          id: String(row.id ?? Math.random()),
+          type: 'leave',
+          category,
+          title,
+          subtitle,
+          amount: isDeduction ? -Math.abs(rawDays) : Math.abs(rawDays),
+          unit: 'd',
+          balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
+          date: row.created_at || new Date().toISOString(),
+          status: row.request_status || null,
+          requestId: row.request_id || null,
+          reason: row.reason || null,
+          dateFrom: row.start_date || null,
+          dateTo: row.end_date || null,
+        };
+      });
     }
   } catch {
     // Fall back to direct table queries
   }
 
-  // 2. Direct table fallback: query leave_transactions + leave_balances
+  // 2. Direct table fallback: query leave_transactions + leave_balances + audit_logs
   const empId = await resolveEmployeeId(userId, employeeId);
   if (!empId) return [];
 
@@ -287,16 +476,40 @@ export async function fetchLeaveHistory(userId?: string, employeeId?: string): P
       ltRows.forEach((row) => {
         const reqDetail = row.request_id ? requestMap[row.request_id] : null;
         const txType = (row.transaction_type ?? '').toLowerCase();
-        const isUse = txType === 'use_paid' || txType === 'use';
+        const hasRequestId = Boolean(row.request_id);
         const rawDays = Number(row.days ?? 0);
-        const signedDays = isUse ? -Math.abs(rawDays) : Math.abs(rawDays);
+
+        const isDeduction =
+          rawDays < 0 ||
+          txType === 'use_paid' ||
+          txType === 'use' ||
+          txType === 'deduct' ||
+          txType === 'deduction';
+
+        const isReimburse = txType === 'reimburse' || txType === 'refund';
+
+        let category: BalanceHistoryItem['category'] = isDeduction ? 'use' : isReimburse ? 'refund' : 'grant';
+        let title = 'Leave Transaction';
+        let subtitle = 'Leave transaction';
+        let signedDays = isDeduction ? -Math.abs(rawDays) : Math.abs(rawDays);
+
+        if (isDeduction) {
+          title = reqDetail?.leave_category ? `${reqDetail.leave_category} (Paid)` : 'Leave Deducted';
+          subtitle = reqDetail?.leave_category ? 'Approved paid leave' : (hasRequestId ? 'Approved paid leave' : 'Admin deduction');
+        } else if (isReimburse) {
+          title = 'Credit Reimbursed';
+          subtitle = hasRequestId ? 'Credits reimbursed' : 'Admin reimbursement';
+        } else {
+          title = 'Annual Leave Credits Granted';
+          subtitle = hasRequestId ? 'Leave credit entitlement' : 'Admin credit allocation';
+        }
 
         items.push({
           id: String(row.id ?? Math.random()),
           type: 'leave',
-          category: isUse ? 'use' : 'grant',
-          title: reqDetail?.leave_category ? `${reqDetail.leave_category} (Paid)` : isUse ? 'Leave Deducted' : 'Credit Grant',
-          subtitle: isUse ? 'Approved paid leave' : 'Credit adjustment',
+          category,
+          title,
+          subtitle,
           amount: signedDays,
           unit: 'd',
           balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
@@ -339,6 +552,63 @@ export async function fetchLeaveHistory(userId?: string, employeeId?: string): P
           });
         });
       }
+    }
+
+    // Also check audit_logs for any admin leave actions
+    try {
+      const { data: auditRows } = await supabase
+        .from('audit_logs')
+        .select('id, action, metadata, created_at')
+        .in('action', ['deduct_leave_credits', 'reimburse_leave_credits', 'set_leave_credits'])
+        .contains('metadata', { employee_id: empId })
+        .order('created_at', { ascending: false });
+
+      if (auditRows && auditRows.length > 0) {
+        auditRows.forEach((al: any) => {
+          const alTime = new Date(al.created_at).getTime();
+          const alreadyExists = items.some(
+            (it) => Math.abs(new Date(it.date).getTime() - alTime) < 5000
+          );
+          if (alreadyExists) return;
+
+          const meta = al.metadata || {};
+          if (al.action === 'deduct_leave_credits') {
+            const deductDays = Number(meta.deduct_days ?? 0);
+            if (deductDays > 0) {
+              items.push({
+                id: String(al.id),
+                type: 'leave',
+                category: 'use',
+                title: 'Leave Deducted',
+                subtitle: meta.reason || 'Admin deduction',
+                amount: -Math.abs(deductDays),
+                unit: 'd',
+                date: al.created_at,
+                status: 'approved',
+                reason: meta.reason || null,
+              });
+            }
+          } else if (al.action === 'reimburse_leave_credits') {
+            const reimburseDays = Number(meta.reimburse_days ?? 0);
+            if (reimburseDays > 0) {
+              items.push({
+                id: String(al.id),
+                type: 'leave',
+                category: 'refund',
+                title: 'Credit Reimbursed',
+                subtitle: meta.reason || 'Admin reimbursement',
+                amount: Math.abs(reimburseDays),
+                unit: 'd',
+                date: al.created_at,
+                status: 'approved',
+                reason: meta.reason || null,
+              });
+            }
+          }
+        });
+      }
+    } catch {
+      // ignore
     }
 
     // Sort all by date descending

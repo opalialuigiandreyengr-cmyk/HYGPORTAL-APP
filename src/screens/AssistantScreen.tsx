@@ -30,6 +30,7 @@ import { TopBar } from '../components/TopBar';
 import { assistantFallbacks, assistantFaqQuestions, assistantRequestTemplates } from '../constants/assistantKnowledge';
 import { createAssistantReply, type AssistantDraft, type AssistantReply } from '../services/assistant';
 import { colors, fontWeights, radius, spacing } from '../theme';
+import { getSafeBottomInset } from '../utils/safeArea';
 
 type ChatItem = {
   id: string;
@@ -256,7 +257,7 @@ export function AssistantScreen({
         style={[
           styles.composer,
           {
-            paddingBottom: isKeyboardVisible ? spacing.md : Math.max(insets.bottom, spacing.md),
+            paddingBottom: isKeyboardVisible ? spacing.md : getSafeBottomInset(insets.bottom, spacing.md),
           },
         ]}
       >

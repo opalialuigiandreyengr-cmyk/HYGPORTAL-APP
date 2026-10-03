@@ -28,6 +28,8 @@ import {
 } from 'lucide-react-native';
 
 import { colors, fontWeights, spacing } from '../theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getScreenBottomPadding } from '../utils/safeArea';
 import { Avatar } from '../components/Avatar';
 import { TopBar } from '../components/TopBar';
 import { WebNativeDateInput } from '../components/WebNativeDateInput';
@@ -139,6 +141,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
   const [localProfile, setLocalProfile] = useState<EmployeeProfileSummary | null>(resultProfile);
   const profile = localProfile;
   const displayName = profile?.fullName || username || 'Employee';
+  const insets = useSafeAreaInsets();
 
   const [showModal, setShowModal] = useState(false);
   const [inlineEditSection, setInlineEditSection] = useState<ProfileSectionKey | null>(null);
@@ -492,7 +495,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
       <TopBar name={displayName} username={profile?.username ?? username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onHelpTutorials={onHelpTutorials} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} onSignOut={onSignOut} />
       <ScrollView
         ref={scrollRef}
-        contentContainerStyle={styles.scroll}
+        contentContainerStyle={[styles.scroll, { paddingBottom: getScreenBottomPadding(insets.bottom, true, 28) }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"

@@ -4,6 +4,8 @@ import { StatusBar } from 'expo-status-bar';
 import { Bell, CalendarDays, CheckCheck, ChevronRight, Gift, Hourglass, Trash2, X } from 'lucide-react-native';
 
 import { TopBar } from '../components/TopBar';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getSafeBottomInset } from '../utils/safeArea';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import type { ProfileLoadResult } from '../types/domain';
 import {
@@ -44,6 +46,7 @@ export function NotificationsScreen({
   onOpenRewards?: () => void;
 }) {
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
+  const insets = useSafeAreaInsets();
   const [items, setItems] = useState<AppNotification[]>([]);
   const [activeFilter, setActiveFilter] = useState<FilterKey>('unread');
   const [claimingIds, setClaimingIds] = useState<Set<string>>(() => new Set());
@@ -155,7 +158,7 @@ export function NotificationsScreen({
         onBackHome={onBackHome}
       />
       <ScrollView
-        contentContainerStyle={styles.scroll}
+        contentContainerStyle={[styles.scroll, { paddingBottom: getSafeBottomInset(insets.bottom, 20) + 30 }]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl

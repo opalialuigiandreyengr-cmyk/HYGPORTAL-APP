@@ -11,6 +11,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, fontWeights, spacing } from '../theme';
+import { getSafeBottomInset } from '../utils/safeArea';
 
 export type TabKey = 'home' | 'requests' | 'approvals' | 'notifications' | 'perks' | 'profile' | 'settings' | 'rewards' | 'my_team';
 
@@ -38,6 +39,7 @@ export function BottomTabBar({
   showApprovals?: boolean;
 }) {
   const insets = useSafeAreaInsets();
+  const safeBottom = getSafeBottomInset(insets.bottom, 8);
   const transitionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function changeTab(tab: TabKey) {
@@ -59,7 +61,7 @@ export function BottomTabBar({
 
   return (
     <View style={styles.wrap} pointerEvents="box-none">
-      <View style={[styles.container, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+      <View style={[styles.container, { paddingBottom: safeBottom }]}>
         {leftTabs.map(({ key, label, icon: Icon }) => {
           const active = activeTab === key;
           const count = key === 'requests' ? requestCount : key === 'approvals' ? approvalCount : 0;

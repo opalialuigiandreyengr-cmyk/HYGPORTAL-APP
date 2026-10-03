@@ -20,7 +20,6 @@ import {
   Clock3,
   Minus,
   Plus,
-  RefreshCw,
   RotateCcw,
   Sparkles,
   X,
@@ -28,6 +27,7 @@ import {
 
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getSafeBottomInset } from '../utils/safeArea';
 import { fetchLeaveHistory, fetchOffsetHistory, type BalanceHistoryItem } from '../services/balanceHistory';
 
 type BalanceHistoryModalProps = {
@@ -158,7 +158,7 @@ export function BalanceHistoryModal({
             {
               height: isWide ? undefined : Math.min(height * 0.84, 680),
               maxHeight: Math.min(height * 0.9, 720),
-              paddingBottom: Math.max(insets.bottom, Platform.OS === 'ios' ? 24 : spacing.md),
+              paddingBottom: getSafeBottomInset(insets.bottom, Platform.OS === 'ios' ? 24 : spacing.md),
             },
           ]}
         >
@@ -244,20 +244,6 @@ export function BalanceHistoryModal({
                     : 'Remaining paid leave days'}
               </Text>
             </View>
-
-            <TouchableOpacity
-              style={[styles.refreshBtn, { borderColor: trackColor }]}
-              onPress={handleRefresh}
-              activeOpacity={0.7}
-              disabled={refreshing || loading}
-            >
-              <RefreshCw
-                size={16}
-                color={primaryColor}
-                strokeWidth={2.4}
-                style={refreshing ? styles.rotating : undefined}
-              />
-            </TouchableOpacity>
           </View>
 
           {/* Quick Stats Summary Chips */}
@@ -365,7 +351,7 @@ export function BalanceHistoryModal({
                         <Text style={[styles.txAmount, { color: amountColor }]}>
                           {formattedAmount}
                         </Text>
-                        {item.balanceAfter !== null && item.balanceAfter !== undefined && (
+                        {!isOffset && item.type !== 'offset' && item.balanceAfter !== null && item.balanceAfter !== undefined && (
                           <View style={styles.balanceAfterBadge}>
                             <Text style={styles.balanceAfterText}>
                               Bal: {item.balanceAfter.toFixed(1)}
@@ -623,19 +609,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.muted,
     fontWeight: fontWeights.medium,
-  },
-  refreshBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: spacing.sm,
-  },
-  rotating: {
-    transform: [{ rotate: '45deg' }],
   },
   statsRow: {
     flexDirection: 'row',

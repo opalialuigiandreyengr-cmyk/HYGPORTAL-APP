@@ -37,6 +37,8 @@ import { platformAlert } from '../utils/platformAlert';
 import { withTimeout } from '../utils/withTimeout';
 import type { AssistantDraft } from '../services/assistant';
 import { colors, fontWeights, radius, spacing } from '../theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getSafeBottomInset } from '../utils/safeArea';
 import { calculateLeaveDays, dateStringToDate, formatDateInput, hasCompletedOneYearOfService } from '../utils/dateTime';
 import { updateMyPendingRequest, type MyRequest } from '../services/requests';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
@@ -313,6 +315,7 @@ const RequestLeave = ({
   const [submitStatus, setSubmitStatus] = useState('');
   const [submissionErrorModal, setSubmissionErrorModal] = useState<string | null>(null);
   const [validationErrors, setValidationErrors] = useState<Record<string, string | undefined>>({});
+  const insets = useSafeAreaInsets();
 
   const scrollRef = useRef<ScrollView | null>(null);
   const reasonInputRefs = useRef<Record<number, TextInput | null>>({});
@@ -1193,7 +1196,12 @@ const RequestLeave = ({
       >
         <ScrollView
           ref={scrollRef}
-          contentContainerStyle={styles.scroll}
+          contentContainerStyle={[
+            styles.scroll,
+            {
+              paddingBottom: getSafeBottomInset(insets.bottom, 24) + 32,
+            },
+          ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
           refreshControl={

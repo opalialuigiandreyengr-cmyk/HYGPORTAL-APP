@@ -1,7 +1,10 @@
-import React from 'react';
-import { View, Text, StyleSheet, Pressable, TextInput } from 'react-native';
-import { CalendarDays, Check, Clock3, Edit3, FileText, Users, X } from 'lucide-react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, Pressable, TextInput, Image, Modal, Linking, ActivityIndicator, Platform } from 'react-native';
+import { CalendarDays, Camera, Check, Clock3, Edit3, ExternalLink, Eye, FileText, Image as ImageIcon, MapPin, Users, X } from 'lucide-react-native';
 import { colors, radius, fontWeights, spacing } from '../theme';
+import { computeWorkedMinutes, computeOffsetOvertimeHours } from '../utils/requestCalculations';
+import { parseEsarfDateRangeStringToYMD } from '../utils/dateTime';
+import { fetchPhotoProofDetails, type PhotoProofItem } from '../services/photoProof';
 
 export function formatEsarfDateRange(dateFromStr?: string | null, dateToStr?: string | null): string {
   if (!dateFromStr) return 'mm/dd-dd/yyyy';
@@ -44,9 +47,141 @@ export type ParsedEsarfEntry = {
   timeFromStr: string;
   timeToStr: string;
   totalHours: string;
+  actualHours?: string;
   reason: string;
   isRejected?: boolean;
+  proofUrl?: string;
+  proofTime?: string;
+  proofLocation?: string;
+  proofId?: string;
 };
+
+export function extractDriveFileId(url?: string | null): string | null {
+  if (!url || typeof url !== 'string') return null;
+  const trimmed = url.trim();
+
+  const lh3Match = trimmed.match(/googleusercontent\.com\/d\/([a-zA-Z0-9_-]+)/i);
+  if (lh3Match && lh3Match[1]) return lh3Match[1];
+
+  const fileDMatch = trimmed.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/i);
+  if (fileDMatch && fileDMatch[1]) return fileDMatch[1];
+
+  const queryMatch =
+    trimmed.match(/drive\.google\.com\/(?:open|uc)\?(?:[^&]*&)*id=([a-zA-Z0-9_-]+)/i) ||
+    trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/i);
+  if (queryMatch && queryMatch[1]) return queryMatch[1];
+
+  if (/^[a-zA-Z0-9_-]{25,50}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  return null;
+}
+
+export function getDirectProofImageUrl(url?: string | null): string {
+  if (!url || typeof url !== 'string') return '';
+  const trimmed = url.trim();
+  if (trimmed.startsWith('data:') || trimmed.startsWith('file://')) {
+    return trimmed;
+  }
+
+  const driveId = extractDriveFileId(trimmed);
+  if (driveId) {
+    return `https://lh3.googleusercontent.com/d/${driveId}=w1000`;
+  }
+
+  return trimmed;
+}
+
+export function getExternalProofWebUrl(url?: string | null): string {
+  if (!url || typeof url !== 'string') return '';
+  const trimmed = url.trim();
+  const driveId = extractDriveFileId(trimmed);
+  if (driveId) {
+    return `https://drive.google.com/file/d/${driveId}/view`;
+  }
+  return trimmed;
+}
+
+export async function fetchProofImageAsBlobOrDataUri(url: string): Promise<string> {
+  if (!url || typeof url !== 'string') return '';
+  const trimmed = url.trim();
+  if (trimmed.startsWith('data:') || trimmed.startsWith('blob:') || trimmed.startsWith('file://')) {
+    return trimmed;
+  }
+
+  try {
+    const res = await fetch(trimmed, {
+      referrerPolicy: 'no-referrer',
+      headers: {
+        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+      },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    if (typeof URL !== 'undefined' && URL.createObjectURL) {
+      return URL.createObjectURL(blob);
+    }
+  } catch (err) {
+    console.warn('[ProofImage] Blob fetch failed, using direct url fallback:', err);
+  }
+  return trimmed;
+}
+
+export function isOffsetEarnTransaction(label?: string | null): boolean {
+  if (!label) return false;
+  const l = label.trim().toLowerCase();
+  const withoutUseOffset = l.replace(/use[_\s-]?offset/gi, '');
+  return withoutUseOffset.includes('offset');
+}
+
+export function parseTimeStringToMinutes(t?: string | null): number | null {
+  if (!t || t === '--:--' || t === '--') return null;
+  const clean = t.trim();
+  // 12-hour format: e.g. "09:00 AM", "9:00AM", "05:00 PM", "5:00:00 PM", "9:00 am"
+  const ampmMatch = clean.toUpperCase().replace(/\s+/g, ' ').match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)$/);
+  if (ampmMatch) {
+    let hour = Number(ampmMatch[1]);
+    const min = Number(ampmMatch[2]);
+    const ampm = ampmMatch[4];
+    if (Number.isNaN(hour) || Number.isNaN(min) || hour < 1 || hour > 12 || min < 0 || min > 59) {
+      return null;
+    }
+    if (hour === 12) hour = 0;
+    if (ampm === 'PM') hour += 12;
+    return hour * 60 + min;
+  }
+  // 24-hour format: e.g. "09:00", "09:00:00", "17:00", "17:00:00"
+  const parts = clean.split(':').map(Number);
+  if (parts.length >= 2 && !Number.isNaN(parts[0]) && !Number.isNaN(parts[1])) {
+    const h = parts[0];
+    const m = parts[1];
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+      return h * 60 + m;
+    }
+  }
+  return null;
+}
+
+export function computeActualWorkedHours(
+  timeFromStr?: string | null,
+  timeToStr?: string | null,
+  options?: { dateFrom?: string | null; timeSchedule?: string | null; dayOff?: string | null },
+): number | null {
+  return computeOffsetOvertimeHours({
+    timeFrom: timeFromStr,
+    timeTo: timeToStr,
+    dateFrom: options?.dateFrom,
+    timeSchedule: options?.timeSchedule,
+    dayOff: options?.dayOff,
+  });
+}
+
+function formatDisplayHours(hours?: string | null): string {
+  if (!hours) return '0.00';
+  const num = Number(hours);
+  return Number.isFinite(num) ? num.toFixed(2) : hours;
+}
 
 export function formatUnifiedRequestCode(
   item: {
@@ -148,6 +283,8 @@ export function parseEsarfEntries(item: {
   total_hours?: number | null;
   transaction_type?: string | null;
   reason?: string | null;
+  time_schedule?: string | null;
+  day_off?: string | null;
 }): ParsedEsarfEntry[] {
   const rawReason = item.reason || '';
 
@@ -172,8 +309,28 @@ export function parseEsarfEntries(item: {
         }
         const dateTimeChunk = match[3].trim();
         const hoursStr = match[4].replace(/hrs?/i, '').trim();
-        const reasonText = match[5].trim();
+        const rawReasonText = match[5].trim();
         const isEntryRejected = fullText.includes('[REJECTED]') || fullText.toLowerCase().includes('status: rejected');
+
+        const actualMatch = rawReasonText.match(/\[Actual:\s*([\d.]+)\s*hrs?\]/i);
+        let actualHoursStr: string | undefined = actualMatch ? actualMatch[1] : undefined;
+
+        const proofMatch = rawReasonText.match(/\[Proof:\s*([^\]]+)\]/i);
+        let proofUrl: string | undefined = proofMatch ? proofMatch[1].trim() : undefined;
+        const proofTimeMatch = rawReasonText.match(/\[ProofTime:\s*([^\]]+)\]/i);
+        let proofTime: string | undefined = proofTimeMatch ? proofTimeMatch[1].trim() : undefined;
+        const proofLocMatch = rawReasonText.match(/\[ProofLoc:\s*([^\]]+)\]/i);
+        let proofLocation: string | undefined = proofLocMatch ? proofLocMatch[1].trim() : undefined;
+        const proofIdMatch = rawReasonText.match(/\[ProofId:\s*([^\]]+)\]/i);
+        let proofId: string | undefined = proofIdMatch ? proofIdMatch[1].trim() : undefined;
+
+        let cleanReasonText = rawReasonText
+          .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
+          .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
+          .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
+          .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
+          .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
+          .trim();
 
         let dateStr = '';
         let timeFromStr = '';
@@ -197,6 +354,36 @@ export function parseEsarfEntries(item: {
           dateStr = dateTimeChunk;
         }
 
+        const isEntryOffset =
+          isOffsetEarnTransaction(transactionLabel) ||
+          isOffsetEarnTransaction(match[2]);
+
+        if (isEntryOffset) {
+          let resolvedDate = item.date_from;
+          if (dateStr && dateStr !== '--') {
+            const parsedRange = parseEsarfDateRangeStringToYMD(dateStr);
+            if (parsedRange?.dateFrom) {
+              resolvedDate = parsedRange.dateFrom;
+            } else if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+              resolvedDate = dateStr;
+            }
+          }
+
+          const computedOt = computeOffsetOvertimeHours({
+            timeFrom: timeFromStr,
+            timeTo: timeToStr,
+            dateFrom: resolvedDate,
+            timeSchedule: item.time_schedule,
+            dayOff: item.day_off,
+          });
+
+          if (actualMatch) {
+            actualHoursStr = actualMatch[1];
+          } else if (computedOt !== null && computedOt > 0) {
+            actualHoursStr = computedOt.toFixed(2);
+          }
+        }
+
         parsedEntries.push({
           index: entryNum,
           transactionLabel,
@@ -204,8 +391,13 @@ export function parseEsarfEntries(item: {
           timeFromStr: timeFromStr || '--',
           timeToStr: timeToStr || '--',
           totalHours: hoursStr || '0',
-          reason: reasonText || 'No reason provided.',
+          actualHours: actualHoursStr,
+          reason: cleanReasonText || 'No reason provided.',
           isRejected: isEntryRejected,
+          proofUrl,
+          proofTime,
+          proofLocation,
+          proofId,
         });
       }
     });
@@ -231,10 +423,50 @@ export function parseEsarfEntries(item: {
     return `${String(h).padStart(2, '0')}:${m} ${ampm}`;
   };
 
+  const actualMatch = rawReason.match(/\[Actual:\s*([\d.]+)\s*hrs?\]/i);
+  let actualHoursStr: string | undefined = actualMatch ? actualMatch[1] : undefined;
+  const proofMatch = rawReason.match(/\[Proof:\s*([^\]]+)\]/i);
+  let proofUrl: string | undefined = proofMatch ? proofMatch[1].trim() : undefined;
+  const proofTimeMatch = rawReason.match(/\[ProofTime:\s*([^\]]+)\]/i);
+  let proofTime: string | undefined = proofTimeMatch ? proofTimeMatch[1].trim() : undefined;
+  const proofLocMatch = rawReason.match(/\[ProofLoc:\s*([^\]]+)\]/i);
+  let proofLocation: string | undefined = proofLocMatch ? proofLocMatch[1].trim() : undefined;
+  const proofIdMatch = rawReason.match(/\[ProofId:\s*([^\]]+)\]/i);
+  let proofId: string | undefined = proofIdMatch ? proofIdMatch[1].trim() : undefined;
+
+  const cleanReason = rawReason
+    .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
+    .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
+    .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
+    .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
+    .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
+    .trim();
+
   const timeFromStr = formatTime(item.time_from);
   const timeToStr = formatTime(item.time_to);
   const totalHours = item.total_hours !== null && item.total_hours !== undefined ? String(item.total_hours) : '0';
   const transactionLabel = formatUnifiedRequestType(item);
+
+  const isOffset =
+    isOffsetEarnTransaction(transactionLabel) ||
+    isOffsetEarnTransaction(item.transaction_type) ||
+    (item as any).request_type_code === 'offset_earn';
+
+  if (isOffset) {
+    const computedOt = computeOffsetOvertimeHours({
+      timeFrom: item.time_from || timeFromStr,
+      timeTo: item.time_to || timeToStr,
+      dateFrom: item.date_from,
+      timeSchedule: item.time_schedule,
+      dayOff: item.day_off,
+    });
+
+    if (actualMatch) {
+      actualHoursStr = actualMatch[1];
+    } else if (computedOt !== null && computedOt > 0) {
+      actualHoursStr = computedOt.toFixed(2);
+    }
+  }
 
   return [
     {
@@ -244,8 +476,13 @@ export function parseEsarfEntries(item: {
       timeFromStr,
       timeToStr,
       totalHours,
-      reason: rawReason.trim() || 'No reason provided.',
+      actualHours: actualHoursStr,
+      reason: cleanReason || 'No reason provided.',
       isRejected: rawReason.includes('[REJECTED]'),
+      proofUrl,
+      proofTime,
+      proofLocation,
+      proofId,
     },
   ];
 }
@@ -507,6 +744,165 @@ export function EsarfCardView({
   adjustedHours?: string;
   onHoursChange?: (val: string) => void;
 }) {
+  const [previewProofUrl, setPreviewProofUrl] = useState<string | null>(null);
+  const [thumbLoading, setThumbLoading] = useState(false);
+  const [thumbError, setThumbError] = useState(false);
+  const [resolvedThumbUri, setResolvedThumbUri] = useState<string>('');
+  const [modalLoading, setModalLoading] = useState(false);
+  const [modalError, setModalError] = useState(false);
+  const [modalFallbackAttempted, setModalFallbackAttempted] = useState(false);
+  const [modalImageUri, setModalImageUri] = useState<string>('');
+  const [proofDetails, setProofDetails] = useState<PhotoProofItem | null>(null);
+
+  const effectiveProofUrl =
+    (proofDetails?.driveFileId ? `https://lh3.googleusercontent.com/d/${proofDetails.driveFileId}=w1000` : null) ||
+    (proofDetails?.photoUri && proofDetails.photoUri.startsWith('http') ? proofDetails.photoUri : null) ||
+    proofDetails?.driveWebViewLink ||
+    (entry.proofUrl && entry.proofUrl.startsWith('http') ? entry.proofUrl : null) ||
+    entry.proofUrl ||
+    '';
+
+  const effectiveExternalUrl =
+    proofDetails?.driveWebViewLink ||
+    (proofDetails?.driveFileId ? `https://drive.google.com/file/d/${proofDetails.driveFileId}/view` : null) ||
+    (previewProofUrl ? getExternalProofWebUrl(previewProofUrl) : '') ||
+    (entry.proofUrl ? getExternalProofWebUrl(entry.proofUrl) : '');
+
+  const directThumbUrl = effectiveProofUrl ? getDirectProofImageUrl(effectiveProofUrl) : '';
+
+  useEffect(() => {
+    let active = true;
+    if (!entry.proofUrl && !entry.proofId && !entry.proofTime) {
+      setProofDetails(null);
+      return;
+    }
+
+    fetchPhotoProofDetails(entry.proofUrl, {
+      timestamp: entry.proofTime,
+      locationText: entry.proofLocation,
+      proofId: entry.proofId,
+      fallbackDateStr: entry.dateStr,
+      fallbackTimeStr: entry.timeFromStr,
+    }).then((details) => {
+      if (active && details) {
+        setProofDetails(details);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [entry.proofUrl, entry.proofTime, entry.proofLocation, entry.proofId, entry.dateStr, entry.timeFromStr]);
+
+  useEffect(() => {
+    let active = true;
+    let createdUrl: string | null = null;
+
+    const sourceUrl = effectiveProofUrl || entry.proofUrl;
+    if (!sourceUrl) {
+      setResolvedThumbUri('');
+      return;
+    }
+
+    const direct = getDirectProofImageUrl(sourceUrl);
+    setThumbLoading(true);
+    setThumbError(false);
+
+    if (Platform.OS === 'web' && typeof fetch !== 'undefined') {
+      fetchProofImageAsBlobOrDataUri(direct)
+        .then((resolved) => {
+          if (active) {
+            if (resolved.startsWith('blob:')) {
+              createdUrl = resolved;
+            }
+            setResolvedThumbUri(resolved);
+            setThumbLoading(false);
+          }
+        })
+        .catch(() => {
+          if (active) {
+            setResolvedThumbUri(direct);
+            setThumbLoading(false);
+          }
+        });
+    } else {
+      setResolvedThumbUri(direct);
+      setThumbLoading(false);
+    }
+
+    return () => {
+      active = false;
+      if (createdUrl && typeof URL !== 'undefined' && URL.revokeObjectURL) {
+        URL.revokeObjectURL(createdUrl);
+      }
+    };
+  }, [entry.proofUrl, effectiveProofUrl]);
+
+  const openProofModal = (rawUrl?: string) => {
+    const targetUrl =
+      (proofDetails?.driveFileId ? `https://lh3.googleusercontent.com/d/${proofDetails.driveFileId}=w1000` : null) ||
+      (proofDetails?.photoUri && proofDetails.photoUri.startsWith('http') ? proofDetails.photoUri : null) ||
+      proofDetails?.driveWebViewLink ||
+      rawUrl ||
+      effectiveProofUrl ||
+      '';
+    const direct = getDirectProofImageUrl(targetUrl);
+    setModalImageUri(direct);
+    setModalLoading(true);
+    setModalError(false);
+    setModalFallbackAttempted(false);
+    setPreviewProofUrl(targetUrl);
+
+    if (Platform.OS === 'web' && typeof fetch !== 'undefined') {
+      fetchProofImageAsBlobOrDataUri(direct)
+        .then((resolved) => {
+          setModalImageUri(resolved);
+          setModalLoading(false);
+        })
+        .catch(() => {
+          // let fallback direct URL attempt
+        });
+    }
+  };
+
+  const handleModalImageError = () => {
+    const driveId =
+      extractDriveFileId(previewProofUrl) ||
+      extractDriveFileId(proofDetails?.driveFileId) ||
+      extractDriveFileId(proofDetails?.driveWebViewLink) ||
+      extractDriveFileId(proofDetails?.photoUri) ||
+      extractDriveFileId(entry.proofUrl);
+
+    if (!modalFallbackAttempted && driveId) {
+      setModalFallbackAttempted(true);
+      const fallbackUrl = `https://drive.google.com/thumbnail?id=${driveId}&sz=w1000`;
+      setModalImageUri(fallbackUrl);
+      if (Platform.OS === 'web' && typeof fetch !== 'undefined') {
+        fetchProofImageAsBlobOrDataUri(fallbackUrl)
+          .then((resolved) => {
+            setModalImageUri(resolved);
+            setModalLoading(false);
+          })
+          .catch(() => {
+            setModalLoading(false);
+            setModalError(true);
+          });
+      }
+    } else if (
+      proofDetails?.photoUri &&
+      proofDetails.photoUri.startsWith('http') &&
+      proofDetails.photoUri !== modalImageUri &&
+      !modalFallbackAttempted
+    ) {
+      setModalFallbackAttempted(true);
+      setModalImageUri(proofDetails.photoUri);
+      setModalLoading(false);
+    } else {
+      setModalLoading(false);
+      setModalError(true);
+    }
+  };
+
   const isEntryRejected = isRejected ?? entry.isRejected ?? false;
   const isLocked = isDisabled || entry.isRejected;
   const isUseOffset =
@@ -623,29 +1019,48 @@ export function EsarfCardView({
           </View>
 
           {isEditableHours && !isEntryRejected && !isDisabled ? (
-            <View style={styles.hoursInputShell}>
-              <TextInput
-                style={styles.hoursInputField}
-                value={adjustedHours !== undefined ? adjustedHours : entry.totalHours}
-                onChangeText={onHoursChange}
-                keyboardType="decimal-pad"
-                selectTextOnFocus
-                placeholder="0.00"
-                placeholderTextColor="#94a3b8"
-              />
-              <Text style={styles.hoursUnitText}>hrs</Text>
+            <View>
+              <View style={styles.editableHoursRow}>
+                <View style={styles.hoursInputShell}>
+                  <TextInput
+                    style={styles.hoursInputField}
+                    value={adjustedHours !== undefined ? adjustedHours : entry.totalHours}
+                    onChangeText={onHoursChange}
+                    keyboardType="decimal-pad"
+                    selectTextOnFocus
+                    placeholder="0.00"
+                    placeholderTextColor="#94a3b8"
+                  />
+                  <Text style={styles.hoursUnitText}>hrs</Text>
+                </View>
+                {entry.actualHours ? (
+                  <View style={styles.actualHoursBadge}>
+                    <Text style={styles.actualHoursBadgeText}>
+                      Actual: {formatDisplayHours(entry.actualHours)}h
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+              {adjustedHours !== undefined && adjustedHours !== entry.totalHours ? (
+                <Text style={styles.originalHoursNote}>
+                  Orig: {entry.totalHours} hrs
+                </Text>
+              ) : null}
             </View>
           ) : (
-            <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>
-              {adjustedHours !== undefined ? adjustedHours : entry.totalHours}
-            </Text>
+            <View style={styles.totalHoursValueRow}>
+              <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>
+                {adjustedHours !== undefined ? adjustedHours : entry.totalHours}
+              </Text>
+              {entry.actualHours ? (
+                <View style={styles.actualHoursBadge}>
+                  <Text style={styles.actualHoursBadgeText}>
+                    Actual: {formatDisplayHours(entry.actualHours)}h
+                  </Text>
+                </View>
+              ) : null}
+            </View>
           )}
-
-          {isEditableHours && !isEntryRejected && !isDisabled && adjustedHours !== undefined && adjustedHours !== entry.totalHours ? (
-            <Text style={styles.originalHoursNote}>
-              Orig: {entry.totalHours} hrs
-            </Text>
-          ) : null}
         </View>
       </View>
 
@@ -668,6 +1083,202 @@ export function EsarfCardView({
           <Text style={[styles.reasonText, isEntryRejected && styles.dashedText]}>{entry.reason}</Text>
         </View>
       </View>
+
+      {/* Attached Photo Proof */}
+      {entry.proofUrl || entry.proofId || proofDetails ? (
+        <View style={styles.proofAttachmentSection}>
+          <Text style={styles.proofAttachmentLabel}>Attached Photo Proof</Text>
+          <Pressable
+            style={styles.proofAttachmentCard}
+            onPress={() => openProofModal(effectiveProofUrl || entry.proofUrl!)}
+          >
+            <View style={styles.proofThumbWrap}>
+              {thumbLoading ? (
+                <View style={styles.proofThumbOverlay}>
+                  <ActivityIndicator size="small" color="#2563eb" />
+                </View>
+              ) : null}
+              {thumbError ? (
+                <View style={styles.proofThumbOverlay}>
+                  <ImageIcon size={18} color="#94a3b8" />
+                </View>
+              ) : Platform.OS === 'web' ? (
+                React.createElement('img', {
+                  src: resolvedThumbUri || directThumbUrl,
+                  referrerPolicy: 'no-referrer',
+                  style: {
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover',
+                    display: thumbLoading ? 'none' : 'block',
+                  },
+                  onLoad: () => setThumbLoading(false),
+                  onError: () => {
+                    setThumbLoading(false);
+                    setThumbError(true);
+                  },
+                })
+              ) : (
+                <Image
+                  source={{ uri: resolvedThumbUri || directThumbUrl }}
+                  style={styles.proofThumbImage}
+                  resizeMode="cover"
+                  onLoadStart={() => setThumbLoading(true)}
+                  onLoadEnd={() => setThumbLoading(false)}
+                  onError={() => {
+                    setThumbLoading(false);
+                    setThumbError(true);
+                  }}
+                />
+              )}
+            </View>
+            <View style={styles.proofInfoWrap}>
+              <View style={styles.proofBadgeRow}>
+                <Camera size={13} color="#2563eb" strokeWidth={2.2} />
+                <Text style={styles.proofBadgeText}>
+                  {proofDetails?.dateFormatted && proofDetails?.timeDigits
+                    ? `${proofDetails.dateFormatted} • ${proofDetails.timeDigits} ${proofDetails.timePeriod}`
+                    : 'Photo Proof Attached'}
+                </Text>
+              </View>
+              {proofDetails?.locationText ? (
+                <View style={styles.proofCardLocationRow}>
+                  <MapPin size={11} color="#64748b" strokeWidth={2} />
+                  <Text style={styles.proofCardLocationText} numberOfLines={1}>
+                    {proofDetails.locationText}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.proofActionHint}>Tap to view proof with details</Text>
+              )}
+            </View>
+            <Eye size={18} color="#64748b" strokeWidth={2} />
+          </Pressable>
+        </View>
+      ) : null}
+
+      {/* Proof Preview Modal */}
+      {previewProofUrl ? (
+        <Modal
+          visible={Boolean(previewProofUrl)}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setPreviewProofUrl(null)}
+        >
+          <View style={styles.proofModalBackdrop}>
+            <View style={styles.proofModalCard}>
+              <View style={styles.proofModalHeader}>
+                <View style={{ flex: 1, marginRight: 8 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Camera size={16} color="#38bdf8" strokeWidth={2.2} />
+                    <Text style={styles.proofModalTitle}>Attached Proof (Request #{entry.index})</Text>
+                  </View>
+                  {proofDetails ? (
+                    <Text style={styles.proofModalSubtitle} numberOfLines={1}>
+                      {proofDetails.dateFormatted} • {proofDetails.timeDigits} {proofDetails.timePeriod}
+                      {proofDetails.employeeName ? ` • ${proofDetails.employeeName}` : ''}
+                    </Text>
+                  ) : null}
+                </View>
+                <Pressable
+                  onPress={() => setPreviewProofUrl(null)}
+                  style={styles.proofModalCloseBtn}
+                  hitSlop={8}
+                  accessibilityLabel="Close proof preview"
+                >
+                  <X size={20} color="#ffffff" strokeWidth={2.4} />
+                </Pressable>
+              </View>
+
+              <View style={styles.proofModalBody}>
+                {modalLoading ? (
+                  <View style={styles.proofModalLoaderWrap}>
+                    <ActivityIndicator size="large" color="#38bdf8" />
+                    <Text style={styles.proofModalLoaderText}>Loading proof image...</Text>
+                  </View>
+                ) : null}
+
+                {modalError ? (
+                  <View style={styles.proofModalErrorWrap}>
+                    <ImageIcon size={44} color="#64748b" strokeWidth={1.8} />
+                    <Text style={styles.proofModalErrorTitle}>Preview Unavailable</Text>
+                    <Text style={styles.proofModalErrorSubtitle}>
+                      The photo proof could not be rendered directly. Tap below to view in your browser.
+                    </Text>
+                  </View>
+                ) : Platform.OS === 'web' ? (
+                  React.createElement('img', {
+                    src: modalImageUri || getDirectProofImageUrl(previewProofUrl),
+                    referrerPolicy: 'no-referrer',
+                    style: {
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'contain',
+                      display: modalLoading ? 'none' : 'block',
+                    },
+                    onLoad: () => setModalLoading(false),
+                    onError: handleModalImageError,
+                  })
+                ) : (
+                  <Image
+                    source={{ uri: modalImageUri || getDirectProofImageUrl(previewProofUrl) }}
+                    style={styles.proofModalImage}
+                    resizeMode="contain"
+                    onLoadStart={() => setModalLoading(true)}
+                    onLoadEnd={() => setModalLoading(false)}
+                    onError={handleModalImageError}
+                  />
+                )}
+
+                {/* Watermark Overlay (Bottom-Left) */}
+                {!modalLoading && !modalError && proofDetails ? (
+                  <>
+                    <View style={styles.proofWatermarkGradient} pointerEvents="none" />
+                    <View style={styles.proofWatermarkContainer} pointerEvents="none">
+                      <View style={styles.proofWatermarkTimeRow}>
+                        <Text style={styles.proofWatermarkTime}>
+                          {proofDetails.timeDigits}
+                          <Text style={styles.proofWatermarkPeriod}> {proofDetails.timePeriod}</Text>
+                        </Text>
+                        <View style={styles.proofWatermarkDivider} />
+                        <View style={styles.proofWatermarkDateCol}>
+                          <Text style={styles.proofWatermarkDate}>{proofDetails.dateFormatted}</Text>
+                          <Text style={styles.proofWatermarkDay}>{proofDetails.dayFormatted}</Text>
+                        </View>
+                      </View>
+                      {proofDetails.locationText ? (
+                        <View style={styles.proofWatermarkLocationRow}>
+                          <Text style={styles.proofWatermarkLocation} numberOfLines={3}>
+                            {proofDetails.locationText}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  </>
+                ) : null}
+              </View>
+
+              <View style={styles.proofModalFooter}>
+                {effectiveExternalUrl.startsWith('http') ? (
+                  <Pressable
+                    style={styles.proofModalExternalBtn}
+                    onPress={() => Linking.openURL(effectiveExternalUrl)}
+                  >
+                    <ExternalLink size={14} color="#ffffff" strokeWidth={2.2} />
+                    <Text style={styles.proofModalExternalText}>Open External Link</Text>
+                  </Pressable>
+                ) : null}
+                <Pressable
+                  style={[styles.proofModalExternalBtn, { backgroundColor: '#334155' }]}
+                  onPress={() => setPreviewProofUrl(null)}
+                >
+                  <Text style={styles.proofModalExternalText}>Close</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
 
       {/* Horizontal Approval Timeline */}
       {!hideTimeline && adjustedTimelineRows && adjustedTimelineRows.length > 0 ? (
@@ -855,6 +1466,32 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.semibold,
     marginTop: 2,
   },
+  totalHoursValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  editableHoursRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  actualHoursBadge: {
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 9999,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    alignSelf: 'center',
+  },
+  actualHoursBadgeText: {
+    fontSize: 10,
+    fontWeight: fontWeights.heavy,
+    color: '#1d4ed8',
+  },
   gridValue: {
     fontSize: 13,
     fontWeight: fontWeights.heavy,
@@ -998,5 +1635,268 @@ const styles = StyleSheet.create({
   },
   reasonBoxRejected: {
     backgroundColor: '#f1f5f9',
+  },
+  proofAttachmentSection: {
+    marginTop: 10,
+  },
+  proofAttachmentLabel: {
+    fontSize: 12,
+    fontWeight: fontWeights.semibold,
+    color: '#64748b',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  proofAttachmentCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 10,
+    backgroundColor: '#f8fafc',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    gap: 12,
+  },
+  proofThumbWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 6,
+    overflow: 'hidden',
+    backgroundColor: '#e2e8f0',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  proofThumbOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f1f5f9',
+  },
+  proofThumbImage: {
+    width: '100%',
+    height: '100%',
+  },
+  proofInfoWrap: {
+    flex: 1,
+  },
+  proofBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  proofBadgeText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#1e293b',
+  },
+  proofCardLocationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 3,
+  },
+  proofCardLocationText: {
+    fontSize: 11,
+    color: '#64748b',
+    flex: 1,
+  },
+  proofActionHint: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  proofModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  proofModalCard: {
+    width: '100%',
+    maxWidth: 440,
+    backgroundColor: '#0f172a',
+    borderRadius: 16,
+    overflow: 'hidden',
+    maxHeight: '92%',
+  },
+  proofModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  proofModalTitle: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: fontWeights.bold,
+  },
+  proofModalSubtitle: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 2,
+    fontWeight: fontWeights.medium,
+  },
+  proofModalCloseBtn: {
+    padding: 4,
+  },
+  proofModalBody: {
+    width: '100%',
+    height: 400,
+    backgroundColor: '#020617',
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  proofWatermarkGradient: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 140,
+    backgroundColor: 'rgba(2, 6, 23, 0.72)',
+    zIndex: 3,
+  },
+  proofWatermarkContainer: {
+    position: 'absolute',
+    bottom: 12,
+    left: 14,
+    right: 14,
+    zIndex: 4,
+  },
+  proofWatermarkTimeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 2,
+  },
+  proofWatermarkTime: {
+    fontSize: 32,
+    lineHeight: 36,
+    fontWeight: '300',
+    color: '#ffffff',
+    textShadowColor: 'rgba(0, 0, 0, 0.9)',
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 4,
+  },
+  proofWatermarkPeriod: {
+    fontSize: 18,
+    lineHeight: 22,
+    fontWeight: fontWeights.heavy,
+    color: '#facc15',
+  },
+  proofWatermarkDivider: {
+    width: 2,
+    height: 28,
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    marginHorizontal: 6,
+  },
+  proofWatermarkDateCol: {
+    justifyContent: 'center',
+  },
+  proofWatermarkDate: {
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: fontWeights.semibold,
+    color: '#ffffff',
+    textShadowColor: 'rgba(0, 0, 0, 0.9)',
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 3,
+  },
+  proofWatermarkDay: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: fontWeights.medium,
+    color: '#ffffff',
+    textShadowColor: 'rgba(0, 0, 0, 0.9)',
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 3,
+  },
+  proofWatermarkLocationRow: {
+    marginTop: 4,
+    flexDirection: 'row',
+  },
+  proofWatermarkLocation: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: fontWeights.medium,
+    color: '#ffffff',
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 4,
+  },
+  proofModalLoaderWrap: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(2, 6, 23, 0.75)',
+    zIndex: 2,
+  },
+  proofModalLoaderText: {
+    color: '#94a3b8',
+    fontSize: 13,
+    fontWeight: fontWeights.medium,
+  },
+  proofModalErrorWrap: {
+    padding: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  proofModalErrorTitle: {
+    color: '#f8fafc',
+    fontSize: 15,
+    fontWeight: fontWeights.bold,
+  },
+  proofModalErrorSubtitle: {
+    color: '#94a3b8',
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 17,
+    maxWidth: 280,
+  },
+  proofModalImage: {
+    width: '100%',
+    height: 400,
+    backgroundColor: '#020617',
+  },
+  proofModalFooter: {
+    padding: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b',
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  proofModalExternalBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#2563eb',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  proofModalExternalText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: fontWeights.semibold,
   },
 });

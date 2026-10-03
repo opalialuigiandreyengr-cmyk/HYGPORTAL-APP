@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { AppState, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getScreenBottomPadding } from '../utils/safeArea';
 import {
   ArrowRight,
   BadgePercent,
@@ -85,6 +87,7 @@ export function DashboardScreen({
   onBirthdayGreetingClosed,
   hideFab = false,
 }: Props) {
+  const insets = useSafeAreaInsets();
   const [perkUsage, setPerkUsage] = useState<PerkUsage | null>(null);
   const [recentRequests, setRecentRequests] = useState<MyRequest[]>([]);
   const [showBirthdayModal, setShowBirthdayModal] = useState(false);
@@ -361,7 +364,12 @@ export function DashboardScreen({
         onSignOut={onSignOut}
       />
       <ScrollView
-        contentContainerStyle={styles.scroll}
+        contentContainerStyle={[
+          styles.scroll,
+          { paddingBottom: getScreenBottomPadding(insets.bottom, true, 28) },
+        ]}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -530,9 +538,10 @@ function DashboardQuickAction({
       ]}
       onPress={onPress}
       disabled={!onPress}
+      hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
     >
-      <View style={styles.quickActionIcon}>{icon}</View>
-      <Text style={styles.quickActionLabel} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.72}>
+      <View style={styles.quickActionIcon} pointerEvents="none">{icon}</View>
+      <Text style={styles.quickActionLabel} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.72} pointerEvents="none">
         {label}
       </Text>
     </Pressable>

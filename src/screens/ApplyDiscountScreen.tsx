@@ -14,6 +14,8 @@ import { loadPerkUsage, startPerkRequest, verifyPerkRequest, type PerkProductInp
 import { formatDateInput, dateStringToDate } from '../utils/dateTime';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { env } from '../lib/env';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getSafeBottomInset, getScreenBottomPadding } from '../utils/safeArea';
 
 type DiscountMode = 'cash' | 'charge';
 
@@ -62,6 +64,7 @@ export function ApplyDiscountScreen({
   onSubmitted?: () => void | Promise<void>;
   onRefresh?: () => void | Promise<void>;
 }) {
+  const insets = useSafeAreaInsets();
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
 
   const handlePullRefresh = async () => {
@@ -385,6 +388,11 @@ export function ApplyDiscountScreen({
         contentContainerStyle={[
           styles.scroll,
           showEmailInput || pendingVerification ? styles.scrollWithKeyboardPanel : null,
+          {
+            paddingBottom: showEmailInput || pendingVerification
+              ? 280
+              : getScreenBottomPadding(insets.bottom, true, 28),
+          },
         ]}
         alwaysBounceVertical
         keyboardDismissMode="on-drag"
@@ -651,7 +659,7 @@ export function ApplyDiscountScreen({
             style={styles.modalBackdrop}
           >
             <Pressable style={styles.modalDismissArea} onPress={() => setActiveProductId(null)} />
-            <View style={styles.optionSheet}>
+            <View style={[styles.optionSheet, { paddingBottom: getSafeBottomInset(insets.bottom, spacing.md) }]}>
               <View style={styles.sheetHandle} />
               <Text style={styles.sheetTitle}>Select product</Text>
               <TextInput

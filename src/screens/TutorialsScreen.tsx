@@ -29,6 +29,8 @@ import {
 } from 'lucide-react-native';
 
 import { TopBar } from '../components/TopBar';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getSafeBottomInset } from '../utils/safeArea';
 import { colors, fontWeights } from '../theme';
 import type { ProfileLoadResult } from '../types/domain';
 import type { AppToastMessage } from '../components/AppToast';
@@ -74,6 +76,7 @@ export function TutorialsScreen({
   onBackHome,
   onToast,
 }: Props) {
+  const insets = useSafeAreaInsets();
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
   const [tutorials, setTutorials] = useState<PortalTutorial[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -168,7 +171,7 @@ export function TutorialsScreen({
       />
 
       <ScrollView
-        contentContainerStyle={styles.scroll}
+        contentContainerStyle={[styles.scroll, { paddingBottom: getSafeBottomInset(insets.bottom, 20) + 30 }]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
