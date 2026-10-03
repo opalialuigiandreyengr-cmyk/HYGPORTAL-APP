@@ -1,4 +1,19 @@
 import { registerRootComponent } from 'expo';
+import { Platform } from 'react-native';
+
+// Prevent React Native Web ModalPortal removeChild crash when nodes are unmounted/detached
+if (Platform.OS === 'web' && typeof Node !== 'undefined' && Node.prototype) {
+  const originalRemoveChild = Node.prototype.removeChild;
+  Node.prototype.removeChild = function <T extends Node>(child: T): T {
+    if (child && child.parentNode !== this) {
+      if (typeof (child as any).remove === 'function') {
+        (child as any).remove();
+      }
+      return child;
+    }
+    return originalRemoveChild.call(this, child) as T;
+  };
+}
 
 import App from './App';
 

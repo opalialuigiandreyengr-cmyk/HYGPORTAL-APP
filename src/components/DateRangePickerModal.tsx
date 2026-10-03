@@ -245,7 +245,7 @@ export function DateRangePickerModal({
     }
     if (startDateStr) {
       if (maxRangeDays === 2) {
-        return `${formatReadable(startDateStr)} – Select end date (same day or next day)`;
+        return `${formatReadable(startDateStr)} – Select end date`;
       }
       return `${formatReadable(startDateStr)} – Select end date`;
     }

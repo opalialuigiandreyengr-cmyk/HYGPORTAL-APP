@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
+import { hasReachedSixMonths } from '../utils/dateTime';
 
 type UserProfileRow = {
   id: string;
@@ -408,6 +409,26 @@ export async function loadEmployeeProfile(authUserId: string): Promise<ProfileLo
         childrenCount: detailsResponse.data.children_count,
       }
     : {};
+
+  if (
+    assignmentDetails.dateHired &&
+    hasReachedSixMonths(assignmentDetails.dateHired) &&
+    profileDetails.employeeType?.trim().toLowerCase() === 'probationary'
+  ) {
+    profileDetails.employeeType = 'Regular';
+    try {
+      await supabase
+        .from('employee_profile_details')
+        .upsert(
+          {
+            employee_id: employee.id,
+            employee_type: 'Regular',
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'employee_id' },
+        );
+    } catch (_) {}
+  }
 
   return {
     status: 'linked',

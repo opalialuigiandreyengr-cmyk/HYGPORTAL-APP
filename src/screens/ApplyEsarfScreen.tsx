@@ -86,6 +86,7 @@ import {
   formatTimeDisplay,
   formatTimeInput,
   getDaysBetweenYMD,
+  hasReachedSixMonths,
   isValidEsarfDateRange,
   parse12HourDisplayTo24,
   parseEsarfDateRangeStringToYMD,
@@ -244,6 +245,8 @@ export function ApplyEsarfScreen({
   authUserId,
   offsetBalance = 0,
   profilePayrollClass,
+  profileDateHired,
+  profileEmployeeType,
   profileSchedule,
   profileDayOff,
   profileDepartmentName,
@@ -267,6 +270,8 @@ export function ApplyEsarfScreen({
   authUserId?: string | null;
   offsetBalance?: number;
   profilePayrollClass?: string | null;
+  profileDateHired?: string | null;
+  profileEmployeeType?: string | null;
   profileSchedule?: string | null;
   profileDayOff?: string | null;
   profileDepartmentName?: string | null;
@@ -328,6 +333,55 @@ export function ApplyEsarfScreen({
   const [payrollClass, setPayrollClass] = useState(initialPayrollClass);
   const [isUserCustomSchedule, setIsUserCustomSchedule] = useState(Boolean(editingRequest?.time_schedule));
   const [isUserCustomDayOff, setIsUserCustomDayOff] = useState(Boolean(editingRequest?.day_off));
+  const [dateHired, setDateHired] = useState<string | null>(profileDateHired ?? null);
+  const [employeeType, setEmployeeType] = useState<string | null>(profileEmployeeType ?? null);
+
+  useEffect(() => {
+    if (profileDateHired) setDateHired(profileDateHired);
+    if (profileEmployeeType) setEmployeeType(profileEmployeeType);
+  }, [profileDateHired, profileEmployeeType]);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function resolveEmployeeDetails() {
+      const empId = employeeId || authUserId;
+      if (!empId) return;
+      try {
+        if (!dateHired) {
+          const { data: assign } = await supabase
+            .from('employee_assignments')
+            .select('effective_from')
+            .eq('employee_id', empId)
+            .order('effective_from', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (isMounted && assign?.effective_from) {
+            setDateHired(assign.effective_from);
+          }
+        }
+        if (!employeeType) {
+          const { data: detail } = await supabase
+            .from('employee_profile_details')
+            .select('employee_type')
+            .eq('employee_id', empId)
+            .maybeSingle();
+          if (isMounted && detail?.employee_type) {
+            setEmployeeType(detail.employee_type);
+          }
+        }
+      } catch (_) {}
+    }
+    if (!dateHired || !employeeType) {
+      resolveEmployeeDetails();
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [employeeId, authUserId, dateHired, employeeType]);
+
+  const isOtAllowed = (pClass: string = payrollClass) => {
+    return isOvertimeAllowedForPayroll(pClass, { dateHired, employeeType });
+  };
 
   const [entries, setEntries] = useState<EsarfEntry[]>(() => {
     if (editingRequest) {
@@ -1101,6 +1155,18 @@ export function ApplyEsarfScreen({
     } else if (activeSelect === 'payroll_class') {
       setPayrollClass(value);
       setValidationErrors((current) => ({ ...current, payrollClass: undefined }));
+      if (!isOvertimeAllowedForPayroll(value, { dateHired, employeeType })) {
+        setEntries((prev) =>
+          prev.map((entry) => {
+            const keys = parseEntryTransactions(entry.transaction);
+            if (keys.includes('ot')) {
+              const remaining = keys.filter((k) => k !== 'ot');
+              return { ...entry, transaction: remaining.join(',') };
+            }
+            return entry;
+          })
+        );
+      }
     }
     setActiveSelect(null);
   }
@@ -1187,8 +1253,8 @@ export function ApplyEsarfScreen({
       const num = i + 1;
       const transKeys = parseEntryTransactions(entry.transaction);
       if (!transKeys.length) errors[`entry_${i}_transaction`] = `Request #${num}: Select at least one transaction type.`;
-      if (!isOvertimeAllowedForPayroll(payrollClass) && transKeys.includes('ot')) {
-        errors[`entry_${i}_transaction`] = `Request #${num}: Overtime is disabled for Admin and Managerial.`;
+      if (!isOtAllowed(payrollClass) && transKeys.includes('ot')) {
+        errors[`entry_${i}_transaction`] = `Request #${num}: ${getOvertimeDisabledMessage(payrollClass)}`;
       }
       if (!entry.dateFrom) errors[`entry_${i}_dateFrom`] = `Request #${num}: Date From is required.`;
       if (!entry.dateTo) errors[`entry_${i}_dateTo`] = `Request #${num}: Date To is required.`;
@@ -2326,7 +2392,7 @@ export function ApplyEsarfScreen({
                           <Text style={styles.offsetWarningCardText}>
                             The minimum offsetable hours for a regular employee is {MIN_OFFSETABLE_HOURS.toFixed(2)} hours (half day). This request currently has {hours.toFixed(2)} hrs.
                           </Text>
-                          {!entryTransKeys.includes('ot') && isOvertimeAllowedForPayroll(payrollClass) ? (
+                          {!entryTransKeys.includes('ot') && isOtAllowed(payrollClass) ? (
                             <Pressable
                               style={styles.offsetQuickSwitchBtn}
                               onPress={() => {
@@ -3029,7 +3095,7 @@ export function ApplyEsarfScreen({
                     const currentTransStr = entries[activeTransactionSelectIndex]?.transaction || '';
                     const currentSelectedKeys = parseEntryTransactions(currentTransStr);
                     const selected = currentSelectedKeys.includes(option.key);
-                    const isOtDisabled = option.key === 'ot' && !isOvertimeAllowedForPayroll(payrollClass);
+                    const isOtDisabled = option.key === 'ot' && !isOtAllowed(payrollClass);
                     const isConflictDisabled = !selected && isTransactionDisabled(option.key, currentSelectedKeys);
                     const disabled = isOtDisabled || isConflictDisabled;
                     const activeEntryHours = getEntryTotalHours(entries[activeTransactionSelectIndex]);
@@ -3358,9 +3424,39 @@ function isTransactionDisabled(key: string, selectedKeys: string[]) {
   return selectedKeys.some((selectedKey) => getConflictingTransactions(selectedKey).includes(key));
 }
 
-function isOvertimeAllowedForPayroll(payrollClass: string) {
+export function isOvertimeAllowedForPayroll(
+  payrollClass: string,
+  options?: { dateHired?: string | null; employeeType?: string | null },
+): boolean {
   const normalized = payrollClass.trim().toLowerCase();
-  return normalized !== 'admin' && normalized !== 'managerial';
+  if (normalized === 'managerial') {
+    return false;
+  }
+  if (normalized === 'admin') {
+    if (options?.dateHired) {
+      const reached = hasReachedSixMonths(options.dateHired);
+      return !reached;
+    }
+    if (options?.employeeType) {
+      const normType = options.employeeType.trim().toLowerCase();
+      if (normType === 'probationary' || normType === 'trainee') {
+        return true;
+      }
+      if (normType === 'regular') {
+        return false;
+      }
+    }
+    return false;
+  }
+  return true;
+}
+
+export function getOvertimeDisabledMessage(payrollClass: string): string {
+  const normalized = payrollClass.trim().toLowerCase();
+  if (normalized === 'admin') {
+    return 'Overtime is disabled for Admin employees with 6 months or more of service.';
+  }
+  return 'Overtime is disabled for Managerial class.';
 }
 
 function validateForm({
@@ -3399,7 +3495,7 @@ function validateForm({
   if (!isValidDayOffValue(dayOff)) errors.dayOff = 'Day off is required.';
   if (!payrollClassOptions.includes(payrollClass)) errors.payrollClass = 'Payroll class is required.';
   if (!isOvertimeAllowedForPayroll(payrollClass) && transactions.includes('ot')) {
-    errors.transactions = 'Overtime is disabled for Admin and Managerial.';
+    errors.transactions = getOvertimeDisabledMessage(payrollClass);
   }
   if (!transactions.length) errors.transactions = 'Select at least one transaction.';
   if (!dateFrom) errors.dateFrom = 'Date From is required.';

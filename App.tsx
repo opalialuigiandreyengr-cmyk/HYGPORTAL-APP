@@ -1658,6 +1658,8 @@ export default function App() {
             authUserId={signedInUser?.id ?? null}
             offsetBalance={dashboardSummary.offset_balance}
             profilePayrollClass={profileResult?.status === 'linked' ? profileResult.profile.payrollClass : null}
+            profileDateHired={profileResult?.status === 'linked' ? profileResult.profile.dateHired : null}
+            profileEmployeeType={profileResult?.status === 'linked' ? profileResult.profile.employeeType : null}
             profileSchedule={profileResult?.status === 'linked' ? profileResult.profile.timeSchedule : null}
             profileDayOff={profileResult?.status === 'linked' ? profileResult.profile.dayOff : null}
             profileDepartmentName={profileResult?.status === 'linked' ? profileResult.profile.departmentName : null}
