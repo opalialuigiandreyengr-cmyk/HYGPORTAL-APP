@@ -29,9 +29,38 @@ async function resolveEmployeeId(userId?: string, employeeId?: string): Promise<
   return data?.employee_id ?? undefined;
 }
 
+function parseEarnedOffsetHoursFromReason(reason?: string | null, fallbackHours: number = 0): number {
+  if (!reason || !reason.includes('[Entry')) {
+    return fallbackHours;
+  }
+  const blocks = reason.split(/(?=[Entry\s+\d+\])/i);
+  let totalEarned = 0;
+  let hasValidMatch = false;
+
+  for (const block of blocks) {
+    if (!block.trim().startsWith('[Entry')) continue;
+    const match = block.match(/\[Entry\s+\d+\]\s*\(([^)]+)\).*?\(([0-9.]+)\s*hrs?\)/i);
+    if (match) {
+      hasValidMatch = true;
+      const entryType = match[1].toLowerCase().trim();
+      const hrs = parseFloat(match[2]) || 0;
+      const isRejected = block.toLowerCase().includes('[rejected]');
+
+      if (entryType.includes('offset') && !entryType.includes('use') && !isRejected) {
+        totalEarned += hrs;
+      }
+    }
+  }
+
+  return hasValidMatch ? Number(totalEarned.toFixed(2)) : fallbackHours;
+}
+
 export async function fetchOffsetHistory(userId?: string, employeeId?: string): Promise<BalanceHistoryItem[]> {
   await ensureFreshSession().catch(() => {});
   const empId = await resolveEmployeeId(userId, employeeId);
+  if (!empId) return [];
+
+  const itemsMap = new Map<string, BalanceHistoryItem>();
 
   // 1. Try RPC get_my_offset_history first
   try {
@@ -60,7 +89,7 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
         }
       }
 
-      const mappedItems: BalanceHistoryItem[] = rpcData.map((row: any) => {
+      rpcData.forEach((row: any) => {
         const rawInfo = rawHoursMap[String(row.id)];
         const rawHours = rawInfo !== undefined ? rawInfo.hours : Number(row.hours ?? 0);
         const txType = (rawInfo?.txType || row.transaction_type || '').toLowerCase();
@@ -101,10 +130,14 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
             title = 'Offset Earned';
             subtitle = subtitle || 'ESARF Offset Credit';
             amount = Math.abs(amount);
+            if (row.reason) {
+              amount = parseEarnedOffsetHoursFromReason(row.reason, amount);
+            }
           }
         }
 
-        return {
+        const key = row.request_id ? String(row.request_id) : String(row.id);
+        itemsMap.set(key, {
           id: String(row.id ?? Math.random()),
           type: 'offset',
           category,
@@ -114,67 +147,19 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
           unit: 'h',
           balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
           date: row.created_at || new Date().toISOString(),
-          status: row.request_status || null,
+          status: row.request_status || 'approved',
           requestId: row.request_id || null,
           reason: row.reason || null,
           dateFrom: row.date_from || null,
           dateTo: row.date_to || null,
-        };
+        });
       });
-
-      // Enrich with any approved offset requests not yet recorded in offset_transactions
-      if (empId) {
-        try {
-          const recordedReqIds = new Set(mappedItems.map((it) => it.requestId).filter(Boolean));
-          const { data: approvedOffsetReqs } = await supabase
-            .from('time_request_details')
-            .select('request_id, total_hours, transaction_type, reason, date_from, date_to, requests!inner(id, status, submitted_at, updated_at, submitted_by_employee_id)')
-            .eq('requests.submitted_by_employee_id', empId)
-            .eq('requests.status', 'approved')
-            .gt('total_hours', 0);
-
-          if (approvedOffsetReqs && approvedOffsetReqs.length > 0) {
-            approvedOffsetReqs.forEach((item: any) => {
-              if (recordedReqIds.has(item.request_id)) return;
-              const txnType = (item.transaction_type || '').toLowerCase();
-              const reason = (item.reason || '').toLowerCase();
-              const isEarn = (txnType.includes('offset') || reason.includes('(offset)')) && !txnType.includes('use') && !reason.includes('use');
-              if (isEarn) {
-                const hours = Number(item.total_hours ?? 0);
-                mappedItems.push({
-                  id: String(item.request_id),
-                  type: 'offset',
-                  category: 'earn',
-                  title: 'Offset Earned',
-                  subtitle: item.transaction_type || 'ESARF Offset Credit',
-                  amount: Math.abs(hours),
-                  unit: 'h',
-                  date: item.requests?.updated_at || item.requests?.submitted_at || new Date().toISOString(),
-                  status: 'approved',
-                  requestId: item.request_id,
-                  reason: item.reason || null,
-                  dateFrom: item.date_from || null,
-                  dateTo: item.date_to || null,
-                });
-                recordedReqIds.add(item.request_id);
-              }
-            });
-            mappedItems.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-          }
-        } catch {
-          // ignore enrichment error
-        }
-      }
-
-      return mappedItems;
     }
   } catch {
-    // Fall back to direct table queries
+    // Fall back to direct table queries below
   }
 
-  // 2. Direct table fallback: query offset_transactions
-  if (!empId) return [];
-
+  // 2. Direct table query on offset_transactions
   try {
     const { data: otRows } = await supabase
       .from('offset_transactions')
@@ -182,10 +167,7 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
       .eq('employee_id', empId)
       .order('created_at', { ascending: false });
 
-    const items: BalanceHistoryItem[] = [];
-
     if (otRows && otRows.length > 0) {
-      // Gather request details for richer labels
       const requestIds = otRows.map((r) => r.request_id).filter(Boolean) as string[];
       let requestMap: Record<string, { status?: string; reason?: string; transaction_type?: string; date_from?: string; date_to?: string }> = {};
 
@@ -212,11 +194,14 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
             });
           }
         } catch {
-          // ignore enrichment failure
+          // ignore
         }
       }
 
       otRows.forEach((row) => {
+        const key = row.request_id ? String(row.request_id) : String(row.id);
+        if (itemsMap.has(key)) return;
+
         const reqDetail = row.request_id ? requestMap[row.request_id] : null;
         const txType = (row.transaction_type ?? '').toLowerCase();
         const hasRequestId = Boolean(row.request_id);
@@ -255,15 +240,17 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
             category = 'refund';
             signedHours = Math.abs(rawHours);
           } else {
-            // txType === 'earn' or approved offset credit
             title = 'Offset Earned';
             subtitle = reqDetail?.transaction_type || 'ESARF Offset Credit';
             category = 'earn';
             signedHours = Math.abs(rawHours);
+            if (reqDetail?.reason) {
+              signedHours = parseEarnedOffsetHoursFromReason(reqDetail.reason, Math.abs(rawHours));
+            }
           }
         }
 
-        items.push({
+        itemsMap.set(key, {
           id: String(row.id ?? Math.random()),
           type: 'offset',
           category,
@@ -273,7 +260,7 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
           unit: 'h',
           balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
           date: row.created_at || new Date().toISOString(),
-          status: reqDetail?.status || null,
+          status: reqDetail?.status || 'approved',
           requestId: row.request_id || null,
           reason: reqDetail?.reason || null,
           dateFrom: reqDetail?.date_from || null,
@@ -281,55 +268,60 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
         });
       });
     }
-
-    // Enrich with any approved offset requests not yet recorded in offset_transactions
-    try {
-      const recordedReqIds = new Set(items.map((it) => it.requestId).filter(Boolean));
-      const { data: approvedOffsetReqs } = await supabase
-        .from('time_request_details')
-        .select('request_id, total_hours, transaction_type, reason, date_from, date_to, requests!inner(id, status, submitted_at, updated_at, submitted_by_employee_id)')
-        .eq('requests.submitted_by_employee_id', empId)
-        .eq('requests.status', 'approved')
-        .gt('total_hours', 0);
-
-      if (approvedOffsetReqs && approvedOffsetReqs.length > 0) {
-        approvedOffsetReqs.forEach((item: any) => {
-          if (recordedReqIds.has(item.request_id)) return;
-          const txnType = (item.transaction_type || '').toLowerCase();
-          const reason = (item.reason || '').toLowerCase();
-          const isEarn = (txnType.includes('offset') || reason.includes('(offset)')) && !txnType.includes('use') && !reason.includes('use');
-          if (isEarn) {
-            const hours = Number(item.total_hours ?? 0);
-            items.push({
-              id: String(item.request_id),
-              type: 'offset',
-              category: 'earn',
-              title: 'Offset Earned',
-              subtitle: item.transaction_type || 'ESARF Offset Credit',
-              amount: Math.abs(hours),
-              unit: 'h',
-              date: item.requests?.updated_at || item.requests?.submitted_at || new Date().toISOString(),
-              status: 'approved',
-              requestId: item.request_id,
-              reason: item.reason || null,
-              dateFrom: item.date_from || null,
-              dateTo: item.date_to || null,
-            });
-            recordedReqIds.add(item.request_id);
-          }
-        });
-        items.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      }
-    } catch {
-      // ignore enrichment error
-    }
-
-    return items;
   } catch {
     // ignore
   }
 
-  return [];
+  // 3. Supplement with time_request_details for any missing offset requests (pending, approved, validated)
+  try {
+    const { data: timeReqs } = await supabase
+      .from('time_request_details')
+      .select('request_id, total_hours, transaction_type, reason, date_from, date_to, requests!inner(id, status, submitted_at, submitted_by_employee_id)')
+      .eq('requests.submitted_by_employee_id', empId)
+      .order('date_from', { ascending: false })
+      .limit(50);
+
+    if (timeReqs && timeReqs.length > 0) {
+      for (const item of timeReqs) {
+        const reqId = String(item.request_id);
+        if (itemsMap.has(reqId)) continue;
+
+        const txType = (item.transaction_type ?? '').toLowerCase();
+        const reasonStr = (item.reason ?? '').toLowerCase();
+        const isOffset = txType.includes('offset') || reasonStr.includes('offset');
+        if (!isOffset) continue;
+
+        const isUse = txType.includes('use') || reasonStr.includes('use offset') || reasonStr.includes('use_offset');
+        const req = (item as any).requests;
+        const rawHours = Number(item.total_hours ?? 0);
+
+        const calculatedEarn = !isUse ? parseEarnedOffsetHoursFromReason(item.reason, rawHours) : rawHours;
+        if (calculatedEarn <= 0 && isUse) continue;
+
+        itemsMap.set(reqId, {
+          id: reqId,
+          type: 'offset',
+          category: isUse ? 'use' : 'earn',
+          title: isUse ? 'Offset Deducted' : 'Offset Earned',
+          subtitle: item.transaction_type || (isUse ? 'Use Offset Request' : 'Offset ESARF'),
+          amount: isUse ? -Math.abs(calculatedEarn) : Math.abs(calculatedEarn),
+          unit: 'h',
+          date: req?.submitted_at || item.date_from || new Date().toISOString(),
+          status: req?.status || null,
+          requestId: item.request_id,
+          reason: item.reason || null,
+          dateFrom: item.date_from || null,
+          dateTo: item.date_to || null,
+        });
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  const result = Array.from(itemsMap.values());
+  result.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  return result;
 }
 
 export async function fetchLeaveHistory(userId?: string, employeeId?: string): Promise<BalanceHistoryItem[]> {
