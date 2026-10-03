@@ -383,6 +383,10 @@ export function ApplyEsarfScreen({
     return isOvertimeAllowedForPayroll(pClass, { dateHired, employeeType });
   };
 
+  const isOffsetAllowed = (pClass: string = payrollClass) => {
+    return isOffsetAllowedForPayroll(pClass, { dateHired, employeeType });
+  };
+
   const [entries, setEntries] = useState<EsarfEntry[]>(() => {
     if (editingRequest) {
       const parsed = parseEsarfEntries(editingRequest);
@@ -477,6 +481,38 @@ export function ApplyEsarfScreen({
   const [submissionErrorModal, setSubmissionErrorModal] = useState<string | null>(null);
   const [validationErrors, setValidationErrors] = useState<Partial<Record<string, string>>>({});
   const [tempPickerDate, setTempPickerDate] = useState(new Date());
+
+  // Cleanup disallowed transactions (e.g. if tenure or payroll class disables OT or Offset)
+  useEffect(() => {
+    if (!isOffsetAllowed(payrollClass)) {
+      setEntries((prev) => {
+        let changed = false;
+        const next = prev.map((entry) => {
+          const keys = parseEntryTransactions(entry.transaction);
+          if (keys.includes('offset')) {
+            changed = true;
+            return { ...entry, transaction: keys.filter((k) => k !== 'offset').join(',') };
+          }
+          return entry;
+        });
+        return changed ? next : prev;
+      });
+    }
+    if (!isOtAllowed(payrollClass)) {
+      setEntries((prev) => {
+        let changed = false;
+        const next = prev.map((entry) => {
+          const keys = parseEntryTransactions(entry.transaction);
+          if (keys.includes('ot')) {
+            changed = true;
+            return { ...entry, transaction: keys.filter((k) => k !== 'ot').join(',') };
+          }
+          return entry;
+        });
+        return changed ? next : prev;
+      });
+    }
+  }, [payrollClass, dateHired, employeeType]);
 
   // Photo Proof Attachments State
   const [activeProofPickerIndex, setActiveProofPickerIndex] = useState<number | null>(null);
@@ -1167,6 +1203,18 @@ export function ApplyEsarfScreen({
           })
         );
       }
+      if (!isOffsetAllowedForPayroll(value, { dateHired, employeeType })) {
+        setEntries((prev) =>
+          prev.map((entry) => {
+            const keys = parseEntryTransactions(entry.transaction);
+            if (keys.includes('offset')) {
+              const remaining = keys.filter((k) => k !== 'offset');
+              return { ...entry, transaction: remaining.join(',') };
+            }
+            return entry;
+          })
+        );
+      }
     }
     setActiveSelect(null);
   }
@@ -1255,6 +1303,9 @@ export function ApplyEsarfScreen({
       if (!transKeys.length) errors[`entry_${i}_transaction`] = `Request #${num}: Select at least one transaction type.`;
       if (!isOtAllowed(payrollClass) && transKeys.includes('ot')) {
         errors[`entry_${i}_transaction`] = `Request #${num}: ${getOvertimeDisabledMessage(payrollClass)}`;
+      }
+      if (!isOffsetAllowed(payrollClass) && transKeys.includes('offset')) {
+        errors[`entry_${i}_transaction`] = `Request #${num}: ${getOffsetDisabledMessage(payrollClass)}`;
       }
       if (!entry.dateFrom) errors[`entry_${i}_dateFrom`] = `Request #${num}: Date From is required.`;
       if (!entry.dateTo) errors[`entry_${i}_dateTo`] = `Request #${num}: Date To is required.`;
@@ -2424,7 +2475,7 @@ export function ApplyEsarfScreen({
                         </Text>
                       ) : null}
                     </View>
-                  ) : entry.timeFrom && entry.timeTo && entryOtHours >= MIN_OFFSETABLE_HOURS && !entryTransKeys.includes('offset') && !entryTransKeys.includes('use_offset') && !entryTransKeys.includes('ut') ? (
+                  ) : entry.timeFrom && entry.timeTo && entryOtHours >= MIN_OFFSETABLE_HOURS && !entryTransKeys.includes('offset') && !entryTransKeys.includes('use_offset') && !entryTransKeys.includes('ut') && isOffsetAllowed(payrollClass) ? (
                     <View style={styles.offsetFeedbackWrap}>
                       <View style={styles.offsetEncouragementCard}>
                         <View style={styles.offsetEncouragementCardHeader}>
@@ -3096,8 +3147,9 @@ export function ApplyEsarfScreen({
                     const currentSelectedKeys = parseEntryTransactions(currentTransStr);
                     const selected = currentSelectedKeys.includes(option.key);
                     const isOtDisabled = option.key === 'ot' && !isOtAllowed(payrollClass);
+                    const isOffsetDisabled = option.key === 'offset' && !isOffsetAllowed(payrollClass);
                     const isConflictDisabled = !selected && isTransactionDisabled(option.key, currentSelectedKeys);
-                    const disabled = isOtDisabled || isConflictDisabled;
+                    const disabled = isOtDisabled || isOffsetDisabled || isConflictDisabled;
                     const activeEntryHours = getEntryTotalHours(entries[activeTransactionSelectIndex]);
                     const activeEntryOtHours = getEntryOffsetOvertimeHours(entries[activeTransactionSelectIndex]);
                     const activeEntryCreditedHours = calculateCreditedOffsetHours(activeEntryOtHours);
@@ -3145,15 +3197,15 @@ export function ApplyEsarfScreen({
                           >
                             {option.label}
                           </Text>
-                          {option.key === 'offset' && activeEntryOtHours >= MIN_OFFSETABLE_HOURS && !selected ? (
+                          {option.key === 'offset' && !disabled && activeEntryOtHours >= MIN_OFFSETABLE_HOURS && !selected ? (
                             <Text style={styles.transactionOptionHintText}>
                               Eligible ({activeEntryCreditedHours.toFixed(2)} hrs {activeEntryCreditedHours >= WHOLE_DAY_OFFSET_HOURS ? 'whole day' : 'half day'} credited) • Tap to credit to offset balance
                             </Text>
-                          ) : option.key === 'offset' && activeEntryOtHours > 0 && activeEntryOtHours < MIN_OFFSETABLE_HOURS && !selected ? (
+                          ) : option.key === 'offset' && !disabled && activeEntryOtHours > 0 && activeEntryOtHours < MIN_OFFSETABLE_HOURS && !selected ? (
                             <Text style={styles.transactionOptionWarningText}>
                               Minimum {MIN_OFFSETABLE_HOURS.toFixed(2)} hrs overtime required (current OT: {activeEntryOtHours.toFixed(2)} hrs)
                             </Text>
-                          ) : option.key === 'offset' && entries[activeTransactionSelectIndex]?.timeFrom && entries[activeTransactionSelectIndex]?.timeTo && activeEntryOtHours === 0 && !selected ? (
+                          ) : option.key === 'offset' && !disabled && entries[activeTransactionSelectIndex]?.timeFrom && entries[activeTransactionSelectIndex]?.timeTo && activeEntryOtHours === 0 && !selected ? (
                             <Text style={styles.transactionOptionWarningText}>
                               No overtime outside schedule (minimum {MIN_OFFSETABLE_HOURS.toFixed(2)} hrs OT required)
                             </Text>
@@ -3459,6 +3511,38 @@ export function getOvertimeDisabledMessage(payrollClass: string): string {
   return 'Overtime is disabled for Managerial class.';
 }
 
+export function isOffsetAllowedForPayroll(
+  payrollClass: string,
+  options?: { dateHired?: string | null; employeeType?: string | null },
+): boolean {
+  const normalized = payrollClass.trim().toLowerCase();
+  if (normalized === 'rank and file') {
+    if (options?.dateHired) {
+      const reached = hasReachedSixMonths(options.dateHired);
+      return !reached;
+    }
+    if (options?.employeeType) {
+      const normType = options.employeeType.trim().toLowerCase();
+      if (normType === 'probationary' || normType === 'trainee') {
+        return true;
+      }
+      if (normType === 'regular') {
+        return false;
+      }
+    }
+    return false;
+  }
+  return true;
+}
+
+export function getOffsetDisabledMessage(payrollClass: string): string {
+  const normalized = payrollClass.trim().toLowerCase();
+  if (normalized === 'rank and file') {
+    return 'Offset is disabled for Rank and File employees with 6 months or more of service.';
+  }
+  return 'Offset is disabled for this payroll class.';
+}
+
 function validateForm({
   schedule,
   dayOff,
@@ -3496,6 +3580,9 @@ function validateForm({
   if (!payrollClassOptions.includes(payrollClass)) errors.payrollClass = 'Payroll class is required.';
   if (!isOvertimeAllowedForPayroll(payrollClass) && transactions.includes('ot')) {
     errors.transactions = getOvertimeDisabledMessage(payrollClass);
+  }
+  if (!isOffsetAllowedForPayroll(payrollClass) && transactions.includes('offset')) {
+    errors.transactions = getOffsetDisabledMessage(payrollClass);
   }
   if (!transactions.length) errors.transactions = 'Select at least one transaction.';
   if (!dateFrom) errors.dateFrom = 'Date From is required.';
