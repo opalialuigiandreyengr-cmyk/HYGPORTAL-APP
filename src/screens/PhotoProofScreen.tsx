@@ -38,130 +38,6 @@ type Props = {
   userStoreName?: string | null;
 };
 
-function drawWatermarkOnCanvas(
-  ctx: any,
-  w: number,
-  h: number,
-  data: {
-    timeDigits: string;
-    timePeriod: string;
-    dateFormatted: string;
-    dayFormatted: string;
-    locationText: string;
-  },
-  referenceWidth: number = 390
-) {
-  try {
-    // Exact proportional scale relative to reference screen viewport (standard 390px mobile viewport)
-    const scale = Math.max(1, w / (referenceWidth || 390));
-    const padX = Math.round(20 * scale);
-    const padBottom = Math.round(24 * scale);
-    const fontStack = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
-
-    // 1. Location text wrapping
-    const locFontSize = Math.round(15 * scale);
-    const locLineHeight = Math.round(19 * scale);
-    ctx.font = `500 ${locFontSize}px ${fontStack}`;
-
-    const maxLocWidth = w - padX * 2;
-    const words = (data.locationText || '').split(' ');
-    const lines: string[] = [];
-    let curLine = '';
-    for (const word of words) {
-      const test = curLine ? `${curLine} ${word}` : word;
-      if (ctx.measureText(test).width > maxLocWidth && curLine) {
-        lines.push(curLine);
-        curLine = word;
-      } else {
-        curLine = test;
-      }
-    }
-    if (curLine) lines.push(curLine);
-    const displayLines = lines.slice(0, 4);
-
-    // 2. Subtle dark gradient at bottom for maximum readability against bright scenes
-    const totalBlockHeight = displayLines.length * locLineHeight + Math.round(58 * scale);
-    const gradH = Math.min(Math.round(h * 0.45), totalBlockHeight + Math.round(50 * scale));
-    const grad = ctx.createLinearGradient(0, h - gradH, 0, h);
-    grad.addColorStop(0, 'rgba(0,0,0,0)');
-    grad.addColorStop(0.35, 'rgba(0,0,0,0.18)');
-    grad.addColorStop(1, 'rgba(0,0,0,0.75)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, h - gradH, w, gradH);
-
-    ctx.save();
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
-    ctx.shadowBlur = Math.round(3.5 * scale);
-    ctx.shadowOffsetX = Math.max(1, Math.round(1 * scale));
-    ctx.shadowOffsetY = Math.max(1, Math.round(1 * scale));
-
-    // 3. Render Location lines from bottom up
-    const btmLineY = h - padBottom;
-    let curY = btmLineY;
-    ctx.font = `500 ${locFontSize}px ${fontStack}`;
-    ctx.fillStyle = '#ffffff';
-    ctx.textBaseline = 'alphabetic';
-
-    for (let i = displayLines.length - 1; i >= 0; i--) {
-      ctx.fillText(displayLines[i], padX, curY);
-      curY -= locLineHeight;
-    }
-
-    // 4. Time & Period row above location
-    const timeRowBaseline = curY - Math.round(6 * scale);
-    const timeFontSize = Math.round(42 * scale);
-    const periodFontSize = Math.round(22 * scale);
-    const dateFontSize = Math.round(16 * scale);
-    const dayFontSize = Math.round(14 * scale);
-
-    // A. Time digits
-    ctx.font = `300 ${timeFontSize}px ${fontStack}`;
-    ctx.fillStyle = '#ffffff';
-    const timeDigits = data.timeDigits || '';
-    ctx.fillText(timeDigits, padX, timeRowBaseline);
-    const timeWidth = ctx.measureText(timeDigits).width;
-
-    // B. Period (e.g. "PM" in vibrant yellow)
-    ctx.font = `800 ${periodFontSize}px ${fontStack}`;
-    ctx.fillStyle = '#facc15';
-    const periodX = padX + timeWidth + Math.round(6 * scale);
-    ctx.fillText(data.timePeriod || '', periodX, timeRowBaseline);
-    const periodWidth = ctx.measureText(data.timePeriod || '').width;
-
-    // C. Divider line (temporarily remove text shadow for clean line)
-    const divX = periodX + periodWidth + Math.round(10 * scale);
-    const divHeight = Math.round(38 * scale);
-    const divTop = timeRowBaseline - Math.round(33 * scale);
-    const divBottom = divTop + divHeight;
-    ctx.restore();
-
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
-    ctx.lineWidth = Math.max(1.5, Math.round(2 * scale));
-    ctx.beginPath();
-    ctx.moveTo(divX, divTop);
-    ctx.lineTo(divX, divBottom);
-    ctx.stroke();
-
-    // D. Date & Day (stacked next to divider)
-    ctx.save();
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
-    ctx.shadowBlur = Math.round(3 * scale);
-    ctx.shadowOffsetX = Math.max(1, Math.round(1 * scale));
-    ctx.shadowOffsetY = Math.max(1, Math.round(1 * scale));
-    ctx.textBaseline = 'alphabetic';
-
-    const dateX = divX + Math.round(10 * scale);
-    ctx.font = `600 ${dateFontSize}px ${fontStack}`;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(data.dateFormatted || '', dateX, timeRowBaseline - Math.round(18 * scale));
-
-    ctx.font = `500 ${dayFontSize}px ${fontStack}`;
-    ctx.fillText(data.dayFormatted || '', dateX, timeRowBaseline - Math.round(2 * scale));
-    ctx.restore();
-  } catch (err) {
-    console.warn('[PhotoProof] Watermark canvas overlay failed:', err);
-  }
-}
 
 export function PhotoProofScreen({
   onBack,
@@ -335,12 +211,24 @@ export function PhotoProofScreen({
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: facing,
-        },
-        audio: false,
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: facing,
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: facing,
+          },
+          audio: false,
+        });
+      }
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -418,9 +306,10 @@ export function PhotoProofScreen({
       }
     }
 
-    // Trigger visual capture feedback
-    if (shouldFlash) {
-      // Screen Flash: Instantly illuminate full screen bright white
+    // Trigger visual capture feedback:
+    // On Web: illuminate screen bright white for simulated webcam flash in low light
+    // On Native (Android/iOS): the hardware LED flash and CameraX handle illumination; trigger the shutter click feedback
+    if (Platform.OS === 'web' && shouldFlash) {
       screenFlashAnim.setValue(1);
     } else {
       triggerShutter();
@@ -515,22 +404,7 @@ export function PhotoProofScreen({
             ctx.filter = 'brightness(1.26) contrast(1.10) saturate(1.04)';
           }
           ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-          ctx.restore();
-
-          drawWatermarkOnCanvas(
-            ctx,
-            canvas.width,
-            canvas.height,
-            {
-              timeDigits: currentTimestamp.timeDigits,
-              timePeriod: currentTimestamp.timePeriod,
-              dateFormatted: currentTimestamp.dateFormatted,
-              dayFormatted: currentTimestamp.dayFormatted,
-              locationText: locationText || 'Tacloban City, 6500',
-            },
-            clientW,
-          );
-          finalPhotoUri = canvas.toDataURL('image/jpeg', 0.88);
+          finalPhotoUri = canvas.toDataURL('image/jpeg', 0.92);
         }
 
         // Immediately turn off torch if it was active
@@ -640,7 +514,7 @@ export function PhotoProofScreen({
         storeName: userStoreName,
         imageWidth: capturedWidth,
         imageHeight: capturedHeight,
-        isWatermarked: Platform.OS === 'web',
+        isWatermarked: false,
       };
 
       console.log('[PhotoProof] Capturing photo proof for employee:', employeeName, 'id:', employeeId, 'store:', userStoreName);
@@ -657,6 +531,8 @@ export function PhotoProofScreen({
         showTemporarySavedModal();
       }
     } finally {
+      // Always ensure the screen flash overlay is completely cleared
+      screenFlashAnim.setValue(0);
       if (didEnableTorch && activeTorchTrack) {
         try {
           void activeTorchTrack.applyConstraints({ advanced: [{ torch: false } as any] });
@@ -670,6 +546,7 @@ export function PhotoProofScreen({
     if (savedModalTimerRef.current) {
       clearTimeout(savedModalTimerRef.current);
     }
+    screenFlashAnim.setValue(0);
     setCapturedPhotoUri(null);
     setLastSavedItem(null);
     setShowSavedModal(false);
@@ -815,9 +692,8 @@ export function PhotoProofScreen({
 
 
 
-        {/* Live Watermark Overlay (Bottom Left) - On Web, the captured photo already has the watermark burned into the canvas, so hide it during preview. On Android/native, preserve original behavior */}
-        {(Platform.OS !== 'web' || !capturedPhotoUri) && (
-          <View style={styles.watermarkContainer} pointerEvents="box-none">
+        {/* Live Watermark Overlay (Bottom Left) - Crisp vector text overlay unified across Web, iOS, and Android */}
+        <View style={styles.watermarkContainer} pointerEvents="box-none">
             <View style={styles.watermarkTimeRow} pointerEvents="none">
               <Text style={styles.watermarkTime}>
                 {capturedPhotoUri && lastSavedItem ? lastSavedItem.timeDigits : currentTimestamp.timeDigits}
@@ -849,7 +725,6 @@ export function PhotoProofScreen({
               )}
             </Pressable>
           </View>
-        )}
 
         {/* Shutter Click Darkening Layer */}
         <Animated.View
@@ -1057,16 +932,18 @@ export function PhotoProofScreen({
           </View>
         </Pressable>
       </Modal>
-      {/* Full-Screen Native-Style Screen Flash Overlay (Illuminates entire display for true Retina / Screen Flash) */}
-      <Animated.View
-        pointerEvents="none"
-        style={[
-          styles.fullScreenFlashOverlay,
-          {
-            opacity: screenFlashAnim,
-          },
-        ]}
-      />
+      {/* Full-Screen Screen Flash Overlay (Illuminates entire display for Web webcam flash only) */}
+      {Platform.OS === 'web' && (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.fullScreenFlashOverlay,
+            {
+              opacity: screenFlashAnim,
+            },
+          ]}
+        />
+      )}
     </View>
   );
 }

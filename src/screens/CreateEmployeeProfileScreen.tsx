@@ -1212,7 +1212,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderWidth: 1,
     color: colors.text,
-    fontSize: 15,
+    fontSize: Platform.OS === 'web' ? 16 : 15,
     marginBottom: spacing.sm,
     paddingHorizontal: spacing.md,
     backgroundColor: colors.surface,

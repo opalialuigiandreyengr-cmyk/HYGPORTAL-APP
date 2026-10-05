@@ -199,7 +199,7 @@ const styles = StyleSheet.create({
   iconInput: {
     flex: 1,
     color: colors.text,
-    fontSize: 15,
+    fontSize: Platform.OS === 'web' ? 16 : 15,
     paddingVertical: 0,
     paddingLeft: spacing.sm,
     paddingRight: spacing.xs,

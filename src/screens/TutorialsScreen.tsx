@@ -598,7 +598,7 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     height: '100%',
-    fontSize: 14,
+    fontSize: Platform.OS === 'web' ? 16 : 14,
     color: colors.text,
     paddingVertical: 0,
   },

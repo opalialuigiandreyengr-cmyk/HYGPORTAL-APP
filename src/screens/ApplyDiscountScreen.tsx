@@ -1175,7 +1175,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.background,
     color: colors.text,
-    fontSize: 13,
+    fontSize: Platform.OS === 'web' ? 16 : 13,
     fontWeight: fontWeights.medium,
     paddingHorizontal: 9,
     paddingVertical: 0,

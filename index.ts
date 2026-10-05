@@ -15,6 +15,58 @@ if (Platform.OS === 'web' && typeof Node !== 'undefined' && Node.prototype) {
   };
 }
 
+// Prevent auto-zoom on input focus in Web / PWA (especially iOS Safari / mobile browsers)
+if (Platform.OS === 'web' && typeof document !== 'undefined') {
+  // 1. Ensure viewport meta tag disables auto-zooming and scales properly
+  let viewportMeta = document.querySelector('meta[name="viewport"]');
+  if (!viewportMeta) {
+    viewportMeta = document.createElement('meta');
+    viewportMeta.setAttribute('name', 'viewport');
+    document.head.appendChild(viewportMeta);
+  }
+  viewportMeta.setAttribute(
+    'content',
+    'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, shrink-to-fit=no, viewport-fit=cover, interactive-widget=resizes-content'
+  );
+
+  // 2. Inject global CSS rule ensuring input/textarea/select font-size is at least 16px to prevent iOS auto-zoom
+  if (!document.getElementById('prevent-input-zoom-style')) {
+    const style = document.createElement('style');
+    style.id = 'prevent-input-zoom-style';
+    style.textContent = `
+      @media screen and (max-width: 1024px), (pointer: coarse) {
+        input:not([type="checkbox"]):not([type="radio"]),
+        textarea,
+        select {
+          font-size: 16px !important;
+        }
+      }
+      input,
+      textarea,
+      select {
+        touch-action: manipulation;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  // 3. Ensure focused input is scrolled smoothly above on-screen keyboard on mobile web/PWA
+  if (typeof window !== 'undefined') {
+    window.addEventListener('focusin', (e) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {
+        setTimeout(() => {
+          try {
+            target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          } catch {
+            // ignore fallback
+          }
+        }, 300);
+      }
+    });
+  }
+}
+
 import App from './App';
 
 // registerRootComponent calls AppRegistry.registerComponent('main', () => App);

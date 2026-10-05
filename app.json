@@ -17,7 +17,9 @@
       "buildNumber": "19",
       "supportsTablet": true,
       "infoPlist": {
-        "NSCameraUsageDescription": "Allow HYG Portal to access your camera for employee photo proof."
+        "NSCameraUsageDescription": "Allow HYG Portal to access your camera for employee photo proof.",
+        "NSLocationWhenInUseUsageDescription": "Allow HYG Portal to access your location to verify photo proof address.",
+        "NSPhotoLibraryAddUsageDescription": "Allow HYG Portal to save photo proofs to your photo library."
       }
     },
     "android": {
@@ -58,6 +60,12 @@
         "expo-camera",
         {
           "cameraPermission": "Allow HYG Portal to access your camera for employee photo proof."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow HYG Portal to access your location to verify photo proof address."
         }
       ]
     ],

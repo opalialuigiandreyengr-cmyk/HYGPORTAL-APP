@@ -467,7 +467,7 @@ const webDateInputStyle: CSSProperties = {
   border: `1px solid ${colors.border}`,
   backgroundColor: colors.surface,
   color: colors.text,
-  fontSize: 15,
+  fontSize: 16,
   fontWeight: fontWeights.bold,
   marginBottom: spacing.sm,
   padding: `0 ${spacing.md}px`,
@@ -595,7 +595,7 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     color: colors.text,
-    fontSize: 15,
+    fontSize: Platform.OS === 'web' ? 16 : 15,
     paddingVertical: 0,
   },
   inputWithIcon: {

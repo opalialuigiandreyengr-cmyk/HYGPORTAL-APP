@@ -1563,7 +1563,7 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     minWidth: 0,
-    fontSize: 15,
+    fontSize: Platform.OS === 'web' ? 16 : 15,
     color: colors.text,
     paddingVertical: 0,
   },

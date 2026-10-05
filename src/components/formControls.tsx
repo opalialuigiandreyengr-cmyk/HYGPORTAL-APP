@@ -1,4 +1,4 @@
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 
 import { colors, spacing } from '../theme';
@@ -54,6 +54,7 @@ const styles = StyleSheet.create({
   picker: {
     minHeight: 48,
     color: colors.text,
+    fontSize: Platform.OS === 'web' ? 16 : 15,
   },
   selectButton: {
     minHeight: 48,

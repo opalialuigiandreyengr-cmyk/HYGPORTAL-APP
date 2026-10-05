@@ -332,6 +332,27 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
             : await createWatermarkedImageWeb(selectedPhoto.photoUri, selectedPhoto);
           const response = await fetch(downloadUri);
           const blob = await response.blob();
+
+          // On iOS Safari / PWA, use Web Share with the watermarked image file so the user can tap "Save Image" to Photos
+          const isIOSWeb = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent || '');
+          if (isIOSWeb && typeof (navigator as any).canShare === 'function') {
+            try {
+              const file = new File([blob], filename, { type: 'image/jpeg' });
+              if ((navigator as any).canShare({ files: [file] })) {
+                await (navigator as any).share({
+                  files: [file],
+                  title: 'Save Photo Proof',
+                });
+                showFeedbackToast('Ready to Save', 'Select "Save Image" to store in Photos.', 'success');
+                setSaveSuccess(true);
+                setTimeout(() => setSaveSuccess(false), 2400);
+                return;
+              }
+            } catch (shareErr: any) {
+              if (shareErr?.name === 'AbortError') return;
+            }
+          }
+
           const blobUrl = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = blobUrl;
@@ -454,21 +475,47 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
         return;
       }
 
-      // iOS Native
-      let fileUri = selectedPhoto.photoUri;
-      if (fileUri && fileUri.startsWith('data:image')) {
-        const filename = `photo_proof_${Date.now()}.jpg`;
-        const targetPath = `${FileSystem.cacheDirectory}${filename}`;
-        const base64Data = fileUri.includes(',') ? fileUri.split(',')[1] : fileUri;
-        await FileSystem.writeAsStringAsync(targetPath, base64Data, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        fileUri = targetPath;
-      } else if (fileUri && (fileUri.startsWith('http://') || fileUri.startsWith('https://'))) {
-        const filename = `photo_proof_${Date.now()}.jpg`;
-        const targetPath = `${FileSystem.cacheDirectory}${filename}`;
-        const dlRes = await FileSystem.downloadAsync(fileUri, targetPath);
-        fileUri = dlRes.uri;
+      // iOS Native: snapshot watermarked SVG with details
+      let fileUri: string | null = null;
+      if (svgWatermarkRef.current && typeof svgWatermarkRef.current.toDataURL === 'function') {
+        try {
+          const base64Watermarked = await new Promise<string>((resolve) => {
+            svgWatermarkRef.current.toDataURL((data: string) => {
+              resolve(data || '');
+            });
+          });
+          if (base64Watermarked) {
+            const safeDate = (selectedPhoto.dateFormatted || 'proof').replace(/[^a-zA-Z0-9]/g, '_');
+            const safeTime = (selectedPhoto.timeDigits || '').replace(':', '');
+            const filename = `photo_proof_${safeDate}_${safeTime}_${Date.now()}.jpg`;
+            const targetPath = `${FileSystem.cacheDirectory}${filename}`;
+            const cleanBase64 = base64Watermarked.includes(',') ? base64Watermarked.split(',')[1] : base64Watermarked;
+            await FileSystem.writeAsStringAsync(targetPath, cleanBase64, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            fileUri = targetPath;
+          }
+        } catch (svgErr) {
+          console.warn('SVG watermark snapshot on iOS failed:', svgErr);
+        }
+      }
+
+      if (!fileUri) {
+        fileUri = selectedPhoto.photoUri;
+        if (fileUri && fileUri.startsWith('data:image')) {
+          const filename = `photo_proof_${Date.now()}.jpg`;
+          const targetPath = `${FileSystem.cacheDirectory}${filename}`;
+          const base64Data = fileUri.includes(',') ? fileUri.split(',')[1] : fileUri;
+          await FileSystem.writeAsStringAsync(targetPath, base64Data, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          fileUri = targetPath;
+        } else if (fileUri && (fileUri.startsWith('http://') || fileUri.startsWith('https://'))) {
+          const filename = `photo_proof_${Date.now()}.jpg`;
+          const targetPath = `${FileSystem.cacheDirectory}${filename}`;
+          const dlRes = await FileSystem.downloadAsync(fileUri, targetPath);
+          fileUri = dlRes.uri;
+        }
       }
 
       if (!fileUri) {
@@ -517,7 +564,10 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
                 const safeDate = (selectedPhoto.dateFormatted || 'proof').replace(/[^a-zA-Z0-9]/g, '_');
                 const safeTime = (selectedPhoto.timeDigits || '').replace(':', '');
                 const filename = `photo_proof_${safeDate}_${safeTime}.jpg`;
-                const res = await fetch(selectedPhoto.photoUri);
+                const shareUri = isPhotoWatermarked(selectedPhoto)
+                  ? selectedPhoto.photoUri
+                  : await createWatermarkedImageWeb(selectedPhoto.photoUri, selectedPhoto);
+                const res = await fetch(shareUri);
                 const blob = await res.blob();
                 const file = new File([blob], filename, { type: 'image/jpeg' });
                 if ((navigator as any).canShare({ files: [file] })) {
@@ -558,9 +608,9 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
           Alert.alert('Photo Proof Info', shareMessage);
         }
       } else {
-        // Native mobile
+        // Native mobile (Android and iOS)
         let fileUri = selectedPhoto.photoUri;
-        if (Platform.OS === 'android' && svgWatermarkRef.current && typeof svgWatermarkRef.current.toDataURL === 'function') {
+        if (svgWatermarkRef.current && typeof svgWatermarkRef.current.toDataURL === 'function') {
           try {
             const base64Watermarked = await new Promise<string>((resolve) => {
               svgWatermarkRef.current.toDataURL((data: string) => {

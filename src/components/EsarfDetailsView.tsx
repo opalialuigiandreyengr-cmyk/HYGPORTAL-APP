@@ -1448,7 +1448,7 @@ const styles = StyleSheet.create({
   },
   hoursInputField: {
     flex: 1,
-    fontSize: 13,
+    fontSize: Platform.OS === 'web' ? 16 : 13,
     fontWeight: fontWeights.heavy,
     color: '#0f172a',
     paddingVertical: 0,

@@ -71,6 +71,30 @@ export function registerPwaInstallSupport() {
   ensureMeta('apple-mobile-web-app-title', 'HYG Portal');
   ensureMeta('apple-mobile-web-app-status-bar-style', 'black-translucent');
   ensureMeta('theme-color', '#071426');
+  ensureMeta(
+    'viewport',
+    'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, shrink-to-fit=no, viewport-fit=cover, interactive-widget=resizes-content'
+  );
+
+  if (!document.getElementById('prevent-input-zoom-style')) {
+    const style = document.createElement('style');
+    style.id = 'prevent-input-zoom-style';
+    style.textContent = `
+      @media screen and (max-width: 1024px), (pointer: coarse) {
+        input:not([type="checkbox"]):not([type="radio"]),
+        textarea,
+        select {
+          font-size: 16px !important;
+        }
+      }
+      input,
+      textarea,
+      select {
+        touch-action: manipulation;
+      }
+    `;
+    document.head.appendChild(style);
+  }
 
   if ('serviceWorker' in navigator) {
     let refreshing = false;

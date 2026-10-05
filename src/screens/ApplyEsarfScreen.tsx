@@ -1423,7 +1423,7 @@ export function ApplyEsarfScreen({
               employeeName: name || undefined,
               userEmail: username || undefined,
               storeName: profileStoreName || undefined,
-              isWatermarked: Platform.OS === 'web',
+              isWatermarked: false,
             };
 
             const uploadRes =
@@ -4212,8 +4212,8 @@ const styles = StyleSheet.create({
     borderColor: '#cbd5e1',
     backgroundColor: '#f8fafc',
     color: '#0f172a',
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: Platform.OS === 'web' ? 16 : 14,
+    lineHeight: Platform.OS === 'web' ? 22 : 20,
     fontWeight: 'normal',
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -4438,7 +4438,7 @@ const styles = StyleSheet.create({
   textInput: {
     flex: 1,
     color: colors.text,
-    fontSize: 15,
+    fontSize: Platform.OS === 'web' ? 16 : 15,
     paddingVertical: 0,
     minWidth: 0,
   },
@@ -4451,8 +4451,8 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginBottom: spacing.sm,
     color: colors.text,
-    fontSize: 15,
-    lineHeight: 21,
+    fontSize: Platform.OS === 'web' ? 16 : 15,
+    lineHeight: Platform.OS === 'web' ? 22 : 21,
     textAlignVertical: 'top',
   },
   disabledInput: {
