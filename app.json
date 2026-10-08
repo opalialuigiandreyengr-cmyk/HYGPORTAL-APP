@@ -14,7 +14,7 @@
       "url": "https://u.expo.dev/b0a75d0f-14f4-432f-a404-9b2a62805c4d"
     },
     "ios": {
-      "buildNumber": "21",
+      "buildNumber": "22",
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "Allow HYG Portal to access your camera for employee photo proof.",
@@ -24,7 +24,7 @@
     },
     "android": {
       "package": "com.hyg.portal",
-      "versionCode": 29,
+      "versionCode": 30,
       "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
@@ -36,7 +36,10 @@
         "foregroundImage": "./assets/hygapplogo-adaptive.png",
         "backgroundColor": "#071426"
       },
-      "edgeToEdgeEnabled": true,
+      "edgeToEdgeEnabled": false,
+      "navigationBarColor": "#071426",
+      "navigationBarDividerColor": "#071426",
+      "navigationBarIconStyle": "light",
       "predictiveBackGestureEnabled": false
     },
     "web": {
