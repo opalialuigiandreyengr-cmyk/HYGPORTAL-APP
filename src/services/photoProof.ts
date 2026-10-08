@@ -27,6 +27,7 @@ export type PhotoProofItem = {
   imageWidth?: number;
   imageHeight?: number;
   isWatermarked?: boolean;
+  localFileUri?: string | null;
 };
 
 const PHOTO_PROOFS_KEY = 'hyg_photo_proofs_list';
@@ -158,6 +159,10 @@ export async function uploadViaGoogleAppsScript(
       body: payload,
     });
 
+    if (!response.ok) {
+      throw new Error(`Google Apps Script upload failed (${response.status})`);
+    }
+
     const json = await response.json().catch(() => null);
     console.log('[PhotoProofGDrive] Google Apps Script response:', json);
 
@@ -236,6 +241,11 @@ export async function uploadDirectToGoogleDrive(
         body: bodyBytes,
       },
     );
+
+    if (!uploadRes.ok) {
+      const errorText = await uploadRes.text().catch(() => 'Unknown Google Drive error');
+      throw new Error(`Google Drive upload failed (${uploadRes.status}): ${errorText.slice(0, 180)}`);
+    }
 
     const file = await uploadRes.json();
     console.log('[PhotoProofGDrive] Google Drive upload completed:', file);
@@ -458,6 +468,11 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
     }
   }
 
+  if (!base64Photo || base64Photo.startsWith('file://') || base64Photo.length < 100) {
+    console.warn('[PhotoProofSync] Photo data is unavailable or unreadable; upload cancelled.');
+    return false;
+  }
+
   // 1. Resolve employeeId upfront
   let resolvedEmployeeId = item.employeeId || null;
   if (!resolvedEmployeeId) {
@@ -650,14 +665,14 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
 
 
 
-export async function savePhotoProof(item: PhotoProofItem): Promise<void> {
+export async function savePhotoProof(item: PhotoProofItem): Promise<boolean> {
   try {
     const current = await loadPhotoProofs();
     const updated = [item, ...current.filter((p) => p.id !== item.id)];
     await setCacheJSON(PHOTO_PROOFS_KEY, updated);
 
-    // Sync to Supabase cloud table in background
-    void syncPhotoProofToCloud(item);
+    // Wait for the cloud sync so the caller can show a truthful success/error state.
+    return await syncPhotoProofToCloud(item);
   } catch (err) {
     console.error('Failed to save photo proof:', err);
     throw err;
@@ -925,11 +940,7 @@ export async function deletePhotoProof(itemOrId: PhotoProofItem | string): Promi
       targetItem = itemOrId;
     }
 
-    // 1. Remove from local SQLite/AsyncStorage cache immediately
-    const updated = current.filter((p) => p.id !== id);
-    await setCacheJSON(PHOTO_PROOFS_KEY, updated);
-
-    // 2. Delete from Supabase photo_proofs table and retrieve deleted row
+    // 1. Delete from Supabase photo_proofs table and retrieve deleted row
     let deletedDriveFileId: string | null = null;
     try {
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
@@ -942,7 +953,7 @@ export async function deletePhotoProof(itemOrId: PhotoProofItem | string): Promi
 
       console.log('[PhotoProofDelete] Supabase delete result:', { id, deletedRows: res?.data, error: res?.error });
       if (res?.error) {
-        console.warn('Supabase delete photo_proof error:', res.error);
+        throw new Error(`Could not delete the cloud photo record: ${res.error.message}`);
       }
       if (res?.data && res.data.length > 0) {
         deletedDriveFileId =
@@ -956,7 +967,7 @@ export async function deletePhotoProof(itemOrId: PhotoProofItem | string): Promi
       console.warn('Supabase delete photo_proof exception:', dbErr);
     }
 
-    // 3. Resolve Drive file ID from target item, deleted row, or URL regex
+    // 2. Resolve Drive file ID from target item, deleted row, or URL regex
     const driveFileId =
       targetItem?.driveFileId ||
       deletedDriveFileId ||
@@ -965,9 +976,27 @@ export async function deletePhotoProof(itemOrId: PhotoProofItem | string): Promi
       extractDriveFileId(targetItem?.driveWebViewLink);
 
     if (driveFileId) {
-      await deleteFromGoogleDrive(driveFileId);
-    } else {
-      console.log('[PhotoProofDelete] No Google Drive file ID found to delete for photo proof:', id);
+      const driveDeleted = await deleteFromGoogleDrive(driveFileId);
+      if (!driveDeleted) {
+        throw new Error('The photo was not confirmed as deleted from Google Drive. Please try again.');
+      }
+    }
+
+    // 3. Remove the record from local app storage only after cloud deletion succeeds.
+    const updated = current.filter((p) => p.id !== id);
+    await setCacheJSON(PHOTO_PROOFS_KEY, updated);
+
+    // 4. Remove the temporary camera file when it belongs to the app cache.
+    const localFileUri = targetItem?.localFileUri || targetItem?.photoUri;
+    if (localFileUri?.startsWith('file://')) {
+      try {
+        const fileInfo = await FileSystem.getInfoAsync(localFileUri);
+        if (fileInfo.exists) {
+          await FileSystem.deleteAsync(localFileUri, { idempotent: true });
+        }
+      } catch (fileErr) {
+        console.warn('[PhotoProofDelete] Local camera file cleanup failed:', fileErr);
+      }
     }
   } catch (err) {
     console.error('Failed to delete photo proof:', err);

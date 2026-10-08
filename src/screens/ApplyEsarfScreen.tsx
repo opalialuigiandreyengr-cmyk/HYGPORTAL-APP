@@ -3512,26 +3512,11 @@ export function getOvertimeDisabledMessage(payrollClass: string): string {
 }
 
 export function isOffsetAllowedForPayroll(
-  payrollClass: string,
-  options?: { dateHired?: string | null; employeeType?: string | null },
+  _payrollClass: string,
+  _options?: { dateHired?: string | null; employeeType?: string | null },
 ): boolean {
-  const normalized = payrollClass.trim().toLowerCase();
-  if (normalized === 'rank and file') {
-    if (options?.dateHired) {
-      const reached = hasReachedSixMonths(options.dateHired);
-      return !reached;
-    }
-    if (options?.employeeType) {
-      const normType = options.employeeType.trim().toLowerCase();
-      if (normType === 'probationary' || normType === 'trainee') {
-        return true;
-      }
-      if (normType === 'regular') {
-        return false;
-      }
-    }
-    return false;
-  }
+  // Rank and File employees may earn Offset regardless of tenure or
+  // employee type. The eligibility restriction here applies only to OT.
   return true;
 }
 

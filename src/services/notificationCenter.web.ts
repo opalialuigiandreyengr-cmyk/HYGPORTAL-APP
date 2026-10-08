@@ -389,6 +389,35 @@ export async function scheduleLocalNotification(input: { title: string; body: st
   // This avoids double notifications while ensuring the background/lock screen notification is delivered.
 }
 
+export async function scheduleOffsetExpiryAlerts(input: {
+  creditId: string;
+  expiresAt: string;
+  remainingHours: number;
+}) {
+  const expiresAtMs = new Date(input.expiresAt).getTime();
+  if (!Number.isFinite(expiresAtMs) || input.remainingHours <= 0) return;
+
+  const now = Date.now();
+  const scheduledKey = 'offset_expiry_alerts_scheduled_v1';
+  const scheduled = (await getCacheJSON<string[]>(scheduledKey)) ?? [];
+  const nextScheduled = [...scheduled];
+
+  for (const daysBefore of [30, 7]) {
+    const alertKey = `${input.creditId}:${daysBefore}`;
+    const alertAt = expiresAtMs - daysBefore * 24 * 60 * 60 * 1000;
+    if (alertAt > now || nextScheduled.includes(alertKey)) continue;
+
+    const expiryDate = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(expiresAtMs));
+    await addAppNotification({
+      title: 'Offset credit expiring soon',
+      body: `Your ${input.remainingHours.toFixed(1)}h offset credit expires in ${daysBefore} days. Use it before ${expiryDate}.`,
+    });
+    nextScheduled.push(alertKey);
+  }
+
+  await setCacheJSON(scheduledKey, nextScheduled.slice(-200));
+}
+
 export function unreadCount(items: AppNotification[]) {
   return items.filter((item) => !item.readAt).length;
 }

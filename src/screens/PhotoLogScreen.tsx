@@ -51,6 +51,7 @@ import { getSafeBottomInset } from '../utils/safeArea';
 import {
   deletePhotoProof,
   loadPhotoProofs,
+  syncPhotoProofToCloud,
   type PhotoProofItem,
 } from '../services/photoProof';
 
@@ -212,6 +213,7 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
   const [selectedPhoto, setSelectedPhoto] = useState<PhotoProofItem | null>(null);
   const [itemToDelete, setItemToDelete] = useState<PhotoProofItem | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [retryingUploadId, setRetryingUploadId] = useState<string | null>(null);
   const [viewfinderSize, setViewfinderSize] = useState({ width: 0, height: 0 });
   const svgWatermarkRef = useRef<any>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -303,6 +305,27 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
       Alert.alert('Delete Failed', `Could not delete photo proof: ${err?.message || err}`);
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  const retryUpload = async (item: PhotoProofItem) => {
+    if (retryingUploadId) return;
+    setRetryingUploadId(item.id);
+    try {
+      const synced = await syncPhotoProofToCloud(item);
+      if (!synced) {
+        throw new Error('Google Drive did not confirm the upload. Check your connection and try again.');
+      }
+      await fetchLogs();
+      setToastMessage({
+        type: 'success',
+        title: 'Upload complete',
+        subtitle: 'Photo proof is now saved to Google Drive.',
+      });
+    } catch (err) {
+      Alert.alert('Upload Failed', err instanceof Error ? err.message : 'Unable to upload this photo proof.');
+    } finally {
+      setRetryingUploadId(null);
     }
   };
 
@@ -812,6 +835,20 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
                     <Trash2 size={18} color="#ef4444" strokeWidth={2.2} />
                   </Pressable>
                 </View>
+                {!item.syncedToCloud && !item.driveFileId && (
+                  <Pressable
+                    style={styles.retryUploadButton}
+                    onPress={() => void retryUpload(item)}
+                    disabled={retryingUploadId === item.id}
+                  >
+                    {retryingUploadId === item.id ? (
+                      <ActivityIndicator size="small" color="#2563eb" />
+                    ) : null}
+                    <Text style={styles.retryUploadText}>
+                      {retryingUploadId === item.id ? 'Retrying upload…' : 'Retry Google Drive upload'}
+                    </Text>
+                  </Pressable>
+                )}
               </View>
             </View>
           )}
@@ -1458,6 +1495,23 @@ const styles = StyleSheet.create({
     backgroundColor: '#fee2e2',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  retryUploadButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 9,
+    minHeight: 34,
+    borderRadius: 8,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  retryUploadText: {
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+    color: '#2563eb',
   },
   viewerScreenContainer: {
     flex: 1,

@@ -320,6 +320,7 @@ export function PhotoProofScreen({
     let activeTorchTrack: MediaStreamTrack | null = null;
     try {
       let finalPhotoUri: string | null = null;
+      let localFileUri: string | null = null;
       let capturedWidth: number | undefined;
       let capturedHeight: number | undefined;
 
@@ -432,6 +433,7 @@ export function PhotoProofScreen({
         });
         if (photo?.uri) {
           let photoUri = photo.uri;
+          localFileUri = photo.uri;
           capturedWidth = photo.width;
           capturedHeight = photo.height;
           if (isMirrored) {
@@ -441,8 +443,8 @@ export function PhotoProofScreen({
                 [{ flip: FlipType.Horizontal }],
                 { compress: 0.88, format: SaveFormat.JPEG, base64: true },
               );
-              if (manip?.uri) {
-                photoUri = manip.uri;
+            if (manip?.uri) {
+                photoUri = manip.base64 ? `data:image/jpeg;base64,${manip.base64}` : manip.uri;
                 if (manip.width && manip.height) {
                   capturedWidth = manip.width;
                   capturedHeight = manip.height;
@@ -452,7 +454,7 @@ export function PhotoProofScreen({
               console.warn('[PhotoProof] Image flip failed:', flipErr);
             }
           }
-          finalPhotoUri = photoUri;
+          finalPhotoUri = photo.base64 ? `data:image/jpeg;base64,${photo.base64}` : photoUri;
         }
       } else {
         // Fallback to ImagePicker launchCameraAsync if CameraView not bound
@@ -465,6 +467,7 @@ export function PhotoProofScreen({
 
         if (!result.canceled && result.assets[0]) {
           let photoUri = result.assets[0].uri;
+          localFileUri = result.assets[0].uri;
           capturedWidth = result.assets[0].width;
           capturedHeight = result.assets[0].height;
           if (isMirrored) {
@@ -474,8 +477,8 @@ export function PhotoProofScreen({
                 [{ flip: FlipType.Horizontal }],
                 { compress: 0.88, format: SaveFormat.JPEG, base64: true },
               );
-              if (manip?.uri) {
-                photoUri = manip.uri;
+            if (manip?.uri) {
+                photoUri = manip.base64 ? `data:image/jpeg;base64,${manip.base64}` : manip.uri;
                 if (manip.width && manip.height) {
                   capturedWidth = manip.width;
                   capturedHeight = manip.height;
@@ -485,7 +488,9 @@ export function PhotoProofScreen({
               console.warn('[PhotoProof] Image flip failed:', flipErr);
             }
           }
-          finalPhotoUri = photoUri;
+          finalPhotoUri = result.assets[0].base64
+            ? `data:image/jpeg;base64,${result.assets[0].base64}`
+            : photoUri;
         }
       }
 
@@ -515,11 +520,18 @@ export function PhotoProofScreen({
         imageWidth: capturedWidth,
         imageHeight: capturedHeight,
         isWatermarked: false,
+        localFileUri,
       };
 
       console.log('[PhotoProof] Capturing photo proof for employee:', employeeName, 'id:', employeeId, 'store:', userStoreName);
-      await savePhotoProof(newItem);
-      console.log('[PhotoProof] Photo proof saved and synced!');
+      const cloudSyncSucceeded = await savePhotoProof(newItem);
+      console.log('[PhotoProof] Photo proof saved:', { cloudSyncSucceeded });
+      if (!cloudSyncSucceeded) {
+        Alert.alert(
+          'Photo saved locally',
+          'The photo is saved on this device, but Google Drive sync did not complete. Keep the app online and retry from Photo Log.',
+        );
+      }
       setLastSavedItem(newItem);
       showTemporarySavedModal();
     } catch (err: any) {

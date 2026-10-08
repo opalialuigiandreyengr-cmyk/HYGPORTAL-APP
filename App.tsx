@@ -84,6 +84,7 @@ import {
   type MyTeamSchedule,
 } from './src/services/team';
 import { AppToast, type AppToastMessage } from './src/components/AppToast';
+import { OffsetExpiryAlertModal } from './src/components/OffsetExpiryAlertModal';
 import {
   checkForAppUpdate,
   downloadAppUpdate,
@@ -574,6 +575,10 @@ export default function App() {
         <View style={styles.appShell}>
           {screen}
           <AppToast toast={appToast} onDismiss={dismissAppToast} />
+          <OffsetExpiryAlertModal
+            userId={signedInUser?.id}
+            employeeId={profileResult?.status === 'linked' ? profileResult.profile.employeeId : undefined}
+          />
 
           <Modal
             transparent

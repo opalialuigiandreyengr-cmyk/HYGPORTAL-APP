@@ -1,43 +1,57 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { StatusBar } from 'expo-status-bar';
 import {
   ActivityIndicator,
-  Modal,
-  Platform,
-  Pressable,
+  BackHandler,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
-  useWindowDimensions,
   View,
 } from 'react-native';
 import {
-  ArrowDownLeft,
+  ArrowDown,
+  ArrowUp,
   ArrowUpRight,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Clock3,
   Minus,
   Plus,
   RotateCcw,
   Sparkles,
-  X,
 } from 'lucide-react-native';
 
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getSafeBottomInset } from '../utils/safeArea';
 import { fetchLeaveHistory, fetchOffsetHistory, type BalanceHistoryItem } from '../services/balanceHistory';
+import { scheduleOffsetExpiryAlerts } from '../services/notificationCenter';
+import { TopBar } from './TopBar';
 
-type BalanceHistoryModalProps = {
-  visible: boolean;
+type BalanceHistoryPageProps = {
+  name?: string | null;
+  username?: string | null;
+  photoUrl?: string | null;
+  notificationCount?: number;
+  onAssistant?: () => void;
+  onNotifications?: () => void;
+  onHelpTutorials?: () => void;
   initialTab?: 'offset' | 'leave';
   offsetBalance: number;
   leaveRemaining: number;
   annualCreditDays?: number;
   onClose: () => void;
   onRefreshDashboard?: () => void;
+};
+
+type TransactionFilter = 'all' | 'earned' | 'deducted';
+type FormattedHistoryEntry = {
+  transaction?: string;
+  details?: string;
+  note: string;
 };
 
 function formatTransactionDate(dateStr?: string | null) {
@@ -57,28 +71,46 @@ function formatTransactionDate(dateStr?: string | null) {
   }
 }
 
-export function BalanceHistoryModal({
-  visible,
+function formatOffsetExpiryDate(dateStr?: string | null) {
+  if (!dateStr) return 'Expiration unavailable';
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return 'Expiration unavailable';
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(date);
+}
+
+function getOffsetExpiryColor(remainingDays?: number | null) {
+  if (!remainingDays || remainingDays <= 7) return '#dc2626';
+  if (remainingDays <= 30) return '#d97706';
+  return '#15803d';
+}
+
+export function BalanceHistoryPage({
+  name,
+  username,
+  photoUrl,
+  notificationCount = 0,
+  onAssistant,
+  onNotifications,
+  onHelpTutorials,
   initialTab = 'offset',
   offsetBalance,
   leaveRemaining,
   annualCreditDays = 0,
   onClose,
   onRefreshDashboard,
-}: BalanceHistoryModalProps) {
-  const { width, height } = useWindowDimensions();
+}: BalanceHistoryPageProps) {
   const [activeTab, setActiveTab] = useState<'offset' | 'leave'>(initialTab);
   const [offsetHistory, setOffsetHistory] = useState<BalanceHistoryItem[]>([]);
   const [leaveHistory, setLeaveHistory] = useState<BalanceHistoryItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-
-  // Sync initial tab when modal opens
-  useEffect(() => {
-    if (visible) {
-      setActiveTab(initialTab);
-    }
-  }, [visible, initialTab]);
+  const [transactionFilter, setTransactionFilter] = useState<TransactionFilter>('all');
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+  const [expandedTransactionIds, setExpandedTransactionIds] = useState<Set<string>>(new Set());
 
   const loadData = async (isManualRefresh = false) => {
     if (isManualRefresh) {
@@ -91,6 +123,15 @@ export function BalanceHistoryModal({
       if (activeTab === 'offset') {
         const data = await fetchOffsetHistory();
         setOffsetHistory(data);
+        await Promise.all(
+          data
+            .filter((item) => item.amount > 0 && (item.remainingAmount ?? item.amount) > 0 && item.expiresAt)
+            .map((item) => scheduleOffsetExpiryAlerts({
+              creditId: item.id,
+              expiresAt: item.expiresAt as string,
+              remainingHours: item.remainingAmount ?? item.amount,
+            })),
+        );
       } else {
         const data = await fetchLeaveHistory();
         setLeaveHistory(data);
@@ -104,10 +145,16 @@ export function BalanceHistoryModal({
   };
 
   useEffect(() => {
-    if (visible) {
-      loadData();
-    }
-  }, [visible, activeTab]);
+    loadData();
+  }, [activeTab]);
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [onClose]);
 
   const handleRefresh = async () => {
     onRefreshDashboard?.();
@@ -115,17 +162,27 @@ export function BalanceHistoryModal({
   };
 
   const currentItems = activeTab === 'offset' ? offsetHistory : leaveHistory;
+  const filteredItems = useMemo(() => {
+    if (transactionFilter === 'all') return currentItems;
+    return currentItems.filter((item) => transactionFilter === 'earned' ? item.amount > 0 : item.amount < 0);
+  }, [currentItems, transactionFilter]);
   const isOffset = activeTab === 'offset';
   const primaryColor = isOffset ? '#047857' : '#6d28d9';
   const fillColor = isOffset ? '#16a34a' : '#7c3aed';
   const trackColor = isOffset ? '#bbf7d0' : '#ddd6fe';
   const tintBg = isOffset ? '#f0fdf4' : '#faf5ff';
+  const latestActiveOffsetCredit = useMemo(() => {
+    if (!isOffset) return null;
+    return offsetHistory
+      .filter((item) => item.amount > 0 && (item.remainingAmount ?? item.amount) > 0 && item.expiresAt)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0] ?? null;
+  }, [isOffset, offsetHistory]);
 
   // Stats calculation
   const stats = useMemo(() => {
     let additions = 0;
     let deductions = 0;
-    currentItems.forEach((item) => {
+    filteredItems.forEach((item) => {
       if (item.amount > 0) {
         additions += item.amount;
       } else {
@@ -133,76 +190,35 @@ export function BalanceHistoryModal({
       }
     });
     return { additions, deductions };
-  }, [currentItems]);
+  }, [filteredItems]);
 
   const insets = useSafeAreaInsets();
-  const isWide = width >= 600;
-
-  if (!visible) return null;
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-      statusBarTranslucent
-    >
-      <View style={styles.backdrop}>
-        <Pressable style={styles.dismissArea} onPress={onClose} />
+    <View style={[styles.page, { paddingBottom: insets.bottom }]}>
+      <StatusBar style="dark" />
+      <TopBar
+        name={name}
+        username={username}
+        photoUrl={photoUrl}
+        notificationCount={notificationCount}
+        onMessages={onAssistant}
+        onNotifications={onNotifications}
+        onHelpTutorials={onHelpTutorials}
+        onBackHome={onClose}
+        backTitle={isOffset ? 'Offset Balance History' : 'Leave Credit History'}
+        backTitleLines={isOffset ? ['Offset Balance History'] : ['Leave Credit History']}
+      />
 
-        <View
-          style={[
-            styles.sheetContainer,
-            isWide ? styles.sheetContainerWide : null,
-            {
-              height: isWide ? undefined : Math.min(height * 0.84, 680),
-              maxHeight: Math.min(height * 0.9, 720),
-              paddingBottom: getSafeBottomInset(insets.bottom, Platform.OS === 'ios' ? 24 : spacing.md),
-            },
-          ]}
-        >
-          {/* Mobile Top Drag Indicator */}
-          {!isWide && <View style={styles.sheetHandle} />}
-
-          {/* Header */}
-          <View style={styles.header}>
-            <View style={styles.headerTitleBlock}>
-              <View style={[styles.headerIconContainer, { backgroundColor: tintBg, borderColor: trackColor }]}>
-                {isOffset ? (
-                  <Clock3 size={20} color={primaryColor} strokeWidth={2.4} />
-                ) : (
-                  <CalendarDays size={20} color={primaryColor} strokeWidth={2.4} />
-                )}
-              </View>
-              <View style={styles.headerTextGroup}>
-                <Text style={styles.headerTitle}>
-                  {isOffset ? 'Offset Balance History' : 'Leave Credit History'}
-                </Text>
-                <Text style={styles.headerSubtitle}>
-                  Track your deductions, credits, and adjustments
-                </Text>
-              </View>
-            </View>
-
-            <TouchableOpacity
-              style={styles.closeBtn}
-              onPress={onClose}
-              hitSlop={12}
-              accessibilityLabel="Close balance history modal"
-            >
-              <X size={18} color="#64748b" strokeWidth={2.4} />
-            </TouchableOpacity>
-          </View>
-
-          {/* Segmented Tab Switcher */}
+      <View style={styles.content}>
+        {/* Segmented Tab Switcher */}
           <View style={styles.tabBar}>
             <TouchableOpacity
               style={[styles.tabItem, isOffset ? styles.tabItemActiveOffset : null]}
               onPress={() => setActiveTab('offset')}
               activeOpacity={0.75}
             >
-              <Clock3 size={15} color={isOffset ? '#16a34a' : colors.muted} strokeWidth={2.3} />
+              <Clock3 size={15} color={isOffset ? '#ffffff' : colors.muted} strokeWidth={2.3} />
               <Text style={[styles.tabItemText, isOffset ? styles.tabItemTextActiveOffset : null]}>
                 Offset Balance
               </Text>
@@ -213,66 +229,17 @@ export function BalanceHistoryModal({
               onPress={() => setActiveTab('leave')}
               activeOpacity={0.75}
             >
-              <CalendarDays size={15} color={!isOffset ? '#7c3aed' : colors.muted} strokeWidth={2.3} />
+              <CalendarDays size={15} color={!isOffset ? '#ffffff' : colors.muted} strokeWidth={2.3} />
               <Text style={[styles.tabItemText, !isOffset ? styles.tabItemTextActiveLeave : null]}>
                 Leave Credit
               </Text>
             </TouchableOpacity>
           </View>
 
-          {/* Current Balance Banner */}
-          <View style={[styles.banner, { backgroundColor: tintBg, borderColor: trackColor }]}>
-            <View style={styles.bannerInfo}>
-              <Text style={styles.bannerLabel}>
-                {isOffset ? 'AVAILABLE OFFSET BALANCE' : 'REMAINING LEAVE CREDITS'}
-              </Text>
-              <View style={styles.bannerValueRow}>
-                <Text style={[styles.bannerValue, { color: primaryColor }]}>
-                  {isOffset ? `${offsetBalance.toFixed(1)}h` : `${leaveRemaining.toFixed(1)}d`}
-                </Text>
-                <View style={[styles.bannerBadge, { backgroundColor: trackColor }]}>
-                  <Text style={[styles.bannerBadgeText, { color: primaryColor }]}>
-                    {isOffset ? 'Available Hours' : 'Active Credits'}
-                  </Text>
-                </View>
-              </View>
-              <Text style={styles.bannerSub}>
-                {isOffset
-                  ? 'Hours available for offset requests'
-                  : annualCreditDays > 0
-                    ? `${leaveRemaining.toFixed(1)} of ${annualCreditDays.toFixed(1)} days remaining`
-                    : 'Remaining paid leave days'}
-              </Text>
-            </View>
-          </View>
-
-          {/* Quick Stats Summary Chips */}
-          <View style={styles.statsRow}>
-            <View style={styles.statChip}>
-              <View style={[styles.statDot, { backgroundColor: '#16a34a' }]} />
-              <Text style={styles.statLabel}>
-                {isOffset ? 'Total Earned/Credited:' : 'Total Credits Granted:'}
-              </Text>
-              <Text style={[styles.statValue, { color: '#16a34a' }]}>
-                +{stats.additions.toFixed(1)}
-                {isOffset ? 'h' : 'd'}
-              </Text>
-            </View>
-
-            <View style={styles.statChip}>
-              <View style={[styles.statDot, { backgroundColor: '#e11d48' }]} />
-              <Text style={styles.statLabel}>Total Deducted:</Text>
-              <Text style={[styles.statValue, { color: '#e11d48' }]}>
-                -{stats.deductions.toFixed(1)}
-                {isOffset ? 'h' : 'd'}
-              </Text>
-            </View>
-          </View>
-
-          {/* History Transactions List */}
           <ScrollView
             style={styles.scrollArea}
             contentContainerStyle={styles.scrollContent}
+            stickyHeaderIndices={[1]}
             showsVerticalScrollIndicator={false}
             nestedScrollEnabled={true}
             overScrollMode="never"
@@ -280,12 +247,154 @@ export function BalanceHistoryModal({
               <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={fillColor} />
             }
           >
+
+          <View style={[styles.summaryCard, { borderColor: trackColor }]}>
+            {/* Current Balance */}
+            <View style={[styles.banner, { backgroundColor: tintBg }]}>
+              <View style={styles.bannerInfo}>
+                <Text style={styles.bannerLabel}>
+                  {isOffset ? 'AVAILABLE OFFSET BALANCE' : 'REMAINING LEAVE CREDITS'}
+                </Text>
+                <View style={styles.bannerValueRow}>
+                  <Text style={[styles.bannerValue, { color: primaryColor }]}>
+                    {isOffset ? `${offsetBalance.toFixed(1)}h` : `${leaveRemaining.toFixed(1)}d`}
+                  </Text>
+                  <View style={[styles.bannerBadge, { backgroundColor: trackColor }]}>
+                    <Text style={[styles.bannerBadgeText, { color: primaryColor }]}>
+                      {isOffset ? 'Available Hours' : 'Active Credits'}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.bannerSub}>
+                  {isOffset
+                    ? 'Hours available for offset requests'
+                    : annualCreditDays > 0
+                      ? `${leaveRemaining.toFixed(1)} of ${annualCreditDays.toFixed(1)} days remaining`
+                      : 'Remaining paid leave days'}
+                </Text>
+                {isOffset && latestActiveOffsetCredit ? (
+                  <>
+                    <View style={styles.bannerExpiry}>
+                      <CalendarDays
+                        size={12}
+                        color={getOffsetExpiryColor(latestActiveOffsetCredit.remainingDays)}
+                        strokeWidth={2.2}
+                      />
+                      <Text
+                        style={[
+                          styles.bannerExpiryText,
+                          { color: getOffsetExpiryColor(latestActiveOffsetCredit.remainingDays) },
+                        ]}
+                      >
+                        Expires on {formatOffsetExpiryDate(latestActiveOffsetCredit.expiresAt)}
+                        {latestActiveOffsetCredit.remainingDays && latestActiveOffsetCredit.remainingDays > 0
+                          ? ` (${latestActiveOffsetCredit.remainingDays} days left)`
+                          : ''}
+                      </Text>
+                    </View>
+                  </>
+                ) : null}
+              </View>
+              <View style={[styles.bannerIcon, { backgroundColor: trackColor }]}>
+                <CalendarDays size={40} color={primaryColor} strokeWidth={1.8} />
+              </View>
+            </View>
+
+            {/* Earned / deducted summary */}
+            <View style={styles.statsRow}>
+            <View style={styles.statChip}>
+              <View style={[styles.statIcon, styles.statIconPositive]}>
+                <ArrowUp size={17} color="#059669" strokeWidth={2.8} />
+              </View>
+              <View>
+                <Text style={styles.statLabel}>
+                  {isOffset ? 'Total Earned' : 'Total Credits'}
+                </Text>
+                <Text style={[styles.statValue, { color: '#059669' }]}>
+                  +{stats.additions.toFixed(1)}{isOffset ? 'h' : 'd'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={[styles.statChip, styles.statChipSecondary]}>
+              <View style={[styles.statIcon, styles.statIconNegative]}>
+                <ArrowDown size={17} color="#f43f5e" strokeWidth={2.8} />
+              </View>
+              <View>
+                <Text style={styles.statLabel}>Total Deducted</Text>
+                <Text style={[styles.statValue, { color: '#f43f5e' }]}>
+                  -{stats.deductions.toFixed(1)}{isOffset ? 'h' : 'd'}
+                </Text>
+              </View>
+            </View>
+          </View>
+          </View>
+
+          <View style={styles.stickyFilterHeader}>
+            <View style={styles.filterRow}>
+              <TouchableOpacity
+                style={styles.transactionFilter}
+                onPress={() => setFilterMenuOpen((open) => !open)}
+                activeOpacity={0.8}
+                accessibilityLabel="Change transaction filter"
+              >
+                <CalendarDays size={17} color={colors.primary} strokeWidth={2.2} />
+                <Text style={styles.transactionFilterText}>
+                  {transactionFilter === 'all' ? 'All Transactions' : transactionFilter === 'earned' ? 'Earned Only' : 'Deducted Only'}
+                </Text>
+                <ChevronDown size={17} color={colors.primary} strokeWidth={2.3} />
+              </TouchableOpacity>
+            </View>
+
+            {filterMenuOpen ? (
+              <View style={styles.filterMenu}>
+                {([
+                  ['all', 'All Transactions'],
+                  ['earned', 'Earned Only'],
+                  ['deducted', 'Deducted Only'],
+                ] as const).map(([value, label]) => (
+                  <TouchableOpacity
+                    key={value}
+                    style={styles.filterMenuOption}
+                    onPress={() => {
+                      setTransactionFilter(value);
+                      setFilterMenuOpen(false);
+                    }}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={[styles.filterMenuText, transactionFilter === value ? styles.filterMenuTextActive : null]}>
+                      {label}
+                    </Text>
+                    {transactionFilter === value ? <CheckCircle2 size={16} color={colors.primary} strokeWidth={2.4} /> : null}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+          </View>
+
+          <View style={styles.historyHeadingRow}>
+            <View>
+              <Text style={styles.historyHeading}>Recent Transactions</Text>
+              <Text style={styles.historySubheading}>All recorded activity</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.viewAllButton}
+              onPress={() => setTransactionFilter('all')}
+              activeOpacity={0.8}
+              accessibilityLabel="View all transactions"
+            >
+              <Text style={styles.viewAllText}>View All</Text>
+              <ChevronRight size={17} color={colors.primary} strokeWidth={2.5} />
+            </TouchableOpacity>
+          </View>
+
+          {/* History Transactions List */}
             {loading && !refreshing ? (
               <View style={styles.loadingContainer}>
                 <ActivityIndicator size="large" color={fillColor} />
                 <Text style={styles.loadingText}>Loading transaction history...</Text>
               </View>
-            ) : currentItems.length === 0 ? (
+            ) : filteredItems.length === 0 ? (
               <View style={styles.emptyContainer}>
                 <View style={[styles.emptyIconCircle, { backgroundColor: tintBg }]}>
                   {isOffset ? (
@@ -304,14 +413,49 @@ export function BalanceHistoryModal({
                 </Text>
               </View>
             ) : (
-              currentItems.map((item) => {
+              filteredItems.map((item) => {
                 const isPositive = item.amount > 0;
                 const isNegative = item.amount < 0;
                 const formattedAmount = `${isPositive ? '+' : ''}${item.amount.toFixed(1)}${item.unit}`;
                 const amountColor = isPositive ? (isOffset ? '#16a34a' : '#7c3aed') : '#e11d48';
+                const formattedReasons = formatHistoryReason(item.reason);
+                const isExpanded = expandedTransactionIds.has(item.id);
+                const hasExpandableReason = Boolean(
+                  formattedReasons && (
+                    formattedReasons.length > 1 ||
+                    formattedReasons.some((entry) => entry.note.length > 80 || (entry.details?.length ?? 0) > 48)
+                  ),
+                );
+                const remainingRatio = item.amount > 0
+                  ? Math.min(1, Math.max(0, (item.remainingAmount ?? item.amount) / item.amount))
+                  : 0;
+                const remainingColor = remainingRatio <= 0
+                  ? '#ef4444'
+                  : remainingRatio < 1
+                    ? '#eab308'
+                    : '#22c55e';
+                const expiryColor = getOffsetExpiryColor(item.remainingDays);
+                const expiryTint = item.remainingDays && item.remainingDays <= 7
+                  ? '#fef2f2'
+                  : item.remainingDays && item.remainingDays <= 30
+                    ? '#fffbeb'
+                    : '#f0fdf4';
 
                 return (
-                  <View key={item.id} style={styles.txCard}>
+                  <TouchableOpacity
+                    key={item.id}
+                    style={styles.txCard}
+                    onPress={() => {
+                      setExpandedTransactionIds((current) => {
+                        const next = new Set(current);
+                        if (next.has(item.id)) next.delete(item.id);
+                        else next.add(item.id);
+                        return next;
+                      });
+                    }}
+                    activeOpacity={0.92}
+                    accessibilityLabel={`${isExpanded ? 'Collapse' : 'Expand'} transaction ${item.title}`}
+                  >
                     {/* Top Row: Icon + Title + Amount */}
                     <View style={styles.txTopRow}>
                       <View style={styles.txLeftGroup}>
@@ -363,11 +507,60 @@ export function BalanceHistoryModal({
                     </View>
 
                     {/* Reason / Note if present */}
-                    {item.reason ? (
-                      <View style={styles.reasonBox}>
-                        <Text style={styles.reasonText} numberOfLines={2}>
-                          "{item.reason.trim()}"
-                        </Text>
+                    {formattedReasons ? (
+                      <View style={[styles.reasonBox, hasExpandableReason && !isExpanded ? styles.reasonBoxCollapsed : null]}>
+                        {formattedReasons.map((entry, entryIndex) => (
+                          <View key={`${entry.transaction ?? 'note'}-${entryIndex}`} style={entryIndex > 0 ? styles.reasonEntrySpacer : null}>
+                            {entry.transaction ? (
+                              <Text style={styles.reasonTransaction}>{entry.transaction}</Text>
+                            ) : null}
+                            {entry.details ? (
+                              <Text style={styles.reasonDetails}>{entry.details}</Text>
+                            ) : null}
+                            <Text style={styles.reasonText} numberOfLines={hasExpandableReason && !isExpanded ? 2 : undefined}>
+                              “{entry.note}”
+                            </Text>
+                          </View>
+                        ))}
+                        {hasExpandableReason && !isExpanded ? (
+                          <View style={styles.reasonFade} pointerEvents="none">
+                            <View style={[styles.reasonFadeLayer, styles.reasonFadeLayerTop]} />
+                            <View style={[styles.reasonFadeLayer, styles.reasonFadeLayerMiddle]} />
+                            <View style={[styles.reasonFadeLayer, styles.reasonFadeLayerBottom]} />
+                            <Text style={styles.reasonExpandHint}>Tap to expand</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    ) : null}
+
+                    {isOffset && item.amount > 0 && item.expiresAt ? (
+                      <View style={[styles.expiryBox, { backgroundColor: expiryTint, borderColor: `${expiryColor}33` }]}>
+                        <View style={styles.expiryHeader}>
+                          <CalendarDays size={13} color={expiryColor} strokeWidth={2.2} />
+                          <Text style={[styles.expiryRemaining, { color: remainingColor }]}>
+                            {item.remainingAmount && item.remainingAmount > 0
+                              ? `${item.remainingAmount.toFixed(1)}h remaining`
+                              : 'Credit fully used'}
+                          </Text>
+                        </View>
+                        {remainingRatio > 0 ? (
+                          <Text style={[styles.expiryText, { color: expiryColor }]}>
+                              {item.remainingDays && item.remainingDays > 0
+                                ? `Expires on ${formatOffsetExpiryDate(item.expiresAt)} (${item.remainingDays} days left)`
+                                : `Expired on ${formatOffsetExpiryDate(item.expiresAt)}`}
+                          </Text>
+                        ) : null}
+                        <View style={styles.expiryTrack}>
+                          <View
+                            style={[
+                              styles.expiryFill,
+                              {
+                                width: `${Math.round((remainingRatio <= 0 ? 1 : remainingRatio) * 100)}%`,
+                                backgroundColor: remainingColor,
+                              },
+                            ]}
+                          />
+                        </View>
                       </View>
                     ) : null}
 
@@ -416,107 +609,57 @@ export function BalanceHistoryModal({
                         );
                       })() : null}
                     </View>
-                  </View>
+                  </TouchableOpacity>
                 );
               })
             )}
           </ScrollView>
-
-          {/* Footer Action */}
-          <View style={styles.footer}>
-            <TouchableOpacity style={styles.closeActionBtn} onPress={onClose} activeOpacity={0.8}>
-              <Text style={styles.closeActionBtnText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
       </View>
-    </Modal>
+    </View>
   );
 }
 
+function formatHistoryReason(reason?: string | null): FormattedHistoryEntry[] | null {
+  const text = reason?.trim() ?? '';
+  if (!text) return null;
+
+  const entryPattern = /\[Entry\s+\d+\]\s*\(([^)]+)\)\s*(.*?)\s*\):\s*([\s\S]*?)(?=\s*\[Entry\s+\d+\]\s*\(|$)/g;
+  const entries = Array.from(text.matchAll(entryPattern));
+  if (entries.length === 0) return [{ note: text }];
+
+  return entries.map((entry) => {
+    const transaction = entry[1].trim();
+    const rawDetails = entry[2].replace(/\s+/g, ' ').trim();
+    const dateTimeMatch = /^(\d{1,2})\/(\d{1,2})-(\d{1,2})\/(\d{2})\s+(.+?)\s+\((\d+(?:\.\d+)?)\s*hrs?\)$/i.exec(rawDetails);
+    let details = rawDetails;
+
+    if (dateTimeMatch) {
+      const [, month, fromDay, toDay, year, rawTimes, hours] = dateTimeMatch;
+      const monthName = new Intl.DateTimeFormat('en-US', { month: 'short' }).format(
+        new Date(2000, Number(month) - 1, 1),
+      );
+      const dateLabel = fromDay === toDay
+        ? `${monthName} ${Number(fromDay)}, 20${year}`
+        : `${monthName} ${Number(fromDay)}–${Number(toDay)}, 20${year}`;
+      const timeLabel = rawTimes
+        .replace(/:00(?=\s?[AP]M)/gi, '')
+        .replace(/\s*-\s*/g, '–');
+      details = `${dateLabel} · ${timeLabel} · ${hours} hrs`;
+    }
+
+    return { transaction, details, note: entry[3].trim() };
+  });
+}
+
 const styles = StyleSheet.create({
-  backdrop: {
+  page: {
     flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.6)',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
+    backgroundColor: '#f8fafc',
   },
-  dismissArea: {
-    ...StyleSheet.absoluteFill,
-  },
-  sheetContainer: {
-    width: '100%',
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+  content: {
+    flex: 1,
     paddingHorizontal: spacing.md,
     paddingTop: spacing.xs,
-    paddingBottom: Platform.OS === 'ios' ? 28 : spacing.md,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    elevation: 20,
-  },
-  sheetContainerWide: {
-    maxWidth: 540,
-    borderRadius: 24,
-    marginBottom: 'auto',
-    marginTop: 'auto',
-  },
-  sheetHandle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: '#cbd5e1',
-    alignSelf: 'center',
-    marginTop: 8,
-    marginBottom: 10,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: spacing.xs,
-    marginBottom: spacing.xs,
-  },
-  headerTitleBlock: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    flex: 1,
-  },
-  headerIconContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerTextGroup: {
-    flex: 1,
-  },
-  headerTitle: {
-    fontSize: 16,
-    lineHeight: 20,
-    fontWeight: fontWeights.bold,
-    color: colors.text,
-  },
-  headerSubtitle: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: fontWeights.medium,
-    color: colors.muted,
-    marginTop: 1,
-  },
-  closeBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#f1f5f9',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   tabBar: {
     flexDirection: 'row',
@@ -524,7 +667,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     padding: 3,
     marginBottom: spacing.sm,
-    marginTop: 4,
+    marginTop: 0,
   },
   tabItem: {
     flex: 1,
@@ -532,11 +675,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    paddingVertical: 8,
+    minHeight: 38,
+    paddingVertical: 7,
     borderRadius: radius.md - 2,
   },
   tabItemActiveOffset: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#1479ee',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.08,
@@ -544,7 +688,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   tabItemActiveLeave: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#1479ee',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.08,
@@ -552,33 +696,71 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   tabItemText: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: fontWeights.semibold,
     color: colors.muted,
   },
   tabItemTextActiveOffset: {
-    color: '#16a34a',
+    color: '#ffffff',
     fontWeight: fontWeights.bold,
   },
   tabItemTextActiveLeave: {
-    color: '#7c3aed',
+    color: '#ffffff',
     fontWeight: fontWeights.bold,
   },
-  banner: {
-    borderRadius: radius.md,
+  rangeRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: spacing.md,
+  },
+  rangeChip: {
+    flex: 1,
+    minHeight: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+    borderRadius: radius.sm,
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    padding: spacing.md,
+    borderColor: '#e2e8f0',
+  },
+  rangeChipText: {
+    fontSize: 12,
+    fontWeight: fontWeights.bold,
+    color: colors.muted,
+  },
+  rangeChipTextActive: {
+    color: '#ffffff',
+  },
+  summaryCard: {
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderRadius: 16,
+    backgroundColor: '#ffffff',
+    marginBottom: spacing.md,
+  },
+  bannerIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: spacing.sm,
+  },
+  banner: {
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: spacing.sm,
+    marginBottom: 0,
   },
   bannerInfo: {
     flex: 1,
   },
   bannerLabel: {
-    fontSize: 10,
-    lineHeight: 13,
+    fontSize: 11,
+    lineHeight: 15,
     fontWeight: fontWeights.bold,
     color: colors.muted,
     textTransform: 'uppercase',
@@ -588,21 +770,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
-    marginTop: 3,
-    marginBottom: 2,
+    marginTop: 5,
+    marginBottom: 4,
   },
   bannerValue: {
-    fontSize: 24,
-    lineHeight: 28,
+    fontSize: 29,
+    lineHeight: 33,
     fontWeight: fontWeights.heavy,
   },
   bannerBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 2,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
     borderRadius: radius.sm,
   },
   bannerBadgeText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: fontWeights.bold,
   },
   bannerSub: {
@@ -610,44 +792,163 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontWeight: fontWeights.medium,
   },
+  bannerExpiry: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 6,
+  },
+  bannerExpiryText: {
+    fontSize: 10,
+    lineHeight: 14,
+    color: '#15803d',
+    fontWeight: fontWeights.semibold,
+  },
   statsRow: {
     flexDirection: 'row',
     gap: spacing.sm,
-    marginBottom: spacing.sm,
+    marginBottom: 0,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#eef2f7',
   },
   statChip: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#f8fafc',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: radius.sm,
-    paddingVertical: 5,
-    paddingHorizontal: 8,
-    gap: 5,
+    backgroundColor: '#ffffff',
+    paddingVertical: 2,
+    paddingHorizontal: 0,
+    gap: 7,
   },
-  statDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+  statChipSecondary: {
+    borderLeftWidth: 1,
+    borderLeftColor: '#eef2f7',
+    paddingLeft: 12,
+  },
+  statIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statIconPositive: {
+    backgroundColor: '#d1fae5',
+  },
+  statIconNegative: {
+    backgroundColor: '#ffe4e6',
   },
   statLabel: {
-    fontSize: 10,
+    fontSize: 11,
     color: colors.muted,
     fontWeight: fontWeights.medium,
     flex: 1,
   },
   statValue: {
-    fontSize: 11,
+    fontSize: 14,
     fontWeight: fontWeights.heavy,
+  },
+  historyHeadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: spacing.xs,
+    marginBottom: spacing.xs,
+  },
+  historyHeading: {
+    fontSize: 17,
+    lineHeight: 21,
+    fontWeight: fontWeights.heavy,
+    color: colors.text,
+  },
+  historySubheading: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.muted,
+    fontWeight: fontWeights.medium,
+    marginTop: 1,
+  },
+  viewAllButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingVertical: 6,
+    paddingLeft: 8,
+  },
+  viewAllText: {
+    fontSize: 12,
+    fontWeight: fontWeights.bold,
+    color: colors.primary,
+  },
+  filterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  stickyFilterHeader: {
+    position: 'relative',
+    zIndex: 10,
+    backgroundColor: '#f8fafc',
+    paddingBottom: spacing.xs,
+  },
+  transactionFilter: {
+    flex: 1,
+    minHeight: 46,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#dbe5f1',
+  },
+  transactionFilterText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: fontWeights.semibold,
+    color: colors.text,
+  },
+  filterMenu: {
+    position: 'absolute',
+    top: 48,
+    left: 0,
+    right: 0,
+    zIndex: 20,
+    elevation: 8,
+    borderRadius: radius.md,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#dbe5f1',
+    overflow: 'hidden',
+  },
+  filterMenuOption: {
+    minHeight: 42,
+    paddingHorizontal: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: 1,
+    borderBottomColor: '#eef2f7',
+  },
+  filterMenuText: {
+    fontSize: 13,
+    fontWeight: fontWeights.medium,
+    color: colors.text,
+  },
+  filterMenuTextActive: {
+    color: colors.primary,
+    fontWeight: fontWeights.bold,
   },
   scrollArea: {
     flex: 1,
-    minHeight: 180,
+    minHeight: 0,
   },
   scrollContent: {
-    paddingBottom: spacing.sm,
+    paddingBottom: spacing.lg,
   },
   loadingContainer: {
     paddingVertical: spacing.xl,
@@ -692,8 +993,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    padding: spacing.sm + 2,
-    marginBottom: spacing.xs + 2,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.04,
@@ -712,9 +1013,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   txIconBadge: {
-    width: 30,
-    height: 30,
-    borderRadius: 8,
+    width: 38,
+    height: 38,
+    borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -722,14 +1023,14 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   txTitle: {
-    fontSize: 13,
-    lineHeight: 17,
+    fontSize: 15,
+    lineHeight: 20,
     fontWeight: fontWeights.bold,
     color: colors.text,
   },
   txSubtitle: {
-    fontSize: 11,
-    lineHeight: 15,
+    fontSize: 12,
+    lineHeight: 17,
     color: colors.muted,
     fontWeight: fontWeights.medium,
   },
@@ -738,8 +1039,8 @@ const styles = StyleSheet.create({
     marginLeft: spacing.xs,
   },
   txAmount: {
-    fontSize: 15,
-    lineHeight: 18,
+    fontSize: 17,
+    lineHeight: 21,
     fontWeight: fontWeights.heavy,
   },
   balanceAfterBadge: {
@@ -750,7 +1051,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   balanceAfterText: {
-    fontSize: 9,
+    fontSize: 10,
     color: '#64748b',
     fontWeight: fontWeights.bold,
   },
@@ -758,28 +1059,127 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8fafc',
     borderLeftWidth: 2,
     borderLeftColor: '#cbd5e1',
-    paddingVertical: 4,
-    paddingHorizontal: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
     borderRadius: 4,
-    marginTop: 6,
+    marginTop: 10,
+  },
+  reasonBoxCollapsed: {
+    maxHeight: 76,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  reasonFade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 32,
+    alignItems: 'flex-end',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 8,
+    paddingBottom: 5,
+  },
+  reasonFadeLayer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+  },
+  reasonFadeLayerTop: {
+    top: 0,
+    height: 12,
+    backgroundColor: 'rgba(248, 250, 252, 0.22)',
+  },
+  reasonFadeLayerMiddle: {
+    top: 10,
+    height: 12,
+    backgroundColor: 'rgba(248, 250, 252, 0.58)',
+  },
+  reasonFadeLayerBottom: {
+    bottom: 0,
+    height: 16,
+    backgroundColor: 'rgba(248, 250, 252, 0.88)',
+  },
+  reasonExpandHint: {
+    fontSize: 9,
+    lineHeight: 12,
+    color: '#64748b',
+    fontWeight: fontWeights.bold,
   },
   reasonText: {
-    fontSize: 11,
-    lineHeight: 15,
+    fontSize: 12,
+    lineHeight: 17,
     color: '#475569',
     fontStyle: 'italic',
+  },
+  reasonTransaction: {
+    fontSize: 11,
+    lineHeight: 15,
+    color: colors.text,
+    fontWeight: fontWeights.bold,
+  },
+  reasonDetails: {
+    fontSize: 11,
+    lineHeight: 15,
+    color: colors.muted,
+    marginTop: 1,
+  },
+  reasonEntrySpacer: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
+  expiryBox: {
+    marginTop: 9,
+    paddingVertical: 8,
+    paddingHorizontal: 9,
+    borderRadius: 8,
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#dcfce7',
+  },
+  expiryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  expiryText: {
+    flex: 1,
+    fontSize: 10.5,
+    lineHeight: 15,
+    color: '#64748b',
+    fontWeight: fontWeights.medium,
+    marginTop: 2,
+  },
+  expiryRemaining: {
+    fontSize: 11,
+    lineHeight: 15,
+    color: '#15803d',
+    fontWeight: fontWeights.bold,
+  },
+  expiryTrack: {
+    height: 7,
+    marginTop: 7,
+    borderRadius: 4,
+    backgroundColor: '#dbeafe',
+    overflow: 'hidden',
+  },
+  expiryFill: {
+    height: '100%',
+    borderRadius: 3,
   },
   txFooterRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginTop: 8,
-    paddingTop: 6,
+    marginTop: 12,
+    paddingTop: 9,
     borderTopWidth: 1,
     borderTopColor: '#f1f5f9',
   },
   txDate: {
-    fontSize: 10,
+    fontSize: 11,
     color: '#94a3b8',
     fontWeight: fontWeights.medium,
   },
@@ -787,9 +1187,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
   },
   statusApproved: {
     backgroundColor: '#ecfdf5',
@@ -807,7 +1207,7 @@ const styles = StyleSheet.create({
     borderColor: '#fecaca',
   },
   statusPillText: {
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: fontWeights.heavy,
   },
   statusTextApproved: {
@@ -818,20 +1218,5 @@ const styles = StyleSheet.create({
   },
   statusTextRejected: {
     color: '#b91c1c',
-  },
-  footer: {
-    paddingTop: spacing.xs,
-  },
-  closeActionBtn: {
-    backgroundColor: '#f1f5f9',
-    borderRadius: radius.md,
-    paddingVertical: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  closeActionBtnText: {
-    fontSize: 13,
-    fontWeight: fontWeights.bold,
-    color: '#475569',
   },
 });

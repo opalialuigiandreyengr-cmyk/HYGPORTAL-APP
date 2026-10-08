@@ -27,6 +27,7 @@ const ENABLED_KEY = 'hygportal_notifications_enabled';
 const PUSH_TOKEN_KEY = 'hygportal_expo_push_token';
 const ANDROID_CHANNEL_ID = 'hygportal-alerts';
 const EAS_PROJECT_ID = 'b0a75d0f-14f4-432f-a404-9b2a62805c4d';
+const OFFSET_EXPIRY_ALERTS_KEY = 'offset_expiry_alerts_scheduled_v1';
 
 export async function configureNotificationChannel() {
   if (Platform.OS !== 'android') {
@@ -366,6 +367,45 @@ export async function scheduleLocalNotification(input: { title: string; body: st
     },
     trigger: null,
   });
+}
+
+export async function scheduleOffsetExpiryAlerts(input: {
+  creditId: string;
+  expiresAt: string;
+  remainingHours: number;
+}) {
+  const expiresAtMs = new Date(input.expiresAt).getTime();
+  if (!Number.isFinite(expiresAtMs) || input.remainingHours <= 0) return;
+
+  const now = Date.now();
+  const scheduled = (await getCacheJSON<string[]>(OFFSET_EXPIRY_ALERTS_KEY)) ?? [];
+  const nextScheduled = [...scheduled];
+
+  for (const daysBefore of [30, 7]) {
+    const alertKey = `${input.creditId}:${daysBefore}`;
+    if (nextScheduled.includes(alertKey)) continue;
+
+    const alertAt = expiresAtMs - daysBefore * 24 * 60 * 60 * 1000;
+    const body = `Your ${input.remainingHours.toFixed(1)}h offset credit expires in ${daysBefore} days. Use it before ${new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(expiresAtMs))}.`;
+
+    try {
+      if (alertAt <= now) {
+        await addAppNotification({ title: 'Offset credit expiring soon', body });
+        await scheduleLocalNotification({ title: 'Offset credit expiring soon', body });
+      } else {
+        await configureNotificationChannel();
+        await Notifications.scheduleNotificationAsync({
+          content: { title: 'Offset credit expiring soon', body, sound: 'default' },
+          trigger: { date: new Date(alertAt) } as any,
+        });
+      }
+      nextScheduled.push(alertKey);
+    } catch {
+      // Notification permission may be disabled; the history screen still shows expiry status.
+    }
+  }
+
+  await setCacheJSON(OFFSET_EXPIRY_ALERTS_KEY, nextScheduled.slice(-200));
 }
 
 export function unreadCount(items: AppNotification[]) {

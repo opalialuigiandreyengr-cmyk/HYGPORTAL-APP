@@ -19,7 +19,7 @@ import {
 import { colors, fontWeights, spacing, radius } from '../theme';
 import { TopBar } from '../components/TopBar';
 import { BirthdayGreetingModal } from '../components/BirthdayGreetingModal';
-import { BalanceHistoryModal } from '../components/BalanceHistoryModal';
+import { BalanceHistoryPage } from '../components/BalanceHistoryModal';
 import { DashboardFab } from '../components/DashboardFab';
 import type { DashboardSummary } from '../services/dashboard';
 import { loadPerkUsage, type PerkUsage } from '../services/perks';
@@ -345,6 +345,26 @@ export function DashboardScreen({
     }
   };
 
+  if (balanceHistoryVisible) {
+    return (
+      <BalanceHistoryPage
+        name={employeeName}
+        username={profile?.username ?? userEmail}
+        photoUrl={photoUrl}
+        notificationCount={notificationCount}
+        onAssistant={onAssistant}
+        onNotifications={onNotifications}
+        onHelpTutorials={onHelpTutorials}
+        initialTab={balanceHistoryTab}
+        offsetBalance={summary.offset_balance}
+        leaveRemaining={summary.leave_credit_remaining}
+        annualCreditDays={summary.annual_credit_days}
+        onClose={() => setBalanceHistoryVisible(false)}
+        onRefreshDashboard={refreshDashboard}
+      />
+    );
+  }
+
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
@@ -475,16 +495,6 @@ export function DashboardScreen({
         isClaiming={isClaimingBirthdayLeave}
         onClaim={handleClaimBirthdayLeave}
         onClose={handleCloseBirthdayModal}
-      />
-
-      <BalanceHistoryModal
-        visible={balanceHistoryVisible}
-        initialTab={balanceHistoryTab}
-        offsetBalance={summary.offset_balance}
-        leaveRemaining={summary.leave_credit_remaining}
-        annualCreditDays={summary.annual_credit_days}
-        onClose={() => setBalanceHistoryVisible(false)}
-        onRefreshDashboard={refreshDashboard}
       />
 
       {!hideFab && (

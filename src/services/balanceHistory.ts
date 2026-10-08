@@ -15,7 +15,70 @@ export type BalanceHistoryItem = {
   reason?: string | null;
   dateFrom?: string | null;
   dateTo?: string | null;
+  expiresAt?: string | null;
+  remainingAmount?: number | null;
+  remainingDays?: number | null;
+  expiryProgress?: number | null;
 };
+
+const OFFSET_VALIDITY_DAYS = 90;
+
+function addOffsetExpiryAndFifo(items: BalanceHistoryItem[]): BalanceHistoryItem[] {
+  const now = Date.now();
+  const lots = items
+    .filter((item) => item.type === 'offset' && item.amount > 0 && item.category !== 'use')
+    .map((item) => {
+      const earnedAt = new Date(item.date).getTime();
+      const expiresAt = new Date(earnedAt + OFFSET_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
+      return {
+        item,
+        earnedAt,
+        expiresAt,
+        remaining: item.amount,
+      };
+    })
+    .sort((a, b) => a.earnedAt - b.earnedAt || a.item.id.localeCompare(b.item.id));
+
+  // Consume the oldest valid credit first (FIFO). Expired lots are not available
+  // for newer deductions, but remain visible in history with zero balance.
+  [...items]
+    .filter((item) => item.category === 'use' && item.amount < 0)
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    .forEach((deduction) => {
+      let remainingToConsume = Math.abs(deduction.amount);
+      const usedAt = new Date(deduction.date).getTime();
+
+      for (const lot of lots) {
+        if (remainingToConsume <= 0) break;
+        if (lot.remaining <= 0 || lot.expiresAt.getTime() <= usedAt || lot.earnedAt > usedAt) continue;
+
+        const consumed = Math.min(lot.remaining, remainingToConsume);
+        lot.remaining -= consumed;
+        remainingToConsume -= consumed;
+      }
+    });
+
+  const lotById = new Map(lots.map((lot) => [lot.item.id, lot]));
+  return items.map((item) => {
+    const lot = lotById.get(item.id);
+    if (!lot) return item;
+
+    const expiresAtMs = lot.expiresAt.getTime();
+    const remainingDays = Math.max(0, Math.ceil((expiresAtMs - now) / (24 * 60 * 60 * 1000)));
+    const elapsedProgress = Math.min(
+      1,
+      Math.max(0, (now - lot.earnedAt) / (OFFSET_VALIDITY_DAYS * 24 * 60 * 60 * 1000)),
+    );
+
+    return {
+      ...item,
+      expiresAt: lot.expiresAt.toISOString(),
+      remainingAmount: Number(Math.max(0, lot.remaining).toFixed(2)),
+      remainingDays,
+      expiryProgress: elapsedProgress,
+    };
+  });
+}
 
 async function resolveEmployeeId(userId?: string, employeeId?: string): Promise<string | undefined> {
   if (employeeId) return employeeId;
@@ -321,7 +384,7 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
 
   const result = Array.from(itemsMap.values());
   result.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  return result;
+  return addOffsetExpiryAndFifo(result);
 }
 
 export async function fetchLeaveHistory(userId?: string, employeeId?: string): Promise<BalanceHistoryItem[]> {

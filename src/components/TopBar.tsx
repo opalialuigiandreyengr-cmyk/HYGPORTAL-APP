@@ -29,6 +29,8 @@ type Props = {
   onOpenRewards?: () => void;
   onBackHome?: () => void;
   backTitle?: string;
+  backTitleMultiline?: boolean;
+  backTitleLines?: string[];
   backSubtitle?: string;
   backAccessory?: 'sparkles' | 'info';
   onBackAccessory?: () => void;
@@ -51,6 +53,8 @@ export function TopBar({
   onOpenRewards,
   onBackHome,
   backTitle,
+  backTitleMultiline = false,
+  backTitleLines,
   backSubtitle,
   backAccessory,
   onBackAccessory,
@@ -127,7 +131,22 @@ export function TopBar({
         {backTitle ? (
           <View style={styles.centerTitleWrap} pointerEvents="none">
             {backSubtitle ? <Text style={styles.centerSubtitle} numberOfLines={1}>{backSubtitle}</Text> : null}
-            <Text style={styles.centerTitle} numberOfLines={1}>{backTitle}</Text>
+            {backTitleLines?.length ? (
+              <View style={styles.centerTitleLines}>
+                {backTitleLines.map((line) => (
+                  <Text key={line} style={styles.centerTitleLine} numberOfLines={1}>
+                    {line}
+                  </Text>
+                ))}
+              </View>
+            ) : (
+              <Text
+                style={[styles.centerTitle, backTitleMultiline ? styles.centerTitleMultiline : null]}
+                numberOfLines={backTitleMultiline ? 2 : 1}
+              >
+                {backTitle}
+              </Text>
+            )}
           </View>
         ) : (
           <View style={styles.centerLogoWrap} pointerEvents="none">
@@ -423,6 +442,22 @@ const styles = StyleSheet.create({
     fontSize: 20,
     lineHeight: 25,
     fontWeight: fontWeights.heavy,
+  },
+  centerTitleMultiline: {
+    fontSize: 13,
+    lineHeight: 15,
+    textAlign: 'center',
+  },
+  centerTitleLines: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  centerTitleLine: {
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 18,
+    fontWeight: fontWeights.heavy,
+    textAlign: 'center',
   },
   centerSubtitle: {
     color: colors.primary,
