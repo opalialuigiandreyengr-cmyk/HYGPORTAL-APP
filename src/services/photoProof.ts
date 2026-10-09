@@ -457,18 +457,43 @@ export async function loadPhotoProofs(userFilter?: {
 export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boolean> {
   let base64Photo = item.photoUri;
 
-  // 1. Convert local file:/// URI to base64 string on native mobile devices
-  if (Platform.OS !== 'web' && item.photoUri && !item.photoUri.startsWith('data:')) {
+  // 1. Convert local file:/// URI to base64 string on native mobile devices or read blob on web
+  if (Platform.OS !== 'web') {
+    if (item.photoUri && !item.photoUri.startsWith('data:') && !item.photoUri.startsWith('http')) {
+      try {
+        base64Photo = await FileSystem.readAsStringAsync(item.photoUri, {
+          encoding: FileSystem.EncodingType?.Base64 || 'base64',
+        });
+      } catch (readErr) {
+        if (item.localFileUri && item.localFileUri !== item.photoUri) {
+          try {
+            base64Photo = await FileSystem.readAsStringAsync(item.localFileUri, {
+              encoding: FileSystem.EncodingType?.Base64 || 'base64',
+            });
+          } catch {
+            console.warn('Failed to read localFileUri as base64:', readErr);
+          }
+        }
+      }
+    }
+  } else if (Platform.OS === 'web' && item.photoUri && item.photoUri.startsWith('blob:')) {
     try {
-      base64Photo = await FileSystem.readAsStringAsync(item.photoUri, {
-        encoding: FileSystem.EncodingType?.Base64 || 'base64',
+      const res = await fetch(item.photoUri);
+      const blob = await res.blob();
+      base64Photo = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
       });
-    } catch (readErr) {
-      console.warn('Failed to read photo file as base64:', readErr);
+    } catch (blobErr) {
+      console.warn('Failed to read blob as base64 on web:', blobErr);
     }
   }
 
-  if (!base64Photo || base64Photo.startsWith('file://') || base64Photo.length < 100) {
+  const isAlreadyOnDrive = Boolean(item.driveFileId && (item.photoUri.startsWith('http') || item.driveWebViewLink));
+
+  if (!isAlreadyOnDrive && (!base64Photo || base64Photo.startsWith('file://') || base64Photo.length < 100)) {
     console.warn('[PhotoProofSync] Photo data is unavailable or unreadable; upload cancelled.');
     return false;
   }
@@ -495,10 +520,19 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
 
   const isUUID = resolvedEmployeeId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(resolvedEmployeeId);
 
-  // 2. Attempt Google Apps Script Upload first (100% free, uses personal Drive storage)
-  let driveResult = await uploadViaGoogleAppsScript(item, base64Photo);
-  if (!driveResult) {
-    driveResult = await uploadDirectToGoogleDrive(item, base64Photo);
+  let driveResult: { driveFileId: string; driveWebViewLink: string; photoUrl: string } | null = null;
+  if (isAlreadyOnDrive) {
+    driveResult = {
+      driveFileId: item.driveFileId!,
+      driveWebViewLink: item.driveWebViewLink || `https://drive.google.com/file/d/${item.driveFileId}/view`,
+      photoUrl: item.photoUri,
+    };
+  } else {
+    // 2. Attempt Google Apps Script Upload first (100% free, uses personal Drive storage)
+    driveResult = await uploadViaGoogleAppsScript(item, base64Photo);
+    if (!driveResult) {
+      driveResult = await uploadDirectToGoogleDrive(item, base64Photo);
+    }
   }
   let cloudRecordId: string | null = null;
 
@@ -579,9 +613,12 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
       console.log('[PhotoProofSync] Update attempt result:', { updatedRows, updateErr });
 
       if (!updateErr && updatedRows && updatedRows.length > 0) {
+        const oldId = item.id;
+        item.id = cloudRecordId!;
+        item.syncedToCloud = true;
         const current = await loadPhotoProofs();
         const updated = current.map((p) =>
-          p.id === item.id ? { ...p, id: cloudRecordId!, employeeId: isUUID ? resolvedEmployeeId : null, syncedToCloud: true } : p,
+          p.id === oldId || p.id === item.id ? { ...p, id: cloudRecordId!, employeeId: isUUID ? resolvedEmployeeId : null, syncedToCloud: true } : p,
         );
         await setCacheJSON(PHOTO_PROOFS_KEY, updated);
         return true;
@@ -641,8 +678,11 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
           .single();
 
         if (!retry.error && retry.data?.id) {
+          const oldId = item.id;
+          item.id = retry.data.id;
+          item.syncedToCloud = true;
           const current = await loadPhotoProofs();
-          const updated = current.map((p) => (p.id === item.id ? { ...p, id: retry.data.id, syncedToCloud: true } : p));
+          const updated = current.map((p) => (p.id === oldId || p.id === item.id ? { ...p, id: retry.data.id, syncedToCloud: true } : p));
           await setCacheJSON(PHOTO_PROOFS_KEY, updated);
           return true;
         }
@@ -650,9 +690,12 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
     }
 
     if (!insertErr && insertedData?.id) {
+      const oldId = item.id;
+      item.id = insertedData.id;
+      item.syncedToCloud = true;
       // Sync local item ID to match cloud row UUID
       const current = await loadPhotoProofs();
-      const updated = current.map((p) => (p.id === item.id ? { ...p, id: insertedData.id, employeeId: isUUID ? resolvedEmployeeId : null, syncedToCloud: true } : p));
+      const updated = current.map((p) => (p.id === oldId || p.id === item.id ? { ...p, id: insertedData.id, employeeId: isUUID ? resolvedEmployeeId : null, syncedToCloud: true } : p));
       await setCacheJSON(PHOTO_PROOFS_KEY, updated);
       return true;
     }
@@ -661,6 +704,107 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
   }
 
   return Boolean(item.driveFileId || item.driveWebViewLink);
+}
+
+export async function uploadGalleryPhotoProof({
+  uri,
+  base64,
+  width,
+  height,
+  employeeId,
+  employeeName,
+  userEmail,
+  storeName,
+  locationText,
+  latitude,
+  longitude,
+}: {
+  uri: string;
+  base64?: string | null;
+  width?: number;
+  height?: number;
+  employeeId?: string | null;
+  employeeName?: string | null;
+  userEmail?: string | null;
+  storeName?: string | null;
+  locationText?: string | null;
+  latitude?: number;
+  longitude?: number;
+}): Promise<{ item: PhotoProofItem; cloudSyncSucceeded: boolean }> {
+  let resolvedEmpId = employeeId;
+  let resolvedName = employeeName;
+  let resolvedEmail = userEmail;
+
+  if (!resolvedEmpId || !resolvedName || !resolvedEmail) {
+    try {
+      const { data: userRes } = await supabase.auth.getUser();
+      const authUser = userRes?.user;
+      if (authUser) {
+        if (!resolvedEmail) resolvedEmail = authUser.email || null;
+        if (!resolvedEmpId) resolvedEmpId = authUser.id;
+        if (!resolvedName || resolvedName === 'Employee') {
+          resolvedName = authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'Employee';
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  let resolvedLoc = locationText;
+  let resolvedLat = latitude;
+  let resolvedLon = longitude;
+  if (!resolvedLoc) {
+    try {
+      const info = await getCurrentLocationInfo(storeName);
+      resolvedLoc = info.locationText;
+      resolvedLat = info.latitude;
+      resolvedLon = info.longitude;
+    } catch {
+      resolvedLoc = storeName || 'Tacloban City, 6500';
+    }
+  }
+
+  const now = new Date();
+  const tsFormatted = formatProofTimestamp(now);
+  const photoUri = base64 ? `data:image/jpeg;base64,${base64}` : uri;
+
+  const newItem: PhotoProofItem = {
+    id: `proof_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    photoUri,
+    timestamp: now.toISOString(),
+    timeDigits: tsFormatted.timeDigits,
+    timePeriod: tsFormatted.timePeriod,
+    dateFormatted: tsFormatted.dateFormatted,
+    dayFormatted: tsFormatted.dayFormatted,
+    locationText: resolvedLoc || 'Tacloban City, 6500',
+    latitude: resolvedLat,
+    longitude: resolvedLon,
+    employeeId: resolvedEmpId || null,
+    employeeName: resolvedName || 'Employee',
+    userEmail: resolvedEmail || null,
+    storeName: storeName || null,
+    imageWidth: width,
+    imageHeight: height,
+    isWatermarked: false,
+    localFileUri: uri,
+  };
+
+  console.log('[uploadGalleryPhotoProof] Storing gallery photo proof for:', {
+    employeeName: newItem.employeeName,
+    employeeId: newItem.employeeId,
+    storeName: newItem.storeName,
+  });
+
+  const cloudSyncSucceeded = await savePhotoProof(newItem);
+  console.log('[uploadGalleryPhotoProof] Completed sync:', {
+    cloudSyncSucceeded,
+    driveFileId: newItem.driveFileId,
+    driveWebViewLink: newItem.driveWebViewLink,
+    photoProofId: newItem.id,
+  });
+
+  return { item: newItem, cloudSyncSucceeded };
 }
 
 

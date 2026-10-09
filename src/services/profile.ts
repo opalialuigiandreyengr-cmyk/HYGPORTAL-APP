@@ -1,6 +1,6 @@
 import { supabase } from '../lib/supabase';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
-import { hasReachedSixMonths } from '../utils/dateTime';
+import { hasReachedOneMonth, hasReachedSixMonths } from '../utils/dateTime';
 
 type UserProfileRow = {
   id: string;
@@ -410,24 +410,37 @@ export async function loadEmployeeProfile(authUserId: string): Promise<ProfileLo
       }
     : {};
 
-  if (
-    assignmentDetails.dateHired &&
-    hasReachedSixMonths(assignmentDetails.dateHired) &&
-    profileDetails.employeeType?.trim().toLowerCase() === 'probationary'
-  ) {
-    profileDetails.employeeType = 'Regular';
-    try {
-      await supabase
-        .from('employee_profile_details')
-        .upsert(
-          {
-            employee_id: employee.id,
-            employee_type: 'Regular',
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'employee_id' },
-        );
-    } catch (_) {}
+  if (assignmentDetails.dateHired) {
+    const currentType = profileDetails.employeeType?.trim().toLowerCase();
+    let newType: string | null = null;
+
+    if (
+      hasReachedSixMonths(assignmentDetails.dateHired) &&
+      (currentType === 'probationary' || currentType === 'trainee')
+    ) {
+      newType = 'Regular';
+    } else if (
+      hasReachedOneMonth(assignmentDetails.dateHired) &&
+      currentType === 'trainee'
+    ) {
+      newType = 'Probationary';
+    }
+
+    if (newType) {
+      profileDetails.employeeType = newType;
+      try {
+        await supabase
+          .from('employee_profile_details')
+          .upsert(
+            {
+              employee_id: employee.id,
+              employee_type: newType,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'employee_id' },
+          );
+      } catch (_) {}
+    }
   }
 
   return {

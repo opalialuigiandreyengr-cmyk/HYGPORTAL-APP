@@ -361,6 +361,7 @@ export function DashboardScreen({
         annualCreditDays={summary.annual_credit_days}
         onClose={() => setBalanceHistoryVisible(false)}
         onRefreshDashboard={refreshDashboard}
+        hasTabBar={true}
       />
     );
   }

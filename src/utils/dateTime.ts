@@ -264,3 +264,57 @@ export function hasReachedSixMonths(
   if (refMonth < targetMonth) return false;
   return refDay >= targetDay;
 }
+
+/**
+ * Checks if an employee has reached at least 1 month of service
+ * from their date hired.
+ */
+export function hasReachedOneMonth(
+  dateHired: string | null | undefined,
+  referenceDate: Date = new Date(),
+): boolean {
+  if (!dateHired) return false;
+  const clean = dateHired.trim();
+  if (clean.length < 4 || clean === '-') return false;
+
+  let hireYear: number;
+  let hireMonth: number; // 1-indexed
+  let hireDay: number;
+
+  const ymdMatch = clean.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  const mdyMatch = clean.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+
+  if (ymdMatch) {
+    hireYear = parseInt(ymdMatch[1], 10);
+    hireMonth = parseInt(ymdMatch[2], 10);
+    hireDay = parseInt(ymdMatch[3], 10);
+  } else if (mdyMatch) {
+    hireMonth = parseInt(mdyMatch[1], 10);
+    hireDay = parseInt(mdyMatch[2], 10);
+    hireYear = parseInt(mdyMatch[3], 10);
+  } else {
+    const d = new Date(clean);
+    if (isNaN(d.getTime())) return false;
+    hireYear = d.getFullYear();
+    hireMonth = d.getMonth() + 1;
+    hireDay = d.getDate();
+  }
+
+  // Calculate 1 month anniversary date:
+  const totalMonths = hireMonth - 1 + 1;
+  const targetYear = hireYear + Math.floor(totalMonths / 12);
+  const targetMonth = (totalMonths % 12) + 1; // 1-indexed
+  // Last day in targetMonth (day 0 of targetMonth in next month):
+  const daysInTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
+  const targetDay = Math.min(hireDay, daysInTargetMonth);
+
+  const refYear = referenceDate.getFullYear();
+  const refMonth = referenceDate.getMonth() + 1;
+  const refDay = referenceDate.getDate();
+
+  if (refYear > targetYear) return true;
+  if (refYear < targetYear) return false;
+  if (refMonth > targetMonth) return true;
+  if (refMonth < targetMonth) return false;
+  return refDay >= targetDay;
+}

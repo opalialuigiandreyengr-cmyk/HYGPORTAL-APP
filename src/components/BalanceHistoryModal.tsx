@@ -27,6 +27,7 @@ import {
 
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getSafeBottomInset, getScreenBottomPadding } from '../utils/safeArea';
 import { fetchLeaveHistory, fetchOffsetHistory, type BalanceHistoryItem } from '../services/balanceHistory';
 import { scheduleOffsetExpiryAlerts } from '../services/notificationCenter';
 import { TopBar } from './TopBar';
@@ -45,6 +46,7 @@ type BalanceHistoryPageProps = {
   annualCreditDays?: number;
   onClose: () => void;
   onRefreshDashboard?: () => void;
+  hasTabBar?: boolean;
 };
 
 type TransactionFilter = 'all' | 'earned' | 'deducted';
@@ -102,6 +104,7 @@ export function BalanceHistoryPage({
   annualCreditDays = 0,
   onClose,
   onRefreshDashboard,
+  hasTabBar = true,
 }: BalanceHistoryPageProps) {
   const [activeTab, setActiveTab] = useState<'offset' | 'leave'>(initialTab);
   const [offsetHistory, setOffsetHistory] = useState<BalanceHistoryItem[]>([]);
@@ -193,9 +196,10 @@ export function BalanceHistoryPage({
   }, [filteredItems]);
 
   const insets = useSafeAreaInsets();
+  const screenBottomPadding = getScreenBottomPadding(insets.bottom, hasTabBar, 28);
 
   return (
-    <View style={[styles.page, { paddingBottom: insets.bottom }]}>
+    <View style={styles.page}>
       <StatusBar style="dark" />
       <TopBar
         name={name}
@@ -210,7 +214,15 @@ export function BalanceHistoryPage({
         backTitleLines={isOffset ? ['Offset Balance History'] : ['Leave Credit History']}
       />
 
-      <View style={styles.content}>
+      <View
+        style={[
+          styles.content,
+          {
+            paddingLeft: Math.max(spacing.md, insets.left),
+            paddingRight: Math.max(spacing.md, insets.right),
+          },
+        ]}
+      >
         {/* Segmented Tab Switcher */}
           <View style={styles.tabBar}>
             <TouchableOpacity
@@ -238,7 +250,10 @@ export function BalanceHistoryPage({
 
           <ScrollView
             style={styles.scrollArea}
-            contentContainerStyle={styles.scrollContent}
+            contentContainerStyle={[
+              styles.scrollContent,
+              { paddingBottom: screenBottomPadding },
+            ]}
             stickyHeaderIndices={[1]}
             showsVerticalScrollIndicator={false}
             nestedScrollEnabled={true}

@@ -578,7 +578,7 @@ export function PhotoProofScreen({
         style={[
           styles.header,
           {
-            paddingTop: Platform.OS === 'web' ? 14 : Math.max(insets.top + (Platform.OS === 'android' ? 8 : 0), 14),
+            paddingTop: Math.max(insets.top + (Platform.OS === 'android' ? 8 : 10), 16),
           },
         ]}
       >
@@ -755,8 +755,8 @@ export function PhotoProofScreen({
         style={[
           styles.bottomBar,
           {
-            paddingBottom: Platform.OS === 'web' ? 12 : getSafeBottomInset(insets.bottom, 12),
-            minHeight: Platform.OS === 'web' ? 140 : Math.max(120 + getSafeBottomInset(insets.bottom, 0), 140),
+            paddingBottom: getSafeBottomInset(insets.bottom, 14),
+            minHeight: Math.max(110 + getSafeBottomInset(insets.bottom, 0), 126),
           },
         ]}
       >

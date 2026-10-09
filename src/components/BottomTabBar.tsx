@@ -11,7 +11,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, fontWeights, spacing } from '../theme';
-import { getSafeBottomInset } from '../utils/safeArea';
+import { getBottomTabBarSafeInset } from '../utils/safeArea';
 
 export type TabKey = 'home' | 'requests' | 'approvals' | 'notifications' | 'perks' | 'profile' | 'settings' | 'rewards' | 'my_team';
 
@@ -39,7 +39,7 @@ export function BottomTabBar({
   showApprovals?: boolean;
 }) {
   const insets = useSafeAreaInsets();
-  const safeBottom = getSafeBottomInset(insets.bottom, 8);
+  const safeBottom = getBottomTabBarSafeInset(insets.bottom);
   const transitionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function changeTab(tab: TabKey) {
@@ -77,9 +77,9 @@ export function BottomTabBar({
             >
               <View style={styles.iconSlot}>
                 <Icon
-                  size={22}
+                  size={20}
                   color={active ? colors.brand.gold : '#cbd5e1'}
-                  strokeWidth={active ? 2.8 : 2.3}
+                  strokeWidth={active ? 2.6 : 2.2}
                 />
                 {count > 0 ? <TabBadge count={count} /> : null}
               </View>
@@ -97,9 +97,9 @@ export function BottomTabBar({
             ]}
             onPress={onAssistant}
             disabled={!onAssistant}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            <Bot size={30} color={colors.brand.ink} strokeWidth={2.8} />
+            <Bot size={26} color={colors.brand.ink} strokeWidth={2.8} />
           </Pressable>
         </View>
 
@@ -118,9 +118,9 @@ export function BottomTabBar({
             >
               <View style={styles.iconSlot}>
                 <Icon
-                  size={22}
+                  size={20}
                   color={active ? colors.brand.gold : '#cbd5e1'}
-                  strokeWidth={active ? 2.8 : 2.3}
+                  strokeWidth={active ? 2.6 : 2.2}
                 />
                 {count > 0 ? <TabBadge count={count} /> : null}
               </View>
@@ -153,7 +153,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#071426',
     borderTopWidth: 1,
     borderTopColor: '#173152',
-    paddingTop: 8,
+    paddingTop: 6,
     paddingHorizontal: 8,
     elevation: 10,
     shadowColor: '#000',
@@ -163,12 +163,12 @@ const styles = StyleSheet.create({
   },
   tab: {
     flex: 1,
-    minHeight: 52,
+    height: 46,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
+    gap: 3,
     borderRadius: 8,
-    paddingVertical: 5,
+    paddingVertical: 2,
   },
   tabActive: {
     backgroundColor: 'rgba(250, 204, 21, 0.12)',
@@ -180,19 +180,19 @@ const styles = StyleSheet.create({
     transform: [{ scale: 0.96 }],
   },
   iconSlot: {
-    width: 28,
-    height: 24,
+    width: 26,
+    height: 22,
     alignItems: 'center',
     justifyContent: 'center',
   },
   badge: {
     position: 'absolute',
-    top: -5,
-    right: -7,
-    minWidth: 17,
-    height: 17,
-    borderRadius: 9,
-    paddingHorizontal: 4,
+    top: -4,
+    right: -6,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 3,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#ef4444',
@@ -201,31 +201,31 @@ const styles = StyleSheet.create({
   },
   badgeText: {
     color: colors.surface,
-    fontSize: 10,
-    lineHeight: 12,
+    fontSize: 9,
+    lineHeight: 11,
     fontWeight: fontWeights.heavy,
   },
   plusSlot: {
-    width: 68,
-    minHeight: 52,
+    width: 58,
+    height: 46,
     alignItems: 'center',
     justifyContent: 'center',
   },
   plusButton: {
-    width: 50,
-    height: 50,
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 25,
+    borderRadius: 22,
     backgroundColor: colors.brand.gold,
-    borderWidth: 3,
+    borderWidth: 2.5,
     borderColor: '#071426',
-    marginTop: -24,
+    marginTop: -16,
     elevation: 12,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 5 },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.24,
-    shadowRadius: 10,
+    shadowRadius: 8,
   },
   plusButtonDisabled: {
     opacity: 0.52,
@@ -234,8 +234,8 @@ const styles = StyleSheet.create({
     transform: [{ scale: 0.94 }],
   },
   label: {
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 11,
+    lineHeight: 14,
     fontWeight: fontWeights.bold,
     color: '#cbd5e1',
   },

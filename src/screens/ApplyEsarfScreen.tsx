@@ -1,5 +1,6 @@
-import React, { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import React, { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   BackHandler,
   Image,
   Keyboard,
@@ -48,6 +49,7 @@ import {
   syncPhotoProofToCloud,
   uploadDirectToGoogleDrive,
   uploadViaGoogleAppsScript,
+  uploadGalleryPhotoProof,
   formatProofTimestamp,
   type PhotoProofItem,
 } from '../services/photoProof';
@@ -117,9 +119,9 @@ export type EsarfEntry = {
 export function isProofRequiredForTransactions(transactionStr?: string | null): boolean {
   if (!transactionStr) return false;
   const keys = parseEntryTransactions(transactionStr);
-  if (keys.length === 0) return false;
-  const requiredKeys = ['ot', 'fio', 'ob', 'offset'];
-  return keys.some((k) => requiredKeys.includes(k));
+  if (keys.some((k) => k.toLowerCase() === 'fio')) return true;
+  const raw = transactionStr.toLowerCase();
+  return raw.includes('fio') || raw.includes('failure to punch');
 }
 
 
@@ -519,6 +521,37 @@ export function ApplyEsarfScreen({
   const [previewProof, setPreviewProof] = useState<EsarfAttachment | null>(null);
   const [photoProofsList, setPhotoProofsList] = useState<PhotoProofItem[]>([]);
   const [isLoadingPhotoProofs, setIsLoadingPhotoProofs] = useState(false);
+  const [isUploadingGalleryProof, setIsUploadingGalleryProof] = useState(false);
+  const [galleryUploadStatus, setGalleryUploadStatus] = useState<string>('');
+
+  const resolveCurrentUserInfo = useCallback(async () => {
+    let resolvedEmpId = employeeId;
+    let resolvedEmail = userEmail || username;
+    let resolvedName = employeeName || name;
+    let resolvedAuthId = authUserId;
+
+    if (!resolvedEmpId || !resolvedEmail || !resolvedAuthId || !resolvedName) {
+      try {
+        const authUser = (await supabase.auth.getUser()).data?.user;
+        if (authUser) {
+          if (!resolvedAuthId) resolvedAuthId = authUser.id;
+          if (!resolvedEmail) resolvedEmail = authUser.email;
+          if (!resolvedEmpId) resolvedEmpId = authUser.id;
+          if (!resolvedName) resolvedName = authUser.user_metadata?.full_name || authUser.email?.split('@')[0];
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return {
+      resolvedEmpId,
+      resolvedEmail,
+      resolvedName: resolvedName || 'Employee',
+      resolvedAuthId,
+      resolvedStore: profileStoreName || null,
+    };
+  }, [employeeId, userEmail, username, employeeName, name, authUserId, profileStoreName]);
 
   const pickFromGallery = async (entryIndex: number) => {
     try {
@@ -530,31 +563,69 @@ export function ApplyEsarfScreen({
 
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
-        quality: 0.8,
+        quality: 0.85,
         allowsEditing: false,
+        base64: true,
       });
 
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        const asset = result.assets[0];
-        updateEntry(entryIndex, {
-          proof: {
-            uri: asset.uri,
-            source: 'gallery',
-            name: asset.fileName || 'gallery_upload.jpg',
-            timestamp: new Date().toISOString(),
-          },
-        });
-        setValidationErrors((current) => ({
-          ...current,
-          [`entry_${entryIndex}_proof`]: undefined,
-        }));
-        if (activeProofPickerIndex !== null) {
-          setActiveProofPickerIndex(null);
-        }
+      if (result.canceled || !result.assets || result.assets.length === 0) {
+        return;
+      }
+
+      setIsUploadingGalleryProof(true);
+      setGalleryUploadStatus('Detecting location & timestamp...');
+
+      const asset = result.assets[0];
+      const userInfo = await resolveCurrentUserInfo();
+
+      setGalleryUploadStatus('Uploading photo proof to Google Drive & database...');
+      const { item: savedProofItem, cloudSyncSucceeded } = await uploadGalleryPhotoProof({
+        uri: asset.uri,
+        base64: asset.base64,
+        width: asset.width,
+        height: asset.height,
+        employeeId: userInfo.resolvedEmpId,
+        employeeName: userInfo.resolvedName,
+        userEmail: userInfo.resolvedEmail,
+        storeName: userInfo.resolvedStore,
+      });
+
+      updateEntry(entryIndex, {
+        proof: {
+          uri: savedProofItem.photoUri,
+          source: 'gallery',
+          name: `${savedProofItem.dateFormatted} • ${savedProofItem.timeDigits} ${savedProofItem.timePeriod}`,
+          timestamp: savedProofItem.timestamp,
+          locationText: savedProofItem.locationText,
+          driveWebViewLink: savedProofItem.driveWebViewLink || null,
+          photoProofId: savedProofItem.id,
+        },
+      });
+
+      setValidationErrors((current) => ({
+        ...current,
+        [`entry_${entryIndex}_proof`]: undefined,
+      }));
+
+      // Prepend to proofs list so it is available across the app immediately
+      setPhotoProofsList((prev) => [savedProofItem, ...prev.filter((p) => p.id !== savedProofItem.id)]);
+
+      if (activeProofPickerIndex !== null) {
+        setActiveProofPickerIndex(null);
+      }
+
+      if (!cloudSyncSucceeded) {
+        platformAlert(
+          'Saved Locally',
+          'Photo proof was saved on this device. Cloud sync to Google Drive will finalize when you submit or connect online.',
+        );
       }
     } catch (err: any) {
       console.warn('Error picking image from gallery:', err);
       platformAlert('Upload Error', 'Failed to pick image from gallery. Please try again.');
+    } finally {
+      setIsUploadingGalleryProof(false);
+      setGalleryUploadStatus('');
     }
   };
 
@@ -562,29 +633,12 @@ export function ApplyEsarfScreen({
     setActiveProofPickerIndex(entryIndex);
     setIsLoadingPhotoProofs(true);
     try {
-      let resolvedEmpId = employeeId;
-      let resolvedEmail = userEmail;
-      let resolvedName = employeeName || name;
-      let resolvedAuthId = authUserId;
-
-      if (!resolvedEmpId || !resolvedEmail || !resolvedAuthId) {
-        try {
-          const authUser = (await supabase.auth.getUser()).data?.user;
-          if (authUser) {
-            if (!resolvedAuthId) resolvedAuthId = authUser.id;
-            if (!resolvedEmail) resolvedEmail = authUser.email;
-            if (!resolvedEmpId) resolvedEmpId = authUser.id;
-          }
-        } catch {
-          // ignore
-        }
-      }
-
+      const userInfo = await resolveCurrentUserInfo();
       const proofs = await loadPhotoProofs({
-        employeeId: resolvedEmpId,
-        employeeName: resolvedName,
-        userEmail: resolvedEmail,
-        authUserId: resolvedAuthId,
+        employeeId: userInfo.resolvedEmpId,
+        employeeName: userInfo.resolvedName,
+        userEmail: userInfo.resolvedEmail,
+        authUserId: userInfo.resolvedAuthId,
       });
       setPhotoProofsList(proofs);
     } catch (err) {
@@ -1320,6 +1374,12 @@ export function ApplyEsarfScreen({
         } else if (diff > 1) {
           errors[`entry_${i}_dateTo`] = `Request #${num}: ESARF date range can only be for a single day or two consecutive days (e.g., overnight overtime).`;
         }
+        const hasOt = transKeys.includes('ot');
+        const hasUseOffset = transKeys.includes('use_offset');
+        const todayStr = formatDateInput(new Date());
+        if ((entry.dateFrom > todayStr || entry.dateTo > todayStr) && !hasOt && !hasUseOffset) {
+          errors[`entry_${i}_dateFrom`] = `Request #${num}: Future dates are only permitted for Overtime (OT) or Use Offset requests.`;
+        }
       }
       if (!entry.timeFrom) errors[`entry_${i}_timeFrom`] = `Request #${num}: Time From is required.`;
       if (!entry.timeTo) errors[`entry_${i}_timeTo`] = `Request #${num}: Time To is required.`;
@@ -1347,14 +1407,10 @@ export function ApplyEsarfScreen({
       }
       if (!entry.reason.trim()) errors[`entry_${i}_reason`] = `Request #${num}: Reason is required.`;
 
-      // Photo proof requirement for OT, FIO, OB, Offset or combinations
+      // Photo proof requirement for FIO transaction only
       const needsProof = isProofRequiredForTransactions(entry.transaction);
       if (needsProof && !entry.proof?.uri) {
-        const transLabel = transactionOptions
-          .filter((t) => transKeys.includes(t.key) && ['ot', 'fio', 'ob', 'offset'].includes(t.key))
-          .map((t) => t.shortLabel || t.label)
-          .join(', ');
-        errors[`entry_${i}_proof`] = `Request #${num}: Photo proof is required for ${transLabel || 'this transaction'}.`;
+        errors[`entry_${i}_proof`] = `Request #${num}: Photo proof is required for Failure to Punch In/Out (FIO).`;
       }
     });
 
@@ -1388,7 +1444,7 @@ export function ApplyEsarfScreen({
     }, 12000);
 
     try {
-      // 0. Ensure all attached proofs have valid Google Drive links before submitting
+      // 0. Ensure all attached proofs have valid Google Drive links and database IDs before submitting
       for (let i = 0; i < entries.length; i++) {
         const e = entries[i];
         if (e.proof) {
@@ -1406,11 +1462,12 @@ export function ApplyEsarfScreen({
             }
           }
 
-          // Upload to Google Drive if missing link (e.g. from gallery or sync still pending)
+          // Upload to Google Drive and database if missing link (e.g. from gallery or sync still pending)
           try {
-            setSubmitStatus(`Syncing photo proof for Request #${i + 1} to Google Drive...`);
+            setSubmitStatus(`Syncing photo proof for Request #${i + 1} to Google Drive & database...`);
             const now = new Date(e.proof.timestamp || Date.now());
             const tsFormatted = formatProofTimestamp(now);
+            const userInfo = await resolveCurrentUserInfo();
             const proofItemToUpload: PhotoProofItem = {
               id: e.proof.photoProofId || `proof_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
               photoUri: e.proof.uri,
@@ -1419,29 +1476,20 @@ export function ApplyEsarfScreen({
               timePeriod: tsFormatted.timePeriod,
               dateFormatted: tsFormatted.dateFormatted,
               dayFormatted: tsFormatted.dayFormatted,
-              locationText: e.proof.locationText || 'Tacloban City, 6500',
-              employeeName: name || undefined,
-              userEmail: username || undefined,
-              storeName: profileStoreName || undefined,
+              locationText: e.proof.locationText || userInfo.resolvedStore || 'Tacloban City, 6500',
+              employeeId: userInfo.resolvedEmpId || null,
+              employeeName: userInfo.resolvedName,
+              userEmail: userInfo.resolvedEmail || null,
+              storeName: userInfo.resolvedStore,
               isWatermarked: false,
             };
 
-            const uploadRes =
-              (await uploadViaGoogleAppsScript(proofItemToUpload)) ||
-              (await uploadDirectToGoogleDrive(proofItemToUpload));
+            await savePhotoProof(proofItemToUpload);
 
-            if (uploadRes?.driveWebViewLink) {
-              e.proof.driveWebViewLink = uploadRes.driveWebViewLink;
-              e.proof.uri = uploadRes.photoUrl || e.proof.uri;
-              proofItemToUpload.driveFileId = uploadRes.driveFileId;
-              proofItemToUpload.driveWebViewLink = uploadRes.driveWebViewLink;
-              void syncPhotoProofToCloud(proofItemToUpload);
-            } else {
-              const syncSuccess = await syncPhotoProofToCloud(proofItemToUpload);
-              if (syncSuccess && proofItemToUpload.driveWebViewLink) {
-                e.proof.driveWebViewLink = proofItemToUpload.driveWebViewLink;
-                e.proof.uri = proofItemToUpload.photoUri || e.proof.uri;
-              }
+            if (proofItemToUpload.driveWebViewLink) {
+              e.proof.driveWebViewLink = proofItemToUpload.driveWebViewLink;
+              e.proof.uri = proofItemToUpload.photoUri || e.proof.uri;
+              e.proof.photoProofId = proofItemToUpload.id;
             }
           } catch (uploadErr) {
             console.warn(`[ApplyEsarf] Upload proof for entry ${i + 1} exception:`, uploadErr);
@@ -1542,7 +1590,8 @@ export function ApplyEsarfScreen({
           const isOffset = keys.includes('offset');
           const hrs = getEntryTotalHours(firstEntry);
           const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
-          combinedReason = `${cleanReasonText(firstEntry.reason)}${actualTag}${formatProofTag(firstEntry.proof)}`.trim();
+          const proofTag = formatProofTag(firstEntry.proof);
+          combinedReason = `${cleanReasonText(firstEntry.reason)}${actualTag}${proofTag}`.trim();
         } else {
           combinedReason = entries
             .map((e, idx) => {
@@ -1700,7 +1749,8 @@ export function ApplyEsarfScreen({
           const isOffset = keys.includes('offset');
           const hrs = getEntryTotalHours(firstEntry);
           const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
-          combinedReason = `${cleanReasonText(firstEntry.reason)}${actualTag}${formatProofTag(firstEntry.proof)}`.trim();
+          const proofTag = formatProofTag(firstEntry.proof);
+          combinedReason = `${cleanReasonText(firstEntry.reason)}${actualTag}${proofTag}`.trim();
         } else {
           combinedReason = groupEntries
             .map((e, idx) => {
@@ -2447,11 +2497,18 @@ export function ApplyEsarfScreen({
                             <Pressable
                               style={styles.offsetQuickSwitchBtn}
                               onPress={() => {
-                                updateEntry(actualIndex, { transaction: 'ot' });
+                                const proofStillRequired = isProofRequiredForTransactions('ot');
+                                updateEntry(actualIndex, {
+                                  transaction: 'ot',
+                                  ...(!proofStillRequired ? { proof: null } : {}),
+                                });
                                 setValidationErrors((current) => ({
                                   ...current,
                                   [`entry_${actualIndex}_transaction`]: undefined,
                                   [`entry_${actualIndex}_offsetHours`]: undefined,
+                                  ...(!proofStillRequired
+                                    ? { [`entry_${actualIndex}_proof`]: undefined }
+                                    : {}),
                                 }));
                               }}
                             >
@@ -2491,11 +2548,18 @@ export function ApplyEsarfScreen({
                           style={styles.offsetAddBtn}
                           onPress={() => {
                             const newKeys = Array.from(new Set([...entryTransKeys, 'offset'])).join(',');
-                            updateEntry(actualIndex, { transaction: newKeys });
+                            const proofStillRequired = isProofRequiredForTransactions(newKeys);
+                            updateEntry(actualIndex, {
+                              transaction: newKeys,
+                              ...(!proofStillRequired ? { proof: null } : {}),
+                            });
                             setValidationErrors((current) => ({
                               ...current,
                               [`entry_${actualIndex}_transaction`]: undefined,
                               [`entry_${actualIndex}_offsetHours`]: undefined,
+                              ...(!proofStillRequired
+                                ? { [`entry_${actualIndex}_proof`]: undefined }
+                                : {}),
                             }));
                           }}
                         >
@@ -2810,76 +2874,98 @@ export function ApplyEsarfScreen({
                     </Pressable>
                   </View>
 
-                  <ScrollView style={styles.proofPickerScroll} contentContainerStyle={styles.proofPickerScrollContent}>
-                    {/* Quick action: Gallery */}
-                    <Text style={styles.proofPickerSectionHeading}>Upload New Picture</Text>
-                    <View style={styles.proofPickerQuickRow}>
-                      <Pressable
-                        style={({ pressed }) => [
-                          styles.proofPickerQuickCard,
-                          pressed ? styles.proofPickerQuickCardPressed : null,
-                        ]}
-                        onPress={() => pickFromGallery(activeProofPickerIndex)}
-                      >
-                        <View style={[styles.proofPickerQuickIconWrap, { backgroundColor: '#f3e8ff' }]}>
-                          <ImageIcon size={22} color="#7e22ce" strokeWidth={2.2} />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.proofPickerQuickTitle}>Upload from Gallery</Text>
-                          <Text style={styles.proofPickerQuickDesc}>Select photo from device library</Text>
-                        </View>
-                      </Pressable>
+                  {isUploadingGalleryProof ? (
+                    <View style={styles.galleryUploadLoadingContainer}>
+                      <ActivityIndicator size="large" color="#7e22ce" />
+                      <Text style={styles.galleryUploadLoadingTitle}>Uploading Photo Proof</Text>
+                      <Text style={styles.galleryUploadLoadingDesc}>
+                        {galleryUploadStatus || 'Uploading to Google Drive & saving to database...'}
+                      </Text>
                     </View>
-
-                    {/* Photo Proof Log */}
-                    <View style={styles.proofPickerDividerRow}>
-                      <View style={styles.proofPickerDividerLine} />
-                      <Text style={styles.proofPickerDividerText}>OR CHOOSE FROM PHOTO PROOFS LOG</Text>
-                      <View style={styles.proofPickerDividerLine} />
-                    </View>
-
-                    {isLoadingPhotoProofs ? (
-                      <View style={styles.proofPickerLoadingWrap}>
-                        <Text style={styles.proofPickerLoadingText}>Loading your photo proofs...</Text>
+                  ) : (
+                    <ScrollView style={styles.proofPickerScroll} contentContainerStyle={styles.proofPickerScrollContent}>
+                      {/* Quick action: Gallery */}
+                      <Text style={styles.proofPickerSectionHeading}>Upload New Picture</Text>
+                      <View style={styles.proofPickerQuickRow}>
+                        <Pressable
+                          style={({ pressed }) => [
+                            styles.proofPickerQuickCard,
+                            pressed ? styles.proofPickerQuickCardPressed : null,
+                          ]}
+                          onPress={() => pickFromGallery(activeProofPickerIndex)}
+                        >
+                          <View style={[styles.proofPickerQuickIconWrap, { backgroundColor: '#f3e8ff' }]}>
+                            <ImageIcon size={22} color="#7e22ce" strokeWidth={2.2} />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.proofPickerQuickTitle}>Upload from Gallery</Text>
+                            <Text style={styles.proofPickerQuickDesc}>Select photo from device library</Text>
+                          </View>
+                        </Pressable>
                       </View>
-                    ) : photoProofsList.length === 0 ? (
-                      <View style={styles.proofPickerEmptyWrap}>
-                        <Images size={38} color="#94a3b8" strokeWidth={1.6} />
-                        <Text style={styles.proofPickerEmptyTitle}>No Photo Proofs Found</Text>
-                        <Text style={styles.proofPickerEmptyText}>
-                          You haven't captured any photo proofs in your Photo Log yet. Use the Gallery option above.
-                        </Text>
+
+                      {/* Photo Proof Log */}
+                      <View style={styles.proofPickerDividerRow}>
+                        <View style={styles.proofPickerDividerLine} />
+                        <Text style={styles.proofPickerDividerText}>OR CHOOSE FROM PHOTO PROOFS LOG</Text>
+                        <View style={styles.proofPickerDividerLine} />
                       </View>
-                    ) : (
-                      <View style={styles.proofPickerList}>
-                        {photoProofsList.map((item) => (
-                          <Pressable
-                            key={item.id}
-                            style={({ pressed }) => [
-                              styles.proofPickerItemCard,
-                              pressed ? styles.proofPickerItemCardPressed : null,
-                            ]}
-                            onPress={() => selectPhotoProofForEntry(item)}
-                          >
-                            <Image source={{ uri: item.photoUri }} style={styles.proofPickerItemThumb} resizeMode="cover" />
-                            <View style={styles.proofPickerItemInfo}>
-                              <Text style={styles.proofPickerItemTime}>
-                                {item.dateFormatted} • {item.timeDigits} {item.timePeriod}
-                              </Text>
-                              {item.locationText ? (
-                                <Text style={styles.proofPickerItemLocation} numberOfLines={2}>
-                                  {item.locationText}
+
+                      {isLoadingPhotoProofs ? (
+                        <View style={styles.proofPickerLoadingWrap}>
+                          <Text style={styles.proofPickerLoadingText}>Loading your photo proofs...</Text>
+                        </View>
+                      ) : photoProofsList.length === 0 ? (
+                        <View style={styles.proofPickerEmptyWrap}>
+                          <Images size={38} color="#94a3b8" strokeWidth={1.6} />
+                          <Text style={styles.proofPickerEmptyTitle}>No Photo Proofs Found</Text>
+                          <Text style={styles.proofPickerEmptyText}>
+                            You haven't captured any photo proofs in your Photo Log yet. Use the Gallery option above.
+                          </Text>
+                        </View>
+                      ) : (
+                        <View style={styles.proofPickerList}>
+                          {photoProofsList.map((item) => (
+                            <Pressable
+                              key={item.id}
+                              style={({ pressed }) => [
+                                styles.proofPickerItemCard,
+                                pressed ? styles.proofPickerItemCardPressed : null,
+                              ]}
+                              onPress={() => selectPhotoProofForEntry(item)}
+                            >
+                              {Platform.OS === 'web' ? (
+                                React.createElement('img', {
+                                  src: getDirectProofImageUrl(item.photoUri),
+                                  referrerPolicy: 'no-referrer',
+                                  style: { width: 48, height: 48, borderRadius: 8, objectFit: 'cover' },
+                                })
+                              ) : (
+                                <Image
+                                  source={{ uri: getDirectProofImageUrl(item.photoUri) }}
+                                  style={styles.proofPickerItemThumb}
+                                  resizeMode="cover"
+                                />
+                              )}
+                              <View style={styles.proofPickerItemInfo}>
+                                <Text style={styles.proofPickerItemTime}>
+                                  {item.dateFormatted} • {item.timeDigits} {item.timePeriod}
                                 </Text>
-                              ) : null}
-                            </View>
-                            <View style={styles.proofPickerItemSelectBtn}>
-                              <Check size={16} color="#2563eb" strokeWidth={2.4} />
-                            </View>
-                          </Pressable>
-                        ))}
-                      </View>
-                    )}
-                  </ScrollView>
+                                {item.locationText ? (
+                                  <Text style={styles.proofPickerItemLocation} numberOfLines={2}>
+                                    {item.locationText}
+                                  </Text>
+                                ) : null}
+                              </View>
+                              <View style={styles.proofPickerItemSelectBtn}>
+                                <Check size={16} color="#2563eb" strokeWidth={2.4} />
+                              </View>
+                            </Pressable>
+                          ))}
+                        </View>
+                      )}
+                    </ScrollView>
+                  )}
                 </View>
               </View>
             </Modal>
@@ -2911,7 +2997,7 @@ export function ApplyEsarfScreen({
                       onPress={() => setPreviewProof(null)}
                       hitSlop={8}
                     >
-                      <X size={20} color="#ffffff" strokeWidth={2.4} />
+                      <X size={20} color="#64748b" strokeWidth={2.4} />
                     </Pressable>
                   </View>
 
@@ -3171,14 +3257,18 @@ export function ApplyEsarfScreen({
                             newKeys = [...currentSelectedKeys, option.key];
                           }
                           const newTransStr = newKeys.join(',');
-                          updateEntry(activeTransactionSelectIndex, { transaction: newTransStr });
+                          const proofStillRequired = isProofRequiredForTransactions(newTransStr);
+                          updateEntry(activeTransactionSelectIndex, {
+                            transaction: newTransStr,
+                            ...(!proofStillRequired ? { proof: null } : {}),
+                          });
                           setValidationErrors((current) => ({
                             ...current,
                             [`entry_${activeTransactionSelectIndex}_transaction`]: undefined,
                             [`entry_${activeTransactionSelectIndex}_offsetHours`]: undefined,
                             [`entry_${activeTransactionSelectIndex}_offsetBalance`]: undefined,
                             [`entry_${activeTransactionSelectIndex}_dateTo`]: undefined,
-                            ...(!isProofRequiredForTransactions(newTransStr)
+                            ...(!proofStillRequired
                               ? { [`entry_${activeTransactionSelectIndex}_proof`]: undefined }
                               : {}),
                           }));
@@ -3230,11 +3320,21 @@ export function ApplyEsarfScreen({
               const currentEntry = entries[activeDateChoiceIndex];
               const entryTransKeys = parseEntryTransactions(currentEntry?.transaction);
               const isEntryUseOffset = entryTransKeys.includes('use_offset');
+              const isEntryHasOt =
+                entryTransKeys.includes('ot') ||
+                (currentEntry?.transaction
+                  ? currentEntry.transaction
+                      .toLowerCase()
+                      .split(/[,/]+/)
+                      .map((s) => s.trim())
+                      .some((k) => k === 'ot' || k.includes('overtime'))
+                  : false);
+              const allowFutureDates = isEntryUseOffset || isEntryHasOt;
               return (
                 <DateRangePickerModal
                   key={`esarf-date-range-${activeDateChoiceIndex}-${currentEntry?.id || activeDateChoiceIndex}`}
                   visible
-                  allowFutureDates={isEntryUseOffset}
+                  allowFutureDates={allowFutureDates}
                   initialStartDate={currentEntry?.dateFrom || ''}
                   initialEndDate={isEntryUseOffset ? currentEntry?.dateFrom || '' : currentEntry?.dateTo || ''}
                   maxRangeDays={isEntryUseOffset ? 1 : 2}
@@ -5658,27 +5758,33 @@ const styles = StyleSheet.create({
   proofPreviewCard: {
     width: '100%',
     maxWidth: 420,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#ffffff',
     borderRadius: 16,
     overflow: 'hidden',
     maxHeight: '90%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 8,
   },
   proofPreviewHeader: {
+    backgroundColor: '#ffffff',
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: '#f1f5f9',
   },
   proofPreviewTitle: {
-    color: '#ffffff',
+    color: '#0f172a',
     fontSize: 15,
     fontWeight: fontWeights.bold,
   },
   proofPreviewSubtitle: {
-    color: '#94a3b8',
+    color: '#64748b',
     fontSize: 11,
     marginTop: 2,
   },
@@ -5691,9 +5797,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#020617',
   },
   proofPreviewFooter: {
+    backgroundColor: '#ffffff',
     padding: 12,
     borderTopWidth: 1,
-    borderTopColor: '#1e293b',
+    borderTopColor: '#f1f5f9',
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: 10,
@@ -5713,14 +5820,37 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.semibold,
   },
   proofPreviewDismissBtn: {
-    backgroundColor: '#334155',
-    paddingHorizontal: 14,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   proofPreviewDismissBtnText: {
-    color: '#ffffff',
+    color: '#334155',
     fontSize: 13,
     fontWeight: fontWeights.semibold,
+  },
+  galleryUploadLoadingContainer: {
+    paddingVertical: 56,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  galleryUploadLoadingTitle: {
+    fontSize: 16,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+    marginTop: 4,
+  },
+  galleryUploadLoadingDesc: {
+    fontSize: 13,
+    color: '#64748b',
+    textAlign: 'center',
+    maxWidth: 290,
   },
 });

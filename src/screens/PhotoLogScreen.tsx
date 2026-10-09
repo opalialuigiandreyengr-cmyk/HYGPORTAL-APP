@@ -706,7 +706,7 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
         style={[
           styles.header,
           {
-            paddingTop: Platform.OS === 'web' ? 14 : Math.max(insets.top + (Platform.OS === 'android' ? 8 : 0), 14),
+            paddingTop: Math.max(insets.top + (Platform.OS === 'android' ? 8 : 10), 16),
           },
         ]}
       >
@@ -734,7 +734,7 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
             styles.listContent,
             logs.length === 0 && { flexGrow: 1, justifyContent: 'center' },
             {
-              paddingBottom: getSafeBottomInset(insets.bottom, 24) + 24,
+              paddingBottom: getSafeBottomInset(insets.bottom, 20) + 16,
             },
           ]}
           showsVerticalScrollIndicator={false}
@@ -870,7 +870,7 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
             style={[
               styles.viewerHeader,
               {
-                paddingTop: Platform.OS === 'web' ? 14 : Math.max(insets.top + (Platform.OS === 'android' ? 8 : 0), 14),
+                paddingTop: Math.max(insets.top + (Platform.OS === 'android' ? 8 : 10), 16),
               },
             ]}
           >
@@ -1059,7 +1059,7 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
             style={[
               styles.viewerBottomBar,
               {
-                paddingBottom: Platform.OS === 'web' ? 16 : getSafeBottomInset(insets.bottom, 16),
+                paddingBottom: getSafeBottomInset(insets.bottom, 16),
               },
             ]}
           >

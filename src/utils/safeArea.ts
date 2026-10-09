@@ -9,31 +9,58 @@ export const ANDROID_3BUTTON_NAV_HEIGHT = 48;
 
 /**
  * Calculates a safe bottom inset.
- * On Android, guarantees at least 48dp so the 3-button system navigation bar
- * (Back, Home, Recents) never covers or overlaps bottom elements (tab bar, buttons, footers).
+ * Returns the reported bottom inset (e.g. from react-native-safe-area-context / iOS home indicator / gesture bar),
+ * or falls back to a minimum inset when unmeasured (e.g. 0 on web/desktop).
  */
 export function getSafeBottomInset(insetsBottom: number, fallback = 0): number {
-  if (Platform.OS === 'android') {
-    // If insetsBottom is already reported (> 0), use the larger of insetsBottom or 48.
-    // If insetsBottom is 0 (unreported / edge-to-edge), fallback to 48dp.
-    return Math.max(insetsBottom, ANDROID_3BUTTON_NAV_HEIGHT);
+  if (insetsBottom > 0) {
+    return insetsBottom;
   }
-  return Math.max(insetsBottom, fallback);
+  return fallback;
+}
+
+/**
+ * Calculates safe bottom inset specifically for the bottom tab bar.
+ * Avoids excessive blank space while ensuring clearance above the home indicator / navigation bar.
+ */
+export function getBottomTabBarSafeInset(insetsBottom: number): number {
+  if (Platform.OS === 'android') {
+    // On Android:
+    // When 3-button navigation is enabled in edge-to-edge mode, insetsBottom is ~48dp,
+    // providing full clearance above the Back, Home, and Recents buttons.
+    // When gesture navigation is enabled, insetsBottom is ~16-24dp.
+    // When non-edge-to-edge (system bar outside app window), insetsBottom is 0, using 6dp baseline.
+    if (insetsBottom > 0) {
+      return insetsBottom;
+    }
+    return 6;
+  }
+
+  // On iOS / Web:
+  if (insetsBottom > 0) {
+    // On iOS devices with home indicator (34px inset),
+    // 24-26px gives comfortable clearance for the home indicator without excessive blank space.
+    if (insetsBottom >= 30) {
+      return Math.max(insetsBottom - 8, 22);
+    }
+    return insetsBottom;
+  }
+  return 6;
 }
 
 /**
  * Calculates total bottom tab bar height including safe area padding.
  */
 export function getBottomTabBarHeight(insetsBottom: number): number {
-  const safeBottom = getSafeBottomInset(insetsBottom, 8);
-  // Base tab bar container: 8dp top padding + 52dp tab button minHeight = 60dp
-  return 60 + safeBottom;
+  const safeBottom = getBottomTabBarSafeInset(insetsBottom);
+  // Base tab bar container: 6dp top padding + 46dp tab button = 52dp
+  return 52 + safeBottom;
 }
 
 /**
  * Calculates scroll view contentContainerStyle bottom padding.
  * - If screen has BottomTabBar: provides tab bar height + extra padding so the bottom-most items scroll clear of the tab bar.
- * - If screen does not have BottomTabBar: provides safeBottom + extra padding so items scroll clear of the 3-button navigation bar.
+ * - If screen does not have BottomTabBar: provides safeBottom + extra padding so items scroll clear of the navigation bar.
  */
 export function getScreenBottomPadding(insetsBottom: number, hasTabBar = false, extra = 20): number {
   if (hasTabBar) {

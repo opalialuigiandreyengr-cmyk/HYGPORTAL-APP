@@ -1170,7 +1170,7 @@ export function EsarfCardView({
               <View style={styles.proofModalHeader}>
                 <View style={{ flex: 1, marginRight: 8 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Camera size={16} color="#38bdf8" strokeWidth={2.2} />
+                    <Camera size={16} color="#0284c7" strokeWidth={2.2} />
                     <Text style={styles.proofModalTitle}>Attached Proof (Request #{entry.index})</Text>
                   </View>
                   {proofDetails ? (
@@ -1186,7 +1186,7 @@ export function EsarfCardView({
                   hitSlop={8}
                   accessibilityLabel="Close proof preview"
                 >
-                  <X size={20} color="#ffffff" strokeWidth={2.4} />
+                  <X size={20} color="#64748b" strokeWidth={2.4} />
                 </Pressable>
               </View>
 
@@ -1269,10 +1269,10 @@ export function EsarfCardView({
                   </Pressable>
                 ) : null}
                 <Pressable
-                  style={[styles.proofModalExternalBtn, { backgroundColor: '#334155' }]}
+                  style={styles.proofModalCloseFooterBtn}
                   onPress={() => setPreviewProofUrl(null)}
                 >
-                  <Text style={styles.proofModalExternalText}>Close</Text>
+                  <Text style={styles.proofModalCloseFooterText}>Close</Text>
                 </Pressable>
               </View>
             </View>
@@ -1722,27 +1722,33 @@ const styles = StyleSheet.create({
   proofModalCard: {
     width: '100%',
     maxWidth: 440,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#ffffff',
     borderRadius: 16,
     overflow: 'hidden',
     maxHeight: '92%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 8,
   },
   proofModalHeader: {
+    backgroundColor: '#ffffff',
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: '#f1f5f9',
   },
   proofModalTitle: {
-    color: '#ffffff',
+    color: '#0f172a',
     fontSize: 15,
     fontWeight: fontWeights.bold,
   },
   proofModalSubtitle: {
-    color: '#94a3b8',
+    color: '#64748b',
     fontSize: 11,
     marginTop: 2,
     fontWeight: fontWeights.medium,
@@ -1878,9 +1884,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#020617',
   },
   proofModalFooter: {
+    backgroundColor: '#ffffff',
     padding: 12,
     borderTopWidth: 1,
-    borderTopColor: '#1e293b',
+    borderTopColor: '#f1f5f9',
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: 10,
@@ -1896,6 +1903,21 @@ const styles = StyleSheet.create({
   },
   proofModalExternalText: {
     color: '#ffffff',
+    fontSize: 13,
+    fontWeight: fontWeights.semibold,
+  },
+  proofModalCloseFooterBtn: {
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  proofModalCloseFooterText: {
+    color: '#334155',
     fontSize: 13,
     fontWeight: fontWeights.semibold,
   },

@@ -20,7 +20,7 @@ type DashboardFabProps = {
 
 export function DashboardFab({ onPhotoProof, onPhotoLog, onActivityLog }: DashboardFabProps) {
   const insets = useSafeAreaInsets();
-  const baseBottom = getBottomTabBarHeight(insets.bottom) + 16;
+  const baseBottom = getBottomTabBarHeight(insets.bottom) + 12;
   const subBottom = baseBottom + 5;
   const [isOpen, setIsOpen] = useState(false);
   const animation = useRef(new Animated.Value(0)).current;

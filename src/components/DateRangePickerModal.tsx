@@ -180,8 +180,8 @@ export function DateRangePickerModal({
   const handleToday = () => {
     setStartDateStr(todayStr);
     setEndDateStr(todayStr);
-    setCurrentYear(maxYear);
-    setCurrentMonth(maxMonth);
+    setCurrentYear(todayObj.getFullYear());
+    setCurrentMonth(todayObj.getMonth());
     setWarningMsg('');
   };
 
