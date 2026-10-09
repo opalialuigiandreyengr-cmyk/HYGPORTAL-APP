@@ -116,6 +116,23 @@ export type EsarfEntry = {
   proof?: EsarfAttachment | null;
 };
 
+export function isProofAllowedForTransactions(transactionStr?: string | null): boolean {
+  if (!transactionStr) return false;
+  const keys = parseEntryTransactions(transactionStr);
+  const allowed = ['fio', 'ot', 'offset', 'ob'];
+  if (keys.some((k) => allowed.includes(k.toLowerCase()))) return true;
+  const raw = transactionStr.toLowerCase();
+  return (
+    raw.includes('fio') ||
+    raw.includes('failure to punch') ||
+    raw.includes('ot') ||
+    raw.includes('overtime') ||
+    raw.includes('offset') ||
+    raw.includes('ob') ||
+    raw.includes('official business')
+  );
+}
+
 export function isProofRequiredForTransactions(transactionStr?: string | null): boolean {
   if (!transactionStr) return false;
   const keys = parseEntryTransactions(transactionStr);
@@ -2497,16 +2514,16 @@ export function ApplyEsarfScreen({
                             <Pressable
                               style={styles.offsetQuickSwitchBtn}
                               onPress={() => {
-                                const proofStillRequired = isProofRequiredForTransactions('ot');
+                                const proofAllowed = isProofAllowedForTransactions('ot');
                                 updateEntry(actualIndex, {
                                   transaction: 'ot',
-                                  ...(!proofStillRequired ? { proof: null } : {}),
+                                  ...(!proofAllowed ? { proof: null } : {}),
                                 });
                                 setValidationErrors((current) => ({
                                   ...current,
                                   [`entry_${actualIndex}_transaction`]: undefined,
                                   [`entry_${actualIndex}_offsetHours`]: undefined,
-                                  ...(!proofStillRequired
+                                  ...(!isProofRequiredForTransactions('ot')
                                     ? { [`entry_${actualIndex}_proof`]: undefined }
                                     : {}),
                                 }));
@@ -2548,16 +2565,16 @@ export function ApplyEsarfScreen({
                           style={styles.offsetAddBtn}
                           onPress={() => {
                             const newKeys = Array.from(new Set([...entryTransKeys, 'offset'])).join(',');
-                            const proofStillRequired = isProofRequiredForTransactions(newKeys);
+                            const proofAllowed = isProofAllowedForTransactions(newKeys);
                             updateEntry(actualIndex, {
                               transaction: newKeys,
-                              ...(!proofStillRequired ? { proof: null } : {}),
+                              ...(!proofAllowed ? { proof: null } : {}),
                             });
                             setValidationErrors((current) => ({
                               ...current,
                               [`entry_${actualIndex}_transaction`]: undefined,
                               [`entry_${actualIndex}_offsetHours`]: undefined,
-                              ...(!proofStillRequired
+                              ...(!isProofRequiredForTransactions(newKeys)
                                 ? { [`entry_${actualIndex}_proof`]: undefined }
                                 : {}),
                             }));
@@ -2613,9 +2630,10 @@ export function ApplyEsarfScreen({
 
                   {/* Photo Proof / Gallery Attachment Section */}
                   {(() => {
-                    const requiresProof = isProofRequiredForTransactions(entry.transaction);
-                    if (!requiresProof) return null;
+                    const isAllowed = isProofAllowedForTransactions(entry.transaction);
+                    if (!isAllowed) return null;
 
+                    const requiresProof = isProofRequiredForTransactions(entry.transaction);
                     const hasProof = Boolean(entry.proof?.uri);
                     const proofError = validationErrors[`entry_${actualIndex}_proof`];
 
@@ -2635,7 +2653,19 @@ export function ApplyEsarfScreen({
                                 Proof Attached
                               </Text>
                             </View>
-                          ) : null}
+                          ) : requiresProof ? (
+                            <View style={[styles.proofReqBadge, styles.proofReqBadgeRequired]}>
+                              <Text style={[styles.proofReqBadgeText, styles.proofReqBadgeTextRequired]}>
+                                Required
+                              </Text>
+                            </View>
+                          ) : (
+                            <View style={[styles.proofReqBadge, styles.proofReqBadgeOptional]}>
+                              <Text style={[styles.proofReqBadgeText, styles.proofReqBadgeTextOptional]}>
+                                Optional
+                              </Text>
+                            </View>
+                          )}
                         </View>
 
                         {hasProof && entry.proof ? (
@@ -2662,7 +2692,7 @@ export function ApplyEsarfScreen({
                             <View style={styles.proofMetaInfo}>
                               <View style={styles.proofSourceRow}>
                                 <View
-                                  style={[
+                                   style={[
                                     styles.proofSourceBadge,
                                     entry.proof.source === 'photo_proof'
                                       ? styles.proofSourceBadgeLog
@@ -2732,7 +2762,9 @@ export function ApplyEsarfScreen({
                               onPress={() => openProofPickerModal(actualIndex)}
                             >
                               <Camera size={15} color="#ffffff" strokeWidth={2.2} />
-                              <Text style={styles.proofButtonPrimaryText}>Attach Photo Proof</Text>
+                              <Text style={styles.proofButtonPrimaryText}>
+                                {requiresProof ? 'Attach Photo Proof (Required)' : 'Attach Photo Proof (Optional)'}
+                              </Text>
                             </Pressable>
                           </View>
                         )}
@@ -3257,10 +3289,11 @@ export function ApplyEsarfScreen({
                             newKeys = [...currentSelectedKeys, option.key];
                           }
                           const newTransStr = newKeys.join(',');
-                          const proofStillRequired = isProofRequiredForTransactions(newTransStr);
+                          const proofAllowed = isProofAllowedForTransactions(newTransStr);
+                          const proofRequired = isProofRequiredForTransactions(newTransStr);
                           updateEntry(activeTransactionSelectIndex, {
                             transaction: newTransStr,
-                            ...(!proofStillRequired ? { proof: null } : {}),
+                            ...(!proofAllowed ? { proof: null } : {}),
                           });
                           setValidationErrors((current) => ({
                             ...current,
@@ -3268,7 +3301,7 @@ export function ApplyEsarfScreen({
                             [`entry_${activeTransactionSelectIndex}_offsetHours`]: undefined,
                             [`entry_${activeTransactionSelectIndex}_offsetBalance`]: undefined,
                             [`entry_${activeTransactionSelectIndex}_dateTo`]: undefined,
-                            ...(!proofStillRequired
+                            ...(!proofRequired
                               ? { [`entry_${activeTransactionSelectIndex}_proof`]: undefined }
                               : {}),
                           }));
@@ -5443,12 +5476,26 @@ const styles = StyleSheet.create({
   proofReqBadgeSuccess: {
     backgroundColor: '#dcfce7',
   },
+  proofReqBadgeRequired: {
+    backgroundColor: '#fee2e2',
+  },
+  proofReqBadgeOptional: {
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
   proofReqBadgeText: {
     fontSize: 11,
     fontWeight: fontWeights.bold,
   },
   proofReqBadgeTextSuccess: {
     color: '#15803d',
+  },
+  proofReqBadgeTextRequired: {
+    color: '#dc2626',
+  },
+  proofReqBadgeTextOptional: {
+    color: '#64748b',
   },
   proofActionsRow: {
     flexDirection: 'row',
