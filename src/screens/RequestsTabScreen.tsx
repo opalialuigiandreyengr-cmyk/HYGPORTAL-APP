@@ -1225,13 +1225,15 @@ function normalizeStatus(status: string, item?: MyRequest): StatusFilter {
   if (value.includes('approved')) return 'approved';
   if (item?.final_approved_at && !value.includes('reject') && !value.includes('denied')) return 'approved';
   if (item?.approval_summary && item.approval_summary.length > 0) {
-    const isLeave = item.request_type_code === 'leave';
-    const isUseOffset = isUseOffsetRequest(item);
-    const isSingleApprover = isLeave || isUseOffset;
-    const summary = item.approval_summary.filter(
-      (step) => !isSingleApprover || step.step_order === 1 || step.required_level === 1,
-    );
-    if (summary.length > 0 && summary.every((s) => (s.status || '').toLowerCase().includes('approved'))) {
+    const summary = item.approval_summary;
+    if (
+      summary.length > 0 &&
+      summary.every(
+        (s) =>
+          (s.status || '').toLowerCase().includes('approved') ||
+          (s.status || '').toLowerCase().includes('skipped'),
+      )
+    ) {
       return 'approved';
     }
   }
@@ -1511,13 +1513,8 @@ function approvalTimeline(item: MyRequest) {
     ];
   }
 
-  const isLeave = item.request_type_code === 'leave';
-  const isUseOffset = isUseOffsetRequest(item);
-  const isSingleApprover = isLeave || isUseOffset;
-  const fallback = isSingleApprover ? [1] : [1, 2];
-  const summary = (item.approval_summary ?? [])
-    .filter((step) => !isSingleApprover || step.step_order === 1 || step.required_level === 1)
-    .slice(0, fallback.length);
+  const fallback = [1, 2];
+  const summary = (item.approval_summary ?? []).slice(0, fallback.length);
   const rows: { label: string; status: string; actedAt: string | null }[] = summary.length
     ? summary.map((step) => {
         const isAutoApproved =

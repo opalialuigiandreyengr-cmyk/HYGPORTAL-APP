@@ -1454,13 +1454,8 @@ function timelineTone(status: string) {
 }
 
 function approvalTimeline(item: PendingApproval | ApprovedApproval) {
-  const isLeave = item.request_type_code === 'leave';
-  const isUseOffset = isUseOffsetApproval(item);
-  const isSingleApprover = isLeave || isUseOffset;
-  const fallback = isSingleApprover ? [1] : [1, 2];
-  const summary = (item.approval_summary ?? [])
-    .filter((step) => !isSingleApprover || step.step_order === 1 || step.required_level === 1)
-    .slice(0, fallback.length);
+  const fallback = [1, 2];
+  const summary = (item.approval_summary ?? []).slice(0, fallback.length);
   const rows: { label: string; status: string; actedAt: string | null }[] = summary.length
     ? summary.map((step) => {
         const isAutoApproved =

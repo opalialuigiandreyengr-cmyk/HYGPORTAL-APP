@@ -907,27 +907,11 @@ export function EsarfCardView({
 
   const isEntryRejected = isRejected ?? entry.isRejected ?? false;
   const isLocked = isDisabled || entry.isRejected;
-  const isUseOffset =
-    entry.transactionLabel?.toLowerCase().includes('use offset') ||
-    entry.transactionLabel?.toLowerCase().includes('use_offset');
 
   const adjustedTimelineRows = React.useMemo(() => {
     if (!timelineRows) return undefined;
 
     let rows = timelineRows;
-    if (isUseOffset) {
-      rows = rows.filter((s) => {
-        const isSub = s.title.toLowerCase() === 'submitted' || s.subtitle.toLowerCase().includes('submitted');
-        if (isSub) return true;
-        return !s.title.toLowerCase().includes('level 2') && !s.subtitle.toLowerCase().includes('l2');
-      });
-      const nonSubmitted = rows.filter((s) => s.title.toLowerCase() !== 'submitted' && !s.subtitle.toLowerCase().includes('submitted'));
-      if (nonSubmitted.length > 1) {
-        const firstApprover = nonSubmitted[0];
-        const submittedStep = rows.find((s) => s.title.toLowerCase() === 'submitted' || s.subtitle.toLowerCase().includes('submitted'));
-        rows = submittedStep ? [submittedStep, firstApprover] : [firstApprover];
-      }
-    }
 
     if (!isEntryRejected) return rows;
 
@@ -968,7 +952,7 @@ export function EsarfCardView({
       }
       return step;
     });
-  }, [timelineRows, isEntryRejected, isUseOffset]);
+  }, [timelineRows, isEntryRejected]);
 
   return (
     <View style={[styles.entryCard, isEntryRejected && styles.entryCardRejected]}>
@@ -1512,7 +1496,6 @@ const styles = StyleSheet.create({
       ? ({
           outlineStyle: 'none',
           outlineWidth: 0,
-          outline: 'none',
           boxShadow: 'none',
         } as any)
       : {}),

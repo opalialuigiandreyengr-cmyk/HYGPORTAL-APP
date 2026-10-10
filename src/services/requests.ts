@@ -91,18 +91,14 @@ export async function loadMyRequests(forceRefresh = false) {
       req.approval_summary &&
       req.approval_summary.length > 0
     ) {
-      const isLeave = req.request_type_code === 'leave';
-      const isUseOffset =
-        req.request_type_code === 'use_offset' ||
-        (req.transaction_type || '').toLowerCase().includes('use offset') ||
-        (req.reason || '').toLowerCase().includes('use offset');
-      const isSingleApprover = isLeave || isUseOffset;
-      const relevantSteps = req.approval_summary.filter(
-        (s) => !isSingleApprover || s.step_order === 1 || s.required_level === 1,
-      );
+      const relevantSteps = req.approval_summary;
       if (
         relevantSteps.length > 0 &&
-        relevantSteps.every((s) => (s.status || '').toLowerCase().includes('approved'))
+        relevantSteps.every(
+          (s) =>
+            (s.status || '').toLowerCase().includes('approved') ||
+            (s.status || '').toLowerCase().includes('skipped'),
+        )
       ) {
         return { ...req, status: 'approved' };
       }
