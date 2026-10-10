@@ -30,7 +30,8 @@ export function AppScreen({
       contentContainerStyle={[
         styles.page,
         {
-          paddingBottom: getSafeBottomInset(insets.bottom, spacing.xl) + spacing.md,
+          paddingTop: Math.max(insets.top, spacing.md),
+          paddingBottom: Math.max(insets.bottom, spacing.md) + spacing.md,
         },
       ]}
       keyboardShouldPersistTaps="handled"
@@ -45,7 +46,7 @@ export function AppScreen({
     <View style={[styles.safeArea, variant === 'dark' && styles.safeAreaDark]}>
       {keyboardAware ? (
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === 'ios' ? 'padding' : Platform.OS === 'web' ? undefined : 'height'}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 12 : 0}
           style={styles.keyboardView}
         >

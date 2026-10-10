@@ -50,7 +50,16 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     document.head.appendChild(style);
   }
 
-  // 3. Ensure focused input is scrolled smoothly above on-screen keyboard on mobile web/PWA
+  // 3. Ensure document root and body background color are dark brand navy
+  if (document.documentElement) {
+    document.documentElement.style.backgroundColor = '#071426';
+  }
+  if (document.body) {
+    document.body.style.backgroundColor = '#071426';
+  }
+
+  // 4. Ensure focused input is scrolled smoothly above on-screen keyboard on mobile web/PWA,
+  // and reset window scroll position when keyboard closes so no bottom white gap remains.
   if (typeof window !== 'undefined') {
     window.addEventListener('focusin', (e) => {
       const target = e.target as HTMLElement | null;
@@ -63,6 +72,16 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
           }
         }, 300);
       }
+    });
+
+    window.addEventListener('focusout', () => {
+      setTimeout(() => {
+        try {
+          window.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
+        } catch {
+          window.scrollTo(0, 0);
+        }
+      }, 100);
     });
   }
 }

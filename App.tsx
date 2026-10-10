@@ -6182,7 +6182,7 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: '100%',
     overflow: 'hidden',
-    backgroundColor: '#ffffff',
+    backgroundColor: '#071426',
   },
   safeArea: {
     flex: 1,
