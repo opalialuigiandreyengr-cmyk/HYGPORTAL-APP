@@ -40,6 +40,13 @@ export function formatEsarfDateRange(dateFromStr?: string | null, dateToStr?: st
   return `${m1Str}/${d1Str}/${y1Short}-${m2Str}/${d2Str}/${y2Short}`;
 }
 
+export type ParsedEsarfProof = {
+  proofUrl: string;
+  proofTime?: string;
+  proofLocation?: string;
+  proofId?: string;
+};
+
 export type ParsedEsarfEntry = {
   index: number;
   transactionLabel: string;
@@ -54,6 +61,7 @@ export type ParsedEsarfEntry = {
   proofTime?: string;
   proofLocation?: string;
   proofId?: string;
+  proofs?: ParsedEsarfProof[];
 };
 
 export function extractDriveFileId(url?: string | null): string | null {
@@ -107,6 +115,11 @@ export async function fetchProofImageAsBlobOrDataUri(url: string): Promise<strin
   if (!url || typeof url !== 'string') return '';
   const trimmed = url.trim();
   if (trimmed.startsWith('data:') || trimmed.startsWith('blob:') || trimmed.startsWith('file://')) {
+    return trimmed;
+  }
+
+  // On Native (Android / iOS), Image renders HTTPS URLs directly without blob overhead or URL.createObjectURL errors
+  if (Platform.OS !== 'web') {
     return trimmed;
   }
 
@@ -315,14 +328,22 @@ export function parseEsarfEntries(item: {
         const actualMatch = rawReasonText.match(/\[Actual:\s*([\d.]+)\s*hrs?\]/i);
         let actualHoursStr: string | undefined = actualMatch ? actualMatch[1] : undefined;
 
-        const proofMatch = rawReasonText.match(/\[Proof:\s*([^\]]+)\]/i);
-        let proofUrl: string | undefined = proofMatch ? proofMatch[1].trim() : undefined;
-        const proofTimeMatch = rawReasonText.match(/\[ProofTime:\s*([^\]]+)\]/i);
-        let proofTime: string | undefined = proofTimeMatch ? proofTimeMatch[1].trim() : undefined;
-        const proofLocMatch = rawReasonText.match(/\[ProofLoc:\s*([^\]]+)\]/i);
-        let proofLocation: string | undefined = proofLocMatch ? proofLocMatch[1].trim() : undefined;
-        const proofIdMatch = rawReasonText.match(/\[ProofId:\s*([^\]]+)\]/i);
-        let proofId: string | undefined = proofIdMatch ? proofIdMatch[1].trim() : undefined;
+        const proofMatches = [...rawReasonText.matchAll(/\[Proof:\s*([^\]]+)\]/gi)];
+        const proofTimeMatches = [...rawReasonText.matchAll(/\[ProofTime:\s*([^\]]+)\]/gi)];
+        const proofLocMatches = [...rawReasonText.matchAll(/\[ProofLoc:\s*([^\]]+)\]/gi)];
+        const proofIdMatches = [...rawReasonText.matchAll(/\[ProofId:\s*([^\]]+)\]/gi)];
+
+        const parsedProofsList: ParsedEsarfProof[] = proofMatches.map((m, pIdx) => ({
+          proofUrl: m[1].trim(),
+          proofTime: proofTimeMatches[pIdx]?.[1]?.trim(),
+          proofLocation: proofLocMatches[pIdx]?.[1]?.trim(),
+          proofId: proofIdMatches[pIdx]?.[1]?.trim(),
+        }));
+
+        let proofUrl: string | undefined = parsedProofsList[0]?.proofUrl;
+        let proofTime: string | undefined = parsedProofsList[0]?.proofTime;
+        let proofLocation: string | undefined = parsedProofsList[0]?.proofLocation;
+        let proofId: string | undefined = parsedProofsList[0]?.proofId;
 
         let cleanReasonText = rawReasonText
           .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
@@ -398,6 +419,7 @@ export function parseEsarfEntries(item: {
           proofTime,
           proofLocation,
           proofId,
+          proofs: parsedProofsList.length > 0 ? parsedProofsList : undefined,
         });
       }
     });
@@ -425,14 +447,22 @@ export function parseEsarfEntries(item: {
 
   const actualMatch = rawReason.match(/\[Actual:\s*([\d.]+)\s*hrs?\]/i);
   let actualHoursStr: string | undefined = actualMatch ? actualMatch[1] : undefined;
-  const proofMatch = rawReason.match(/\[Proof:\s*([^\]]+)\]/i);
-  let proofUrl: string | undefined = proofMatch ? proofMatch[1].trim() : undefined;
-  const proofTimeMatch = rawReason.match(/\[ProofTime:\s*([^\]]+)\]/i);
-  let proofTime: string | undefined = proofTimeMatch ? proofTimeMatch[1].trim() : undefined;
-  const proofLocMatch = rawReason.match(/\[ProofLoc:\s*([^\]]+)\]/i);
-  let proofLocation: string | undefined = proofLocMatch ? proofLocMatch[1].trim() : undefined;
-  const proofIdMatch = rawReason.match(/\[ProofId:\s*([^\]]+)\]/i);
-  let proofId: string | undefined = proofIdMatch ? proofIdMatch[1].trim() : undefined;
+  const proofMatches = [...rawReason.matchAll(/\[Proof:\s*([^\]]+)\]/gi)];
+  const proofTimeMatches = [...rawReason.matchAll(/\[ProofTime:\s*([^\]]+)\]/gi)];
+  const proofLocMatches = [...rawReason.matchAll(/\[ProofLoc:\s*([^\]]+)\]/gi)];
+  const proofIdMatches = [...rawReason.matchAll(/\[ProofId:\s*([^\]]+)\]/gi)];
+
+  const parsedProofsList: ParsedEsarfProof[] = proofMatches.map((m, pIdx) => ({
+    proofUrl: m[1].trim(),
+    proofTime: proofTimeMatches[pIdx]?.[1]?.trim(),
+    proofLocation: proofLocMatches[pIdx]?.[1]?.trim(),
+    proofId: proofIdMatches[pIdx]?.[1]?.trim(),
+  }));
+
+  let proofUrl: string | undefined = parsedProofsList[0]?.proofUrl;
+  let proofTime: string | undefined = parsedProofsList[0]?.proofTime;
+  let proofLocation: string | undefined = parsedProofsList[0]?.proofLocation;
+  let proofId: string | undefined = parsedProofsList[0]?.proofId;
 
   const cleanReason = rawReason
     .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
@@ -483,6 +513,7 @@ export function parseEsarfEntries(item: {
       proofTime,
       proofLocation,
       proofId,
+      proofs: parsedProofsList.length > 0 ? parsedProofsList : undefined,
     },
   ];
 }
@@ -717,6 +748,122 @@ export function EsarfRequestInfoPanel({
   );
 }
 
+function EsarfProofCardItem({
+  proofItem,
+  index,
+  total,
+  onPress,
+}: {
+  proofItem: ParsedEsarfProof;
+  index: number;
+  total: number;
+  onPress: () => void;
+}) {
+  const [thumbLoading, setThumbLoading] = useState(false);
+  const [thumbError, setThumbError] = useState(false);
+  const [resolvedThumbUri, setResolvedThumbUri] = useState<string>('');
+  const [details, setDetails] = useState<PhotoProofItem | null>(null);
+
+  const effectiveUrl = proofItem.proofUrl;
+  const directThumbUrl = effectiveUrl ? getDirectProofImageUrl(effectiveUrl) : '';
+
+  useEffect(() => {
+    let active = true;
+    if (!effectiveUrl && !proofItem.proofId) return;
+
+    fetchPhotoProofDetails(effectiveUrl, {
+      proofId: proofItem.proofId,
+      timestamp: proofItem.proofTime,
+      locationText: proofItem.proofLocation,
+    })
+      .then((d) => {
+        if (!active || !d) return;
+        setDetails(d);
+        if (d.driveFileId) {
+          const direct = `https://lh3.googleusercontent.com/d/${d.driveFileId}=w400`;
+          fetchProofImageAsBlobOrDataUri(direct).then((blobUri) => {
+            if (active && blobUri) setResolvedThumbUri(blobUri);
+          });
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+    };
+  }, [proofItem.proofUrl, proofItem.proofId, proofItem.proofTime, proofItem.proofLocation]);
+
+  const displayTime =
+    details?.dateFormatted && details?.timeDigits
+      ? `${details.dateFormatted} • ${details.timeDigits} ${details.timePeriod}`
+      : proofItem.proofTime || (total > 1 ? `Photo #${index + 1}` : 'Photo Proof Attached');
+  const displayLocation = details?.locationText || proofItem.proofLocation;
+
+  return (
+    <Pressable style={styles.proofAttachmentCard} onPress={onPress}>
+      <View style={styles.proofThumbWrap}>
+        {thumbLoading ? (
+          <View style={styles.proofThumbOverlay}>
+            <ActivityIndicator size="small" color="#2563eb" />
+          </View>
+        ) : null}
+        {thumbError ? (
+          <View style={styles.proofThumbOverlay}>
+            <ImageIcon size={18} color="#94a3b8" />
+          </View>
+        ) : Platform.OS === 'web' ? (
+          React.createElement('img', {
+            src: resolvedThumbUri || directThumbUrl,
+            referrerPolicy: 'no-referrer',
+            style: {
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              display: thumbLoading ? 'none' : 'block',
+            },
+            onLoad: () => setThumbLoading(false),
+            onError: () => {
+              setThumbLoading(false);
+              setThumbError(true);
+            },
+          })
+        ) : (
+          <Image
+            source={{ uri: resolvedThumbUri || directThumbUrl }}
+            style={styles.proofThumbImage}
+            resizeMode="cover"
+            onLoadStart={() => setThumbLoading(true)}
+            onLoadEnd={() => setThumbLoading(false)}
+            onError={() => {
+              setThumbLoading(false);
+              setThumbError(true);
+            }}
+          />
+        )}
+      </View>
+      <View style={styles.proofInfoWrap}>
+        <View style={styles.proofBadgeRow}>
+          <Camera size={13} color="#2563eb" strokeWidth={2.2} />
+          <Text style={styles.proofBadgeText}>
+            {total > 1 ? `Photo ${index + 1}: ${displayTime}` : displayTime}
+          </Text>
+        </View>
+        {displayLocation ? (
+          <View style={styles.proofCardLocationRow}>
+            <MapPin size={11} color="#64748b" strokeWidth={2} />
+            <Text style={styles.proofCardLocationText} numberOfLines={1}>
+              {displayLocation}
+            </Text>
+          </View>
+        ) : (
+          <Text style={styles.proofActionHint}>Tap to view photo proof</Text>
+        )}
+      </View>
+      <Eye size={18} color="#64748b" strokeWidth={2} />
+    </Pressable>
+  );
+}
+
 export function EsarfCardView({
   entry,
   timelineRows,
@@ -745,6 +892,7 @@ export function EsarfCardView({
   onHoursChange?: (val: string) => void;
 }) {
   const [previewProofUrl, setPreviewProofUrl] = useState<string | null>(null);
+  const [activeModalProof, setActiveModalProof] = useState<ParsedEsarfProof | null>(null);
   const inputRef = useRef<TextInput>(null);
   const [isHoursInputFocused, setIsHoursInputFocused] = useState(false);
   const [thumbLoading, setThumbLoading] = useState(false);
@@ -840,12 +988,13 @@ export function EsarfCardView({
     };
   }, [entry.proofUrl, effectiveProofUrl]);
 
-  const openProofModal = (rawUrl?: string) => {
+  const openProofModal = (rawUrl?: string, itemProof?: ParsedEsarfProof) => {
+    setActiveModalProof(itemProof || null);
     const targetUrl =
+      rawUrl ||
       (proofDetails?.driveFileId ? `https://lh3.googleusercontent.com/d/${proofDetails.driveFileId}=w1000` : null) ||
       (proofDetails?.photoUri && proofDetails.photoUri.startsWith('http') ? proofDetails.photoUri : null) ||
       proofDetails?.driveWebViewLink ||
-      rawUrl ||
       effectiveProofUrl ||
       '';
     const direct = getDirectProofImageUrl(targetUrl);
@@ -1106,78 +1255,45 @@ export function EsarfCardView({
         </View>
       </View>
 
-      {/* Attached Photo Proof */}
-      {entry.proofUrl || entry.proofId || proofDetails ? (
-        <View style={styles.proofAttachmentSection}>
-          <Text style={styles.proofAttachmentLabel}>Attached Photo Proof</Text>
-          <Pressable
-            style={styles.proofAttachmentCard}
-            onPress={() => openProofModal(effectiveProofUrl || entry.proofUrl!)}
-          >
-            <View style={styles.proofThumbWrap}>
-              {thumbLoading ? (
-                <View style={styles.proofThumbOverlay}>
-                  <ActivityIndicator size="small" color="#2563eb" />
-                </View>
-              ) : null}
-              {thumbError ? (
-                <View style={styles.proofThumbOverlay}>
-                  <ImageIcon size={18} color="#94a3b8" />
-                </View>
-              ) : Platform.OS === 'web' ? (
-                React.createElement('img', {
-                  src: resolvedThumbUri || directThumbUrl,
-                  referrerPolicy: 'no-referrer',
-                  style: {
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'cover',
-                    display: thumbLoading ? 'none' : 'block',
-                  },
-                  onLoad: () => setThumbLoading(false),
-                  onError: () => {
-                    setThumbLoading(false);
-                    setThumbError(true);
-                  },
-                })
-              ) : (
-                <Image
-                  source={{ uri: resolvedThumbUri || directThumbUrl }}
-                  style={styles.proofThumbImage}
-                  resizeMode="cover"
-                  onLoadStart={() => setThumbLoading(true)}
-                  onLoadEnd={() => setThumbLoading(false)}
-                  onError={() => {
-                    setThumbLoading(false);
-                    setThumbError(true);
-                  }}
-                />
-              )}
-            </View>
-            <View style={styles.proofInfoWrap}>
-              <View style={styles.proofBadgeRow}>
-                <Camera size={13} color="#2563eb" strokeWidth={2.2} />
-                <Text style={styles.proofBadgeText}>
-                  {proofDetails?.dateFormatted && proofDetails?.timeDigits
+      {/* Attached Photo Proofs (up to 3) */}
+      {(() => {
+        const proofsToRender: ParsedEsarfProof[] =
+          entry.proofs && entry.proofs.length > 0
+            ? entry.proofs
+            : entry.proofUrl || entry.proofId || proofDetails
+            ? [
+                {
+                  proofUrl: effectiveProofUrl || entry.proofUrl || '',
+                  proofTime: proofDetails?.dateFormatted
                     ? `${proofDetails.dateFormatted} • ${proofDetails.timeDigits} ${proofDetails.timePeriod}`
-                    : 'Photo Proof Attached'}
-                </Text>
-              </View>
-              {proofDetails?.locationText ? (
-                <View style={styles.proofCardLocationRow}>
-                  <MapPin size={11} color="#64748b" strokeWidth={2} />
-                  <Text style={styles.proofCardLocationText} numberOfLines={1}>
-                    {proofDetails.locationText}
-                  </Text>
-                </View>
-              ) : (
-                <Text style={styles.proofActionHint}>Tap to view proof with details</Text>
-              )}
+                    : entry.proofTime,
+                  proofLocation: proofDetails?.locationText || entry.proofLocation,
+                  proofId: proofDetails?.id || entry.proofId,
+                },
+              ]
+            : [];
+
+        if (proofsToRender.length === 0) return null;
+
+        return (
+          <View style={styles.proofAttachmentSection}>
+            <Text style={styles.proofAttachmentLabel}>
+              Attached Photo Proof{proofsToRender.length > 1 ? `s (${proofsToRender.length})` : ''}
+            </Text>
+            <View style={{ gap: 8, marginTop: 4 }}>
+              {proofsToRender.map((pr, pIdx) => (
+                <EsarfProofCardItem
+                  key={`${pr.proofUrl}-${pIdx}`}
+                  proofItem={pr}
+                  index={pIdx}
+                  total={proofsToRender.length}
+                  onPress={() => openProofModal(pr.proofUrl, pr)}
+                />
+              ))}
             </View>
-            <Eye size={18} color="#64748b" strokeWidth={2} />
-          </Pressable>
-        </View>
-      ) : null}
+          </View>
+        );
+      })()}
 
       {/* Proof Preview Modal */}
       {previewProofUrl ? (
@@ -1193,12 +1309,14 @@ export function EsarfCardView({
                 <View style={{ flex: 1, marginRight: 8 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                     <Camera size={16} color="#0284c7" strokeWidth={2.2} />
-                    <Text style={styles.proofModalTitle}>Attached Proof (Request #{entry.index})</Text>
+                    <Text style={styles.proofModalTitle}>
+                      Attached Proof{activeModalProof && entry.proofs && entry.proofs.length > 1 ? ` #${(entry.proofs.findIndex(p => p.proofUrl === activeModalProof.proofUrl)) + 1 || 1}` : ''} (Request #{entry.index})
+                    </Text>
                   </View>
-                  {proofDetails ? (
+                  {activeModalProof?.proofTime || proofDetails ? (
                     <Text style={styles.proofModalSubtitle} numberOfLines={1}>
-                      {proofDetails.dateFormatted} • {proofDetails.timeDigits} {proofDetails.timePeriod}
-                      {proofDetails.employeeName ? ` • ${proofDetails.employeeName}` : ''}
+                      {activeModalProof?.proofTime || (proofDetails ? `${proofDetails.dateFormatted} • ${proofDetails.timeDigits} ${proofDetails.timePeriod}` : '')}
+                      {activeModalProof?.proofLocation ? ` • ${activeModalProof.proofLocation}` : proofDetails?.employeeName ? ` • ${proofDetails.employeeName}` : ''}
                     </Text>
                   ) : null}
                 </View>

@@ -114,7 +114,43 @@ export type EsarfEntry = {
   timeTo: string;
   reason: string;
   proof?: EsarfAttachment | null;
+  proofs?: EsarfAttachment[];
 };
+
+export function getEntryProofs(entry?: EsarfEntry | null): EsarfAttachment[] {
+  if (!entry) return [];
+  if (Array.isArray(entry.proofs) && entry.proofs.length > 0) {
+    return entry.proofs;
+  }
+  if (entry.proof) {
+    return [entry.proof];
+  }
+  return [];
+}
+
+export function parseProofsFromRawReason(rawReason: string, defaultDate?: string): EsarfAttachment[] {
+  if (!rawReason) return [];
+  const proofMatches = [...rawReason.matchAll(/\[Proof:\s*([^\]]+)\]/gi)];
+  const proofTimeMatches = [...rawReason.matchAll(/\[ProofTime:\s*([^\]]+)\]/gi)];
+  const proofLocMatches = [...rawReason.matchAll(/\[ProofLoc:\s*([^\]]+)\]/gi)];
+  const proofIdMatches = [...rawReason.matchAll(/\[ProofId:\s*([^\]]+)\]/gi)];
+
+  return proofMatches.map((m, idx) => {
+    const url = m[1].trim();
+    const time = proofTimeMatches[idx]?.[1]?.trim();
+    const loc = proofLocMatches[idx]?.[1]?.trim();
+    const id = proofIdMatches[idx]?.[1]?.trim();
+    return {
+      uri: getDirectProofImageUrl(url),
+      source: 'photo_proof' as const,
+      driveWebViewLink: getExternalProofWebUrl(url),
+      name: time ? `${defaultDate ? `${defaultDate} • ` : ''}${time}` : `Attached Proof ${idx + 1}`,
+      timestamp: time,
+      locationText: loc,
+      photoProofId: id,
+    };
+  });
+}
 
 export function isProofAllowedForTransactions(transactionStr?: string | null): boolean {
   if (!transactionStr) return false;
@@ -418,6 +454,27 @@ export function ApplyEsarfScreen({
           const isEntryUseOffset = key.includes('use_offset');
           const dFrom = parsedDates?.dateFrom || editingRequest.date_from || '';
           const dTo = isEntryUseOffset ? dFrom : (parsedDates?.dateTo || editingRequest.date_to || dFrom);
+          const entryProofs: EsarfAttachment[] = (p.proofs && p.proofs.length > 0)
+            ? p.proofs.map((prf, pIdx) => ({
+                uri: getDirectProofImageUrl(prf.proofUrl),
+                source: 'photo_proof' as const,
+                driveWebViewLink: getExternalProofWebUrl(prf.proofUrl),
+                name: prf.proofTime ? `${p.dateStr || dFrom} • ${prf.proofTime}` : `Attached Proof ${pIdx + 1}`,
+                timestamp: prf.proofTime,
+                locationText: prf.proofLocation,
+                photoProofId: prf.proofId,
+              }))
+            : (p.proofUrl
+                ? [{
+                    uri: getDirectProofImageUrl(p.proofUrl),
+                    source: 'photo_proof' as const,
+                    driveWebViewLink: getExternalProofWebUrl(p.proofUrl),
+                    name: p.proofTime ? `${p.dateStr || dFrom} • ${p.proofTime}` : 'Attached Proof',
+                    timestamp: p.proofTime,
+                    locationText: p.proofLocation,
+                    photoProofId: p.proofId,
+                  }]
+                : []);
           return {
             id: String(idx + 1),
             transaction: key,
@@ -426,17 +483,8 @@ export function ApplyEsarfScreen({
             timeFrom: parsedTimeFrom || editingRequest.time_from || '',
             timeTo: parsedTimeTo || editingRequest.time_to || '',
             reason: p.reason || editingRequest.reason || '',
-            proof: p.proofUrl
-              ? {
-                  uri: getDirectProofImageUrl(p.proofUrl),
-                  source: 'photo_proof',
-                  driveWebViewLink: getExternalProofWebUrl(p.proofUrl),
-                  name: p.proofTime ? `${p.dateStr} • ${p.proofTime}` : 'Attached Proof',
-                  timestamp: p.proofTime,
-                  locationText: p.proofLocation,
-                  photoProofId: p.proofId,
-                }
-              : null,
+            proof: entryProofs[0] || null,
+            proofs: entryProofs,
           };
         });
       }
@@ -447,14 +495,7 @@ export function ApplyEsarfScreen({
     );
     const initialTransKey = defaultKey || initialTransactions[0] || '';
     const isInitialUseOffset = initialTransKey.includes('use_offset');
-    const singleProofMatch = (editingRequest?.reason || '').match(/\[Proof:\s*([^\]]+)\]/i);
-    const singleProofUrl = singleProofMatch ? singleProofMatch[1].trim() : null;
-    const singleProofTimeMatch = (editingRequest?.reason || '').match(/\[ProofTime:\s*([^\]]+)\]/i);
-    const singleProofTime = singleProofTimeMatch ? singleProofTimeMatch[1].trim() : undefined;
-    const singleProofLocMatch = (editingRequest?.reason || '').match(/\[ProofLoc:\s*([^\]]+)\]/i);
-    const singleProofLoc = singleProofLocMatch ? singleProofLocMatch[1].trim() : undefined;
-    const singleProofIdMatch = (editingRequest?.reason || '').match(/\[ProofId:\s*([^\]]+)\]/i);
-    const singleProofId = singleProofIdMatch ? singleProofIdMatch[1].trim() : undefined;
+    const fallbackProofs = parseProofsFromRawReason(editingRequest?.reason || '', initialDateFrom);
     return [
       {
         id: '1',
@@ -464,17 +505,8 @@ export function ApplyEsarfScreen({
         timeFrom: initialTimeFrom,
         timeTo: initialTimeTo,
         reason: initialReason,
-        proof: singleProofUrl
-          ? {
-              uri: getDirectProofImageUrl(singleProofUrl),
-              source: 'photo_proof',
-              driveWebViewLink: getExternalProofWebUrl(singleProofUrl),
-              name: singleProofTime ? `${initialDateFrom} • ${singleProofTime}` : 'Attached Proof',
-              timestamp: singleProofTime,
-              locationText: singleProofLoc,
-              photoProofId: singleProofId,
-            }
-          : null,
+        proof: fallbackProofs[0] || null,
+        proofs: fallbackProofs,
       },
     ];
   });
@@ -572,17 +604,27 @@ export function ApplyEsarfScreen({
 
   const pickFromGallery = async (entryIndex: number) => {
     try {
+      const targetEntry = entries[entryIndex];
+      const existingProofs = getEntryProofs(targetEntry);
+      if (existingProofs.length >= 3) {
+        platformAlert('Limit Reached', 'You can attach up to 3 photo proofs per request entry.');
+        return;
+      }
+
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
         platformAlert('Permission Needed', 'Please allow access to your photo library to upload a picture proof.');
         return;
       }
 
+      const remainingSlots = Math.max(1, 3 - existingProofs.length);
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         quality: 0.85,
         allowsEditing: false,
         base64: true,
+        allowsMultipleSelection: true,
+        selectionLimit: remainingSlots,
       });
 
       if (result.canceled || !result.assets || result.assets.length === 0) {
@@ -590,25 +632,35 @@ export function ApplyEsarfScreen({
       }
 
       setIsUploadingGalleryProof(true);
-      setGalleryUploadStatus('Detecting location & timestamp...');
-
-      const asset = result.assets[0];
+      const assetsToUpload = result.assets.slice(0, remainingSlots);
       const userInfo = await resolveCurrentUserInfo();
+      const newAttachments: EsarfAttachment[] = [];
+      let anyCloudSyncFailed = false;
 
-      setGalleryUploadStatus('Uploading photo proof to Google Drive & database...');
-      const { item: savedProofItem, cloudSyncSucceeded } = await uploadGalleryPhotoProof({
-        uri: asset.uri,
-        base64: asset.base64,
-        width: asset.width,
-        height: asset.height,
-        employeeId: userInfo.resolvedEmpId,
-        employeeName: userInfo.resolvedName,
-        userEmail: userInfo.resolvedEmail,
-        storeName: userInfo.resolvedStore,
-      });
+      for (let i = 0; i < assetsToUpload.length; i++) {
+        const asset = assetsToUpload[i];
+        setGalleryUploadStatus(
+          assetsToUpload.length > 1
+            ? `Uploading photo proof ${i + 1} of ${assetsToUpload.length}...`
+            : 'Uploading photo proof to Google Drive & database...',
+        );
 
-      updateEntry(entryIndex, {
-        proof: {
+        const { item: savedProofItem, cloudSyncSucceeded } = await uploadGalleryPhotoProof({
+          uri: asset.uri,
+          base64: asset.base64,
+          width: asset.width,
+          height: asset.height,
+          employeeId: userInfo.resolvedEmpId,
+          employeeName: userInfo.resolvedName,
+          userEmail: userInfo.resolvedEmail,
+          storeName: userInfo.resolvedStore,
+        });
+
+        if (!cloudSyncSucceeded) {
+          anyCloudSyncFailed = true;
+        }
+
+        newAttachments.push({
           uri: savedProofItem.photoUri,
           source: 'gallery',
           name: `${savedProofItem.dateFormatted} • ${savedProofItem.timeDigits} ${savedProofItem.timePeriod}`,
@@ -616,7 +668,15 @@ export function ApplyEsarfScreen({
           locationText: savedProofItem.locationText,
           driveWebViewLink: savedProofItem.driveWebViewLink || null,
           photoProofId: savedProofItem.id,
-        },
+        });
+
+        setPhotoProofsList((prev) => [savedProofItem, ...prev.filter((p) => p.id !== savedProofItem.id)]);
+      }
+
+      const updatedProofs = [...existingProofs, ...newAttachments].slice(0, 3);
+      updateEntry(entryIndex, {
+        proof: updatedProofs[0] || null,
+        proofs: updatedProofs,
       });
 
       setValidationErrors((current) => ({
@@ -624,14 +684,11 @@ export function ApplyEsarfScreen({
         [`entry_${entryIndex}_proof`]: undefined,
       }));
 
-      // Prepend to proofs list so it is available across the app immediately
-      setPhotoProofsList((prev) => [savedProofItem, ...prev.filter((p) => p.id !== savedProofItem.id)]);
-
       if (activeProofPickerIndex !== null) {
         setActiveProofPickerIndex(null);
       }
 
-      if (!cloudSyncSucceeded) {
+      if (anyCloudSyncFailed) {
         platformAlert(
           'Saved Locally',
           'Photo proof was saved on this device. Cloud sync to Google Drive will finalize when you submit or connect online.',
@@ -667,26 +724,60 @@ export function ApplyEsarfScreen({
 
   const selectPhotoProofForEntry = (proofItem: PhotoProofItem) => {
     if (activeProofPickerIndex === null) return;
+    const currentProofs = getEntryProofs(entries[activeProofPickerIndex]);
+    const isAlreadySelected = currentProofs.some(
+      (p) => (p.photoProofId && p.photoProofId === proofItem.id) || p.uri === proofItem.photoUri,
+    );
+
+    if (isAlreadySelected) {
+      // Toggle off / deselect
+      const nextProofs = currentProofs.filter(
+        (p) => !((p.photoProofId && p.photoProofId === proofItem.id) || p.uri === proofItem.photoUri),
+      );
+      updateEntry(activeProofPickerIndex, {
+        proof: nextProofs[0] || null,
+        proofs: nextProofs,
+      });
+      return;
+    }
+
+    if (currentProofs.length >= 3) {
+      platformAlert('Limit Reached', 'You can select up to 3 photo proofs per request entry.');
+      return;
+    }
+
+    const newAttachment: EsarfAttachment = {
+      uri: proofItem.photoUri,
+      source: 'photo_proof',
+      name: `${proofItem.dateFormatted} • ${proofItem.timeDigits} ${proofItem.timePeriod}`,
+      timestamp: proofItem.timestamp,
+      locationText: proofItem.locationText,
+      driveWebViewLink: proofItem.driveWebViewLink,
+      photoProofId: proofItem.id,
+    };
+
+    const nextProofs = [...currentProofs, newAttachment];
     updateEntry(activeProofPickerIndex, {
-      proof: {
-        uri: proofItem.photoUri,
-        source: 'photo_proof',
-        name: `${proofItem.dateFormatted} • ${proofItem.timeDigits} ${proofItem.timePeriod}`,
-        timestamp: proofItem.timestamp,
-        locationText: proofItem.locationText,
-        driveWebViewLink: proofItem.driveWebViewLink,
-        photoProofId: proofItem.id,
-      },
+      proof: nextProofs[0] || null,
+      proofs: nextProofs,
     });
     setValidationErrors((current) => ({
       ...current,
       [`entry_${activeProofPickerIndex}_proof`]: undefined,
     }));
-    setActiveProofPickerIndex(null);
   };
 
-  const removeProofForEntry = (entryIndex: number) => {
-    updateEntry(entryIndex, { proof: null });
+  const removeProofForEntry = (entryIndex: number, proofIndex?: number) => {
+    if (proofIndex !== undefined) {
+      const currentProofs = getEntryProofs(entries[entryIndex]);
+      const nextProofs = currentProofs.filter((_, idx) => idx !== proofIndex);
+      updateEntry(entryIndex, {
+        proof: nextProofs[0] || null,
+        proofs: nextProofs,
+      });
+    } else {
+      updateEntry(entryIndex, { proof: null, proofs: [] });
+    }
   };
   const scrollRef = useRef<ScrollView | null>(null);
   const reasonInputRef = useRef<TextInput | null>(null);
@@ -784,6 +875,27 @@ export function ApplyEsarfScreen({
             const isEntryUseOffset = transKey.includes('use_offset');
             const dFrom = parsedDates?.dateFrom || editingRequest.date_from || '';
             const dTo = isEntryUseOffset ? dFrom : (parsedDates?.dateTo || editingRequest.date_to || dFrom);
+            const entryProofs: EsarfAttachment[] = (p.proofs && p.proofs.length > 0)
+              ? p.proofs.map((prf, pIdx) => ({
+                  uri: getDirectProofImageUrl(prf.proofUrl),
+                  source: 'photo_proof' as const,
+                  driveWebViewLink: getExternalProofWebUrl(prf.proofUrl),
+                  name: prf.proofTime ? `${p.dateStr || dFrom} • ${prf.proofTime}` : `Attached Proof ${pIdx + 1}`,
+                  timestamp: prf.proofTime,
+                  locationText: prf.proofLocation,
+                  photoProofId: prf.proofId,
+                }))
+              : (p.proofUrl
+                  ? [{
+                      uri: getDirectProofImageUrl(p.proofUrl),
+                      source: 'photo_proof' as const,
+                      driveWebViewLink: getExternalProofWebUrl(p.proofUrl),
+                      name: p.proofTime ? `${p.dateStr || dFrom} • ${p.proofTime}` : 'Attached Proof',
+                      timestamp: p.proofTime,
+                      locationText: p.proofLocation,
+                      photoProofId: p.proofId,
+                    }]
+                  : []);
             return {
               id: String(idx + 1),
               transaction: transKey,
@@ -792,17 +904,8 @@ export function ApplyEsarfScreen({
               timeFrom: parsedTimeFrom || editingRequest.time_from || '',
               timeTo: parsedTimeTo || editingRequest.time_to || '',
               reason: p.reason || editingRequest.reason || '',
-              proof: p.proofUrl
-                ? {
-                    uri: getDirectProofImageUrl(p.proofUrl),
-                    source: 'photo_proof',
-                    driveWebViewLink: getExternalProofWebUrl(p.proofUrl),
-                    name: 'Attached Proof',
-                    timestamp: p.proofTime,
-                    locationText: p.proofLocation,
-                    photoProofId: p.proofId,
-                  }
-                : null,
+              proof: entryProofs[0] || null,
+              proofs: entryProofs,
             };
           }),
         );
@@ -811,14 +914,7 @@ export function ApplyEsarfScreen({
         const isEntryUseOffset = defaultKey.includes('use_offset');
         const dFrom = editingRequest.date_from || '';
         const dTo = isEntryUseOffset ? dFrom : (editingRequest.date_to || dFrom);
-        const singleProofMatch = (editingRequest.reason || '').match(/\[Proof:\s*([^\]]+)\]/i);
-        const singleProofUrl = singleProofMatch ? singleProofMatch[1].trim() : null;
-        const singleProofTimeMatch = (editingRequest.reason || '').match(/\[ProofTime:\s*([^\]]+)\]/i);
-        const singleProofTime = singleProofTimeMatch ? singleProofTimeMatch[1].trim() : undefined;
-        const singleProofLocMatch = (editingRequest.reason || '').match(/\[ProofLoc:\s*([^\]]+)\]/i);
-        const singleProofLoc = singleProofLocMatch ? singleProofLocMatch[1].trim() : undefined;
-        const singleProofIdMatch = (editingRequest.reason || '').match(/\[ProofId:\s*([^\]]+)\]/i);
-        const singleProofId = singleProofIdMatch ? singleProofIdMatch[1].trim() : undefined;
+        const fallbackProofs = parseProofsFromRawReason(editingRequest.reason || '', dFrom);
         setEntries([
           {
             id: '1',
@@ -834,17 +930,8 @@ export function ApplyEsarfScreen({
               .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
               .trim(),
-            proof: singleProofUrl
-              ? {
-                  uri: getDirectProofImageUrl(singleProofUrl),
-                  source: 'photo_proof',
-                  driveWebViewLink: getExternalProofWebUrl(singleProofUrl),
-                  name: singleProofTime ? `${dFrom} • ${singleProofTime}` : 'Attached Proof',
-                  timestamp: singleProofTime,
-                  locationText: singleProofLoc,
-                  photoProofId: singleProofId,
-                }
-              : null,
+            proof: fallbackProofs[0] || null,
+            proofs: fallbackProofs,
           },
         ]);
       }
@@ -943,6 +1030,7 @@ export function ApplyEsarfScreen({
         timeTo: '',
         reason: '',
         proof: null,
+        proofs: [],
       },
     ]);
 
@@ -1424,10 +1512,11 @@ export function ApplyEsarfScreen({
       }
       if (!entry.reason.trim()) errors[`entry_${i}_reason`] = `Request #${num}: Reason is required.`;
 
-      // Photo proof requirement for FIO transaction only
+      // Photo proof requirement for FIO transaction only (1 required, 2 optional)
       const needsProof = isProofRequiredForTransactions(entry.transaction);
-      if (needsProof && !entry.proof?.uri) {
-        errors[`entry_${i}_proof`] = `Request #${num}: Photo proof is required for Failure to Punch In/Out (FIO).`;
+      const entryProofs = getEntryProofs(entry);
+      if (needsProof && entryProofs.length === 0) {
+        errors[`entry_${i}_proof`] = `Request #${num}: At least 1 photo proof is required for Failure to Punch In/Out (FIO).`;
       }
     });
 
@@ -1464,36 +1553,42 @@ export function ApplyEsarfScreen({
       // 0. Ensure all attached proofs have valid Google Drive links and database IDs before submitting
       for (let i = 0; i < entries.length; i++) {
         const e = entries[i];
-        if (e.proof) {
-          if (e.proof.driveWebViewLink && e.proof.driveWebViewLink.startsWith('http')) {
+        const entryProofs = getEntryProofs(e);
+        for (let pIdx = 0; pIdx < entryProofs.length; pIdx++) {
+          const proof = entryProofs[pIdx];
+          if (proof.driveWebViewLink && proof.driveWebViewLink.startsWith('http')) {
             continue;
           }
 
           // Check if proof has synced to cloud
-          if (e.proof.photoProofId) {
-            const details = await fetchPhotoProofDetails(null, { proofId: e.proof.photoProofId });
+          if (proof.photoProofId) {
+            const details = await fetchPhotoProofDetails(null, { proofId: proof.photoProofId });
             if (details?.driveWebViewLink && details.driveWebViewLink.startsWith('http')) {
-              e.proof.driveWebViewLink = details.driveWebViewLink;
-              e.proof.uri = details.photoUri || e.proof.uri;
+              proof.driveWebViewLink = details.driveWebViewLink;
+              proof.uri = details.photoUri || proof.uri;
               continue;
             }
           }
 
           // Upload to Google Drive and database if missing link (e.g. from gallery or sync still pending)
           try {
-            setSubmitStatus(`Syncing photo proof for Request #${i + 1} to Google Drive & database...`);
-            const now = new Date(e.proof.timestamp || Date.now());
+            setSubmitStatus(
+              entryProofs.length > 1
+                ? `Syncing photo proof ${pIdx + 1} for Request #${i + 1} to Google Drive & database...`
+                : `Syncing photo proof for Request #${i + 1} to Google Drive & database...`,
+            );
+            const now = new Date(proof.timestamp || Date.now());
             const tsFormatted = formatProofTimestamp(now);
             const userInfo = await resolveCurrentUserInfo();
             const proofItemToUpload: PhotoProofItem = {
-              id: e.proof.photoProofId || `proof_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-              photoUri: e.proof.uri,
-              timestamp: e.proof.timestamp || now.toISOString(),
+              id: proof.photoProofId || `proof_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+              photoUri: proof.uri,
+              timestamp: proof.timestamp || now.toISOString(),
               timeDigits: tsFormatted.timeDigits,
               timePeriod: tsFormatted.timePeriod,
               dateFormatted: tsFormatted.dateFormatted,
               dayFormatted: tsFormatted.dayFormatted,
-              locationText: e.proof.locationText || userInfo.resolvedStore || 'Tacloban City, 6500',
+              locationText: proof.locationText || userInfo.resolvedStore || 'Tacloban City, 6500',
               employeeId: userInfo.resolvedEmpId || null,
               employeeName: userInfo.resolvedName,
               userEmail: userInfo.resolvedEmail || null,
@@ -1504,14 +1599,16 @@ export function ApplyEsarfScreen({
             await savePhotoProof(proofItemToUpload);
 
             if (proofItemToUpload.driveWebViewLink) {
-              e.proof.driveWebViewLink = proofItemToUpload.driveWebViewLink;
-              e.proof.uri = proofItemToUpload.photoUri || e.proof.uri;
-              e.proof.photoProofId = proofItemToUpload.id;
+              proof.driveWebViewLink = proofItemToUpload.driveWebViewLink;
+              proof.uri = proofItemToUpload.photoUri || proof.uri;
+              proof.photoProofId = proofItemToUpload.id;
             }
           } catch (uploadErr) {
-            console.warn(`[ApplyEsarf] Upload proof for entry ${i + 1} exception:`, uploadErr);
+            console.warn(`[ApplyEsarf] Upload proof ${pIdx + 1} for entry ${i + 1} exception:`, uploadErr);
           }
         }
+        e.proof = entryProofs[0] || null;
+        e.proofs = entryProofs;
       }
 
       if (editingRequest) {
@@ -1586,18 +1683,23 @@ export function ApplyEsarfScreen({
             .trim();
         };
 
-        const formatProofTag = (proof?: EsarfAttachment | null) => {
-          if (!proof) return '';
-          const link = proof.driveWebViewLink || (proof.uri?.startsWith('http') ? proof.uri : '');
-          if (!link) return '';
-          let tag = ` [Proof: ${link}]`;
-          if (proof.timestamp) tag += ` [ProofTime: ${proof.timestamp}]`;
-          if (proof.locationText) {
-            const cleanLoc = proof.locationText.replace(/[\[\]]/g, '').trim();
-            if (cleanLoc) tag += ` [ProofLoc: ${cleanLoc}]`;
+        const formatProofTags = (proofInput?: EsarfAttachment[] | EsarfAttachment | null) => {
+          if (!proofInput) return '';
+          const proofsList = Array.isArray(proofInput) ? proofInput : [proofInput];
+          let tags = '';
+          for (const proof of proofsList) {
+            if (!proof) continue;
+            const link = proof.driveWebViewLink || (proof.uri?.startsWith('http') ? proof.uri : '');
+            if (!link) continue;
+            tags += ` [Proof: ${link}]`;
+            if (proof.timestamp) tags += ` [ProofTime: ${proof.timestamp}]`;
+            if (proof.locationText) {
+              const cleanLoc = proof.locationText.replace(/[\[\]]/g, '').trim();
+              if (cleanLoc) tags += ` [ProofLoc: ${cleanLoc}]`;
+            }
+            if (proof.photoProofId) tags += ` [ProofId: ${proof.photoProofId}]`;
           }
-          if (proof.photoProofId) tag += ` [ProofId: ${proof.photoProofId}]`;
-          return tag;
+          return tags;
         };
 
         let combinedReason: string;
@@ -1607,7 +1709,7 @@ export function ApplyEsarfScreen({
           const isOffset = keys.includes('offset');
           const hrs = getEntryTotalHours(firstEntry);
           const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
-          const proofTag = formatProofTag(firstEntry.proof);
+          const proofTag = formatProofTags(getEntryProofs(firstEntry));
           combinedReason = `${cleanReasonText(firstEntry.reason)}${actualTag}${proofTag}`.trim();
         } else {
           combinedReason = entries
@@ -1622,7 +1724,7 @@ export function ApplyEsarfScreen({
               const isOffset = keys.includes('offset');
               const creditedHrs = isOffset ? calculateCreditedOffsetHours(hrs) : hrs;
               const cleanReason = cleanReasonText(e.reason);
-              const proofTag = formatProofTag(e.proof);
+              const proofTag = formatProofTags(getEntryProofs(e));
               const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
               return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr} (${creditedHrs.toFixed(2)} hrs): ${cleanReason}${actualTag}${proofTag}`;
             })
@@ -1745,18 +1847,23 @@ export function ApplyEsarfScreen({
             .trim();
         };
 
-        const formatProofTag = (proof?: EsarfAttachment | null) => {
-          if (!proof) return '';
-          const link = proof.driveWebViewLink || (proof.uri?.startsWith('http') ? proof.uri : '');
-          if (!link) return '';
-          let tag = ` [Proof: ${link}]`;
-          if (proof.timestamp) tag += ` [ProofTime: ${proof.timestamp}]`;
-          if (proof.locationText) {
-            const cleanLoc = proof.locationText.replace(/[\[\]]/g, '').trim();
-            if (cleanLoc) tag += ` [ProofLoc: ${cleanLoc}]`;
+        const formatProofTags = (proofInput?: EsarfAttachment[] | EsarfAttachment | null) => {
+          if (!proofInput) return '';
+          const proofsList = Array.isArray(proofInput) ? proofInput : [proofInput];
+          let tags = '';
+          for (const proof of proofsList) {
+            if (!proof) continue;
+            const link = proof.driveWebViewLink || (proof.uri?.startsWith('http') ? proof.uri : '');
+            if (!link) continue;
+            tags += ` [Proof: ${link}]`;
+            if (proof.timestamp) tags += ` [ProofTime: ${proof.timestamp}]`;
+            if (proof.locationText) {
+              const cleanLoc = proof.locationText.replace(/[\[\]]/g, '').trim();
+              if (cleanLoc) tags += ` [ProofLoc: ${cleanLoc}]`;
+            }
+            if (proof.photoProofId) tags += ` [ProofId: ${proof.photoProofId}]`;
           }
-          if (proof.photoProofId) tag += ` [ProofId: ${proof.photoProofId}]`;
-          return tag;
+          return tags;
         };
 
         let combinedReason: string;
@@ -1766,7 +1873,7 @@ export function ApplyEsarfScreen({
           const isOffset = keys.includes('offset');
           const hrs = getEntryTotalHours(firstEntry);
           const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
-          const proofTag = formatProofTag(firstEntry.proof);
+          const proofTag = formatProofTags(getEntryProofs(firstEntry));
           combinedReason = `${cleanReasonText(firstEntry.reason)}${actualTag}${proofTag}`.trim();
         } else {
           combinedReason = groupEntries
@@ -1781,7 +1888,7 @@ export function ApplyEsarfScreen({
               const isOffset = keys.includes('offset');
               const creditedHrs = isOffset ? calculateCreditedOffsetHours(hrs) : hrs;
               const cleanReason = cleanReasonText(e.reason);
-              const proofTag = formatProofTag(e.proof);
+              const proofTag = formatProofTags(getEntryProofs(e));
               const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
               return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr} (${creditedHrs.toFixed(2)} hrs): ${cleanReason}${actualTag}${proofTag}`;
             })
@@ -2634,29 +2741,40 @@ export function ApplyEsarfScreen({
                     if (!isAllowed) return null;
 
                     const requiresProof = isProofRequiredForTransactions(entry.transaction);
-                    const hasProof = Boolean(entry.proof?.uri);
+                    const attachedProofs = getEntryProofs(entry);
+                    const hasProof = attachedProofs.length > 0;
                     const proofError = validationErrors[`entry_${actualIndex}_proof`];
 
                     return (
                       <View style={[styles.proofCardSection, proofError ? styles.proofCardSectionError : null]}>
                         <View style={styles.proofSectionHeaderRow}>
                           <View style={styles.proofHeaderTitleRow}>
-                            <Camera size={15} color={hasProof ? '#15803d' : '#2563eb'} strokeWidth={2.2} />
-                            <Text style={styles.proofSectionTitle}>
-                              Photo Proof
-                            </Text>
+                            <Camera size={16} color={hasProof ? '#15803d' : '#2563eb'} strokeWidth={2.2} style={{ marginTop: 2 }} />
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                              <View style={styles.proofTitleCountRow}>
+                                <Text style={styles.proofSectionTitle}>
+                                  Photo Proof
+                                </Text>
+                                <Text style={styles.proofSectionCount}>
+                                  ({attachedProofs.length}/3)
+                                </Text>
+                              </View>
+                              <Text style={styles.proofSectionSubtitle} numberOfLines={2}>
+                                Attach up to 3 Photo Proofs{requiresProof ? ' • 1 required' : ''}
+                              </Text>
+                            </View>
                           </View>
                           {hasProof ? (
                             <View style={[styles.proofReqBadge, styles.proofReqBadgeSuccess]}>
                               <Check size={11} color="#15803d" strokeWidth={2.8} />
                               <Text style={[styles.proofReqBadgeText, styles.proofReqBadgeTextSuccess]}>
-                                Proof Attached
+                                {attachedProofs.length === 1 ? '1 Attached' : `${attachedProofs.length} Attached`}
                               </Text>
                             </View>
                           ) : requiresProof ? (
                             <View style={[styles.proofReqBadge, styles.proofReqBadgeRequired]}>
                               <Text style={[styles.proofReqBadgeText, styles.proofReqBadgeTextRequired]}>
-                                Required
+                                1 Required
                               </Text>
                             </View>
                           ) : (
@@ -2668,89 +2786,105 @@ export function ApplyEsarfScreen({
                           )}
                         </View>
 
-                        {hasProof && entry.proof ? (
-                          <View style={styles.proofAttachedCard}>
-                            <Pressable
-                              style={styles.proofThumbnailBox}
-                              onPress={() => setPreviewProof(entry.proof!)}
-                              hitSlop={6}
-                            >
-                              {Platform.OS === 'web' ? (
-                                React.createElement('img', {
-                                  src: getDirectProofImageUrl(entry.proof.uri),
-                                  referrerPolicy: 'no-referrer',
-                                  style: { width: '100%', height: '100%', objectFit: 'cover' },
-                                })
-                              ) : (
-                                <Image source={{ uri: getDirectProofImageUrl(entry.proof.uri) }} style={styles.proofThumbnailImage} resizeMode="cover" />
-                              )}
-                              <View style={styles.proofThumbnailOverlay}>
-                                <Eye size={12} color="#ffffff" strokeWidth={2.2} />
-                              </View>
-                            </Pressable>
-
-                            <View style={styles.proofMetaInfo}>
-                              <View style={styles.proofSourceRow}>
-                                <View
-                                   style={[
-                                    styles.proofSourceBadge,
-                                    entry.proof.source === 'photo_proof'
-                                      ? styles.proofSourceBadgeLog
-                                      : entry.proof.source === 'gallery'
-                                        ? styles.proofSourceBadgeGallery
-                                        : styles.proofSourceBadgeCamera,
-                                  ]}
+                        {hasProof ? (
+                          <View style={styles.proofsAttachedList}>
+                            {attachedProofs.map((prf, pIdx) => (
+                              <View key={prf.photoProofId || `${prf.uri}_${pIdx}`} style={styles.proofAttachedCard}>
+                                <Pressable
+                                  style={styles.proofThumbnailBox}
+                                  onPress={() => setPreviewProof(prf)}
+                                  hitSlop={6}
                                 >
-                                  <Text style={styles.proofSourceBadgeText}>
-                                    {entry.proof.source === 'photo_proof'
-                                      ? 'Photo Proof Log'
-                                      : entry.proof.source === 'gallery'
-                                        ? 'Gallery Upload'
-                                        : 'Camera Photo'}
+                                  {Platform.OS === 'web' ? (
+                                    React.createElement('img', {
+                                      src: getDirectProofImageUrl(prf.uri),
+                                      referrerPolicy: 'no-referrer',
+                                      style: { width: '100%', height: '100%', objectFit: 'cover' },
+                                    })
+                                  ) : (
+                                    <Image source={{ uri: getDirectProofImageUrl(prf.uri) }} style={styles.proofThumbnailImage} resizeMode="cover" />
+                                  )}
+                                  <View style={styles.proofThumbnailOverlay}>
+                                    <Eye size={12} color="#ffffff" strokeWidth={2.2} />
+                                  </View>
+                                </Pressable>
+
+                                <View style={styles.proofMetaInfo}>
+                                  <View style={styles.proofSourceRow}>
+                                    <View
+                                      style={[
+                                        styles.proofSourceBadge,
+                                        prf.source === 'photo_proof'
+                                          ? styles.proofSourceBadgeLog
+                                          : prf.source === 'gallery'
+                                            ? styles.proofSourceBadgeGallery
+                                            : styles.proofSourceBadgeCamera,
+                                      ]}
+                                    >
+                                      <Text style={styles.proofSourceBadgeText}>
+                                        {prf.source === 'photo_proof'
+                                          ? 'Photo Proof Log'
+                                          : prf.source === 'gallery'
+                                            ? 'Gallery Upload'
+                                            : 'Camera Photo'}
+                                      </Text>
+                                    </View>
+                                    <Text style={styles.proofIndexCounterBadge}>
+                                      Photo {pIdx + 1} of {attachedProofs.length}
+                                    </Text>
+                                  </View>
+
+                                  <Text style={styles.proofMetaName} numberOfLines={1}>
+                                    {prf.name || `Attached Proof Photo ${pIdx + 1}`}
                                   </Text>
+
+                                  {prf.locationText ? (
+                                    <View style={styles.proofLocationRow}>
+                                      <MapPin size={11} color="#64748b" strokeWidth={2} />
+                                      <Text style={styles.proofLocationText} numberOfLines={1}>
+                                        {prf.locationText}
+                                      </Text>
+                                    </View>
+                                  ) : null}
+                                </View>
+
+                                <View style={styles.proofItemActions}>
+                                  <Pressable
+                                    style={styles.proofActionButton}
+                                    onPress={() => setPreviewProof(prf)}
+                                    hitSlop={6}
+                                    accessibilityLabel="View proof"
+                                  >
+                                    <Eye size={16} color="#2563eb" strokeWidth={2.2} />
+                                  </Pressable>
+                                  <Pressable
+                                    style={[styles.proofActionButton, styles.proofRemoveBtn]}
+                                    onPress={() => removeProofForEntry(actualIndex, pIdx)}
+                                    hitSlop={6}
+                                    accessibilityLabel="Remove proof"
+                                  >
+                                    <Trash2 size={15} color="#ef4444" strokeWidth={2.2} />
+                                  </Pressable>
                                 </View>
                               </View>
+                            ))}
 
-                              <Text style={styles.proofMetaName} numberOfLines={1}>
-                                {entry.proof.name || 'Attached Proof Photo'}
-                              </Text>
-
-                              {entry.proof.locationText ? (
-                                <View style={styles.proofLocationRow}>
-                                  <MapPin size={11} color="#64748b" strokeWidth={2} />
-                                  <Text style={styles.proofLocationText} numberOfLines={1}>
-                                    {entry.proof.locationText}
+                            {attachedProofs.length < 3 ? (
+                              <View style={styles.addAnotherProofRow}>
+                                <Pressable
+                                  style={({ pressed }) => [
+                                    styles.addAnotherProofBtn,
+                                    pressed ? styles.proofButtonPressed : null,
+                                  ]}
+                                  onPress={() => openProofPickerModal(actualIndex)}
+                                >
+                                  <Plus size={14} color="#2563eb" strokeWidth={2.4} />
+                                  <Text style={styles.addAnotherProofBtnText}>
+                                    Add Another Photo ({attachedProofs.length}/3)
                                   </Text>
-                                </View>
-                              ) : null}
-                            </View>
-
-                            <View style={styles.proofItemActions}>
-                              <Pressable
-                                style={styles.proofActionButton}
-                                onPress={() => setPreviewProof(entry.proof!)}
-                                hitSlop={6}
-                                accessibilityLabel="View proof"
-                              >
-                                <Eye size={16} color="#2563eb" strokeWidth={2.2} />
-                              </Pressable>
-                              <Pressable
-                                style={styles.proofActionButton}
-                                onPress={() => openProofPickerModal(actualIndex)}
-                                hitSlop={6}
-                                accessibilityLabel="Change proof"
-                              >
-                                <RotateCcw size={15} color="#475569" strokeWidth={2.2} />
-                              </Pressable>
-                              <Pressable
-                                style={[styles.proofActionButton, styles.proofRemoveBtn]}
-                                onPress={() => removeProofForEntry(actualIndex)}
-                                hitSlop={6}
-                                accessibilityLabel="Remove proof"
-                              >
-                                <Trash2 size={15} color="#ef4444" strokeWidth={2.2} />
-                              </Pressable>
-                            </View>
+                                </Pressable>
+                              </View>
+                            ) : null}
                           </View>
                         ) : (
                           <View style={styles.proofActionsRow}>
@@ -2763,7 +2897,7 @@ export function ApplyEsarfScreen({
                             >
                               <Camera size={15} color="#ffffff" strokeWidth={2.2} />
                               <Text style={styles.proofButtonPrimaryText}>
-                                {requiresProof ? 'Attach Photo Proof (Required)' : 'Attach Photo Proof (Optional)'}
+                                {requiresProof ? 'Attach Photo Proof (1 Required)' : 'Attach Photo Proof (Optional)'}
                               </Text>
                             </Pressable>
                           </View>
@@ -2875,133 +3009,177 @@ export function ApplyEsarfScreen({
           })() : null}
 
           {/* Photo Proof Selection Modal */}
-          {activeProofPickerIndex !== null ? (
-            <Modal
-              visible={activeProofPickerIndex !== null}
-              transparent
-              animationType="slide"
-              onRequestClose={() => setActiveProofPickerIndex(null)}
-            >
-              <View style={styles.proofPickerModalBackdrop}>
-                <View style={styles.proofPickerModalCard}>
-                  <View style={styles.proofPickerModalHeader}>
-                    <View>
-                      <Text style={styles.proofPickerModalTitle}>Attach Photo Proof</Text>
-                      <Text style={styles.proofPickerModalSubtitle}>
-                        Request #{activeProofPickerIndex + 1}
-                        {entries[activeProofPickerIndex]?.transaction
-                          ? ` • ${transactionOptions
-                              .filter((t) => parseEntryTransactions(entries[activeProofPickerIndex]?.transaction).includes(t.key))
-                              .map((t) => t.shortLabel || t.label)
-                              .join(', ')}`
-                          : ''}
-                      </Text>
-                    </View>
-                    <Pressable
-                      style={styles.proofPickerCloseBtn}
-                      onPress={() => setActiveProofPickerIndex(null)}
-                      hitSlop={8}
-                    >
-                      <X size={20} color="#0f172a" strokeWidth={2.4} />
-                    </Pressable>
-                  </View>
+          {activeProofPickerIndex !== null ? (() => {
+            const currentEntry = entries[activeProofPickerIndex];
+            const requiresProof = isProofRequiredForTransactions(currentEntry?.transaction);
+            const attachedProofs = getEntryProofs(currentEntry);
+            const attachedCount = attachedProofs.length;
+            const remainingSlots = Math.max(0, 3 - attachedCount);
 
-                  {isUploadingGalleryProof ? (
-                    <View style={styles.galleryUploadLoadingContainer}>
-                      <ActivityIndicator size="large" color="#7e22ce" />
-                      <Text style={styles.galleryUploadLoadingTitle}>Uploading Photo Proof</Text>
-                      <Text style={styles.galleryUploadLoadingDesc}>
-                        {galleryUploadStatus || 'Uploading to Google Drive & saving to database...'}
-                      </Text>
-                    </View>
-                  ) : (
-                    <ScrollView style={styles.proofPickerScroll} contentContainerStyle={styles.proofPickerScrollContent}>
-                      {/* Quick action: Gallery */}
-                      <Text style={styles.proofPickerSectionHeading}>Upload New Picture</Text>
-                      <View style={styles.proofPickerQuickRow}>
-                        <Pressable
-                          style={({ pressed }) => [
-                            styles.proofPickerQuickCard,
-                            pressed ? styles.proofPickerQuickCardPressed : null,
-                          ]}
-                          onPress={() => pickFromGallery(activeProofPickerIndex)}
-                        >
-                          <View style={[styles.proofPickerQuickIconWrap, { backgroundColor: '#f3e8ff' }]}>
-                            <ImageIcon size={22} color="#7e22ce" strokeWidth={2.2} />
-                          </View>
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.proofPickerQuickTitle}>Upload from Gallery</Text>
-                            <Text style={styles.proofPickerQuickDesc}>Select photo from device library</Text>
-                          </View>
-                        </Pressable>
+            return (
+              <Modal
+                visible={activeProofPickerIndex !== null}
+                transparent
+                animationType="slide"
+                onRequestClose={() => setActiveProofPickerIndex(null)}
+              >
+                <View style={styles.proofPickerModalBackdrop}>
+                  <View style={styles.proofPickerModalCard}>
+                    <View style={styles.proofPickerModalHeader}>
+                      <View>
+                        <Text style={styles.proofPickerModalTitle}>
+                          Attach up to 3 Photo Proofs
+                        </Text>
+                        <Text style={styles.proofPickerModalSubtitle}>
+                          Request #{activeProofPickerIndex + 1}
+                          {currentEntry?.transaction
+                            ? ` • ${transactionOptions
+                                .filter((t) => parseEntryTransactions(currentEntry?.transaction).includes(t.key))
+                                .map((t) => t.shortLabel || t.label)
+                                .join(', ')}`
+                            : ''}
+                          {requiresProof ? ' • 1 required, 2 optional' : ' • Optional'}
+                          {attachedCount > 0 ? ` (${attachedCount}/3 attached)` : ''}
+                        </Text>
                       </View>
+                      <Pressable
+                        style={styles.proofPickerCloseBtn}
+                        onPress={() => setActiveProofPickerIndex(null)}
+                        hitSlop={8}
+                      >
+                        <X size={20} color="#0f172a" strokeWidth={2.4} />
+                      </Pressable>
+                    </View>
 
-                      {/* Photo Proof Log */}
-                      <View style={styles.proofPickerDividerRow}>
-                        <View style={styles.proofPickerDividerLine} />
-                        <Text style={styles.proofPickerDividerText}>OR CHOOSE FROM PHOTO PROOFS LOG</Text>
-                        <View style={styles.proofPickerDividerLine} />
+                    {isUploadingGalleryProof ? (
+                      <View style={styles.galleryUploadLoadingContainer}>
+                        <ActivityIndicator size="large" color="#7e22ce" />
+                        <Text style={styles.galleryUploadLoadingTitle}>Uploading Photo Proof</Text>
+                        <Text style={styles.galleryUploadLoadingDesc}>
+                          {galleryUploadStatus || 'Uploading to Google Drive & saving to database...'}
+                        </Text>
                       </View>
-
-                      {isLoadingPhotoProofs ? (
-                        <View style={styles.proofPickerLoadingWrap}>
-                          <Text style={styles.proofPickerLoadingText}>Loading your photo proofs...</Text>
-                        </View>
-                      ) : photoProofsList.length === 0 ? (
-                        <View style={styles.proofPickerEmptyWrap}>
-                          <Images size={38} color="#94a3b8" strokeWidth={1.6} />
-                          <Text style={styles.proofPickerEmptyTitle}>No Photo Proofs Found</Text>
-                          <Text style={styles.proofPickerEmptyText}>
-                            You haven't captured any photo proofs in your Photo Log yet. Use the Gallery option above.
-                          </Text>
-                        </View>
-                      ) : (
-                        <View style={styles.proofPickerList}>
-                          {photoProofsList.map((item) => (
+                    ) : (
+                      <>
+                        <ScrollView style={styles.proofPickerScroll} contentContainerStyle={styles.proofPickerScrollContent}>
+                          {/* Quick action: Gallery */}
+                          <Text style={styles.proofPickerSectionHeading}>Upload Pictures From Gallery</Text>
+                          <View style={styles.proofPickerQuickRow}>
                             <Pressable
-                              key={item.id}
                               style={({ pressed }) => [
-                                styles.proofPickerItemCard,
-                                pressed ? styles.proofPickerItemCardPressed : null,
+                                styles.proofPickerQuickCard,
+                                pressed ? styles.proofPickerQuickCardPressed : null,
+                                remainingSlots === 0 ? { opacity: 0.5 } : null,
                               ]}
-                              onPress={() => selectPhotoProofForEntry(item)}
+                              onPress={() => {
+                                if (remainingSlots === 0) {
+                                  platformAlert('Limit Reached', 'You have already attached 3 photos. Remove one to upload another.');
+                                  return;
+                                }
+                                pickFromGallery(activeProofPickerIndex);
+                              }}
                             >
-                              {Platform.OS === 'web' ? (
-                                React.createElement('img', {
-                                  src: getDirectProofImageUrl(item.photoUri),
-                                  referrerPolicy: 'no-referrer',
-                                  style: { width: 48, height: 48, borderRadius: 8, objectFit: 'cover' },
-                                })
-                              ) : (
-                                <Image
-                                  source={{ uri: getDirectProofImageUrl(item.photoUri) }}
-                                  style={styles.proofPickerItemThumb}
-                                  resizeMode="cover"
-                                />
-                              )}
-                              <View style={styles.proofPickerItemInfo}>
-                                <Text style={styles.proofPickerItemTime}>
-                                  {item.dateFormatted} • {item.timeDigits} {item.timePeriod}
-                                </Text>
-                                {item.locationText ? (
-                                  <Text style={styles.proofPickerItemLocation} numberOfLines={2}>
-                                    {item.locationText}
-                                  </Text>
-                                ) : null}
+                              <View style={[styles.proofPickerQuickIconWrap, { backgroundColor: '#f3e8ff' }]}>
+                                <ImageIcon size={22} color="#7e22ce" strokeWidth={2.2} />
                               </View>
-                              <View style={styles.proofPickerItemSelectBtn}>
-                                <Check size={16} color="#2563eb" strokeWidth={2.4} />
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.proofPickerQuickTitle}>
+                                  Upload from Gallery {remainingSlots > 0 ? `(${remainingSlots} remaining)` : '(Max 3 reached)'}
+                                </Text>
+                                <Text style={styles.proofPickerQuickDesc}>
+                                  {remainingSlots > 0 ? `Select up to ${remainingSlots} photo(s) from device gallery` : '3 of 3 photos selected'}
+                                </Text>
                               </View>
                             </Pressable>
-                          ))}
+                          </View>
+
+                          {/* Photo Proof Log */}
+                          <View style={styles.proofPickerDividerRow}>
+                            <View style={styles.proofPickerDividerLine} />
+                            <Text style={styles.proofPickerDividerText}>OR CHOOSE FROM PHOTO PROOFS LOG</Text>
+                            <View style={styles.proofPickerDividerLine} />
+                          </View>
+
+                          {isLoadingPhotoProofs ? (
+                            <View style={styles.proofPickerLoadingWrap}>
+                              <Text style={styles.proofPickerLoadingText}>Loading your photo proofs...</Text>
+                            </View>
+                          ) : photoProofsList.length === 0 ? (
+                            <View style={styles.proofPickerEmptyWrap}>
+                              <Images size={38} color="#94a3b8" strokeWidth={1.6} />
+                              <Text style={styles.proofPickerEmptyTitle}>No Photo Proofs Found</Text>
+                              <Text style={styles.proofPickerEmptyText}>
+                                You haven't captured any photo proofs in your Photo Log yet. Use the Gallery option above.
+                              </Text>
+                            </View>
+                          ) : (
+                            <View style={styles.proofPickerList}>
+                              {photoProofsList.map((item) => {
+                                const isSelected = attachedProofs.some(
+                                  (p) => (p.photoProofId && p.photoProofId === item.id) || p.uri === item.photoUri,
+                                );
+                                return (
+                                  <Pressable
+                                    key={item.id}
+                                    style={({ pressed }) => [
+                                      styles.proofPickerItemCard,
+                                      isSelected ? styles.proofPickerItemCardSelected : null,
+                                      pressed ? styles.proofPickerItemCardPressed : null,
+                                    ]}
+                                    onPress={() => selectPhotoProofForEntry(item)}
+                                  >
+                                    {Platform.OS === 'web' ? (
+                                      React.createElement('img', {
+                                        src: getDirectProofImageUrl(item.photoUri),
+                                        referrerPolicy: 'no-referrer',
+                                        style: { width: 48, height: 48, borderRadius: 8, objectFit: 'cover' },
+                                      })
+                                    ) : (
+                                      <Image
+                                        source={{ uri: getDirectProofImageUrl(item.photoUri) }}
+                                        style={styles.proofPickerItemThumb}
+                                        resizeMode="cover"
+                                      />
+                                    )}
+                                    <View style={styles.proofPickerItemInfo}>
+                                      <Text style={styles.proofPickerItemTime}>
+                                        {item.dateFormatted} • {item.timeDigits} {item.timePeriod}
+                                      </Text>
+                                      {item.locationText ? (
+                                        <Text style={styles.proofPickerItemLocation} numberOfLines={2}>
+                                          {item.locationText}
+                                        </Text>
+                                      ) : null}
+                                    </View>
+                                    <View style={[styles.proofPickerItemSelectBtn, isSelected ? styles.proofPickerItemSelectBtnSelected : null]}>
+                                      <Check size={16} color={isSelected ? '#ffffff' : '#2563eb'} strokeWidth={isSelected ? 3 : 2.4} />
+                                    </View>
+                                  </Pressable>
+                                );
+                              })}
+                            </View>
+                          )}
+                        </ScrollView>
+
+                        {/* Bottom action bar */}
+                        <View style={[styles.proofPickerBottomBar, { paddingBottom: Math.max(16, insets.bottom + 10) }]}>
+                          <Pressable
+                            style={styles.proofPickerDoneBtn}
+                            onPress={() => setActiveProofPickerIndex(null)}
+                          >
+                            <Check size={16} color="#ffffff" strokeWidth={2.4} />
+                            <Text style={styles.proofPickerDoneBtnText}>
+                              {attachedCount > 0 ? `Done (${attachedCount}/3 Photos Selected)` : 'Done'}
+                            </Text>
+                          </Pressable>
                         </View>
-                      )}
-                    </ScrollView>
-                  )}
+                      </>
+                    )}
+                  </View>
                 </View>
-              </View>
-            </Modal>
-          ) : null}
+              </Modal>
+            );
+          })() : null}
 
           {/* Fullscreen Proof Preview Modal */}
           {previewProof ? (
@@ -5451,21 +5629,41 @@ const styles = StyleSheet.create({
   },
   proofSectionHeaderRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
+    gap: 8,
     marginBottom: 10,
   },
   proofHeaderTitleRow: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+    alignItems: 'flex-start',
+    gap: 7,
   },
   proofSectionTitle: {
     fontSize: 13,
     fontWeight: fontWeights.bold,
     color: '#0f172a',
   },
+  proofTitleCountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  proofSectionCount: {
+    fontSize: 12,
+    fontWeight: fontWeights.semibold,
+    color: '#64748b',
+  },
+  proofSectionSubtitle: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 1,
+    lineHeight: 15,
+  },
   proofReqBadge: {
+    flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
@@ -5557,6 +5755,13 @@ const styles = StyleSheet.create({
   },
   proofSourceRow: {
     flexDirection: 'row',
+    alignItems: 'center',
+  },
+  proofIndexCounterBadge: {
+    fontSize: 10,
+    fontWeight: fontWeights.semibold,
+    color: '#64748b',
+    marginLeft: 6,
   },
   proofSourceBadge: {
     paddingHorizontal: 6,
@@ -5604,6 +5809,29 @@ const styles = StyleSheet.create({
   },
   proofRemoveBtn: {
     backgroundColor: '#fee2e2',
+  },
+  proofsAttachedList: {
+    gap: 8,
+  },
+  addAnotherProofRow: {
+    marginTop: 4,
+  },
+  addAnotherProofBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    backgroundColor: '#eff6ff',
+  },
+  addAnotherProofBtnText: {
+    fontSize: 12,
+    fontWeight: fontWeights.semibold,
+    color: '#2563eb',
   },
   proofErrorBanner: {
     flexDirection: 'row',
@@ -5792,6 +6020,33 @@ const styles = StyleSheet.create({
     backgroundColor: '#eff6ff',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  proofPickerItemCardSelected: {
+    borderColor: '#2563eb',
+    backgroundColor: '#eff6ff',
+  },
+  proofPickerItemSelectBtnSelected: {
+    backgroundColor: '#2563eb',
+  },
+  proofPickerBottomBar: {
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+    backgroundColor: '#ffffff',
+  },
+  proofPickerDoneBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: '#2563eb',
+  },
+  proofPickerDoneBtnText: {
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+    color: '#ffffff',
   },
 
   /* Preview Proof Modal Styles */
