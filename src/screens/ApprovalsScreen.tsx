@@ -38,6 +38,7 @@ import { supabase } from '../lib/supabase';
 import {
   EsarfCardView,
   EsarfRequestInfoPanel,
+  TimelineStep,
   buildUpdatedReasonText,
   computeEffectiveTotalHours,
   formatUnifiedRequestCode,
@@ -827,7 +828,16 @@ function ApprovalDetailsSheet({
 
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
   const department = profile?.departmentName || profile?.storeName || 'Department';
-  const timelineRows = approvalTimeline(item);
+  const timelineRows: TimelineStep[] = [
+    {
+      title: 'Submitted',
+      subtitle: 'Request submitted',
+      date: formatSheetDate(item.submitted_at),
+      time: formatCompactTime(item.submitted_at),
+      tone: 'muted',
+    },
+    ...approvalTimeline(item),
+  ];
 
   const toggleEntrySelect = (idx: number) => {
     const target = esarfEntries.find((e) => e.index === idx);
@@ -976,7 +986,7 @@ function ApprovalDetailsSheet({
                       subtitle={step.subtitle}
                       date={step.date}
                       time={step.time}
-                      tone={step.tone}
+                      tone={step.tone ?? 'muted'}
                       isLast={index === timelineRows.length - 1}
                     />
                   ))}
@@ -1005,7 +1015,7 @@ function ApprovalDetailsSheet({
                       isRejected={rejectedEntryIndices.includes(entry.index)}
                       onToggleSelect={() => toggleEntrySelect(entry.index)}
                       onToggleReject={() => toggleRejectEntry(entry.index)}
-                      hideTimeline
+                      timelineRows={timelineRows}
                       isEditableHours={canEdit}
                       adjustedHours={adjustedHoursMap[entry.index]}
                       onHoursChange={(val) => {
@@ -1152,6 +1162,16 @@ function ApprovedDetailsSheet({
 
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
   const department = profile?.departmentName || profile?.storeName || 'Department';
+  const timelineRows: TimelineStep[] = [
+    {
+      title: 'Submitted',
+      subtitle: 'Request submitted',
+      date: formatSheetDate(item.submitted_at),
+      time: formatCompactTime(item.submitted_at),
+      tone: 'muted',
+    },
+    ...approvalTimeline(item),
+  ];
 
   return (
     <Modal transparent animationType="slide" visible onRequestClose={onClose}>
@@ -1234,6 +1254,24 @@ function ApprovedDetailsSheet({
                   </View>
                   <Text style={styles.sheetReasonText}>{item.reason || 'No reason provided.'}</Text>
                 </View>
+
+                <View style={styles.timelineHeader}>
+                  <Users size={15} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.panelTitle}>Approval Timeline</Text>
+                </View>
+                <View style={styles.timelineBlock}>
+                  {timelineRows.map((step, index) => (
+                    <TimelineItem
+                      key={`${item.request_id}-${step.title}-${index}`}
+                      title={step.title}
+                      subtitle={step.subtitle}
+                      date={step.date}
+                      time={step.time}
+                      tone={step.tone ?? 'muted'}
+                      isLast={index === timelineRows.length - 1}
+                    />
+                  ))}
+                </View>
               </>
             ) : (
               <View style={{ marginTop: 0 }}>
@@ -1243,7 +1281,7 @@ function ApprovedDetailsSheet({
                     entry={entry}
                     isSelected={!entry.isRejected}
                     isRejected={entry.isRejected}
-                    hideTimeline
+                    timelineRows={timelineRows}
                   />
                 ))}
               </View>
@@ -1302,7 +1340,7 @@ function TimelineItem({
   subtitle: string;
   date?: string;
   time?: string;
-  tone: 'warning' | 'success' | 'muted';
+  tone?: 'warning' | 'success' | 'danger' | 'muted' | string;
   isLast?: boolean;
 }) {
   return (
@@ -1329,9 +1367,10 @@ function TimelineItem({
   );
 }
 
-function timelineDotStyle(tone: 'warning' | 'success' | 'muted') {
-  if (tone === 'warning') return { borderColor: colors.semantic.warning, backgroundColor: colors.surface };
-  if (tone === 'success') return { borderColor: colors.semantic.success, backgroundColor: colors.semantic.success };
+function timelineDotStyle(tone?: 'warning' | 'success' | 'danger' | 'muted' | string) {
+  if (tone === 'warning' || tone === 'pending') return { borderColor: colors.semantic.warning, backgroundColor: colors.surface };
+  if (tone === 'success' || tone === 'approved') return { borderColor: colors.semantic.success, backgroundColor: colors.semantic.success };
+  if (tone === 'danger' || tone === 'rejected') return { borderColor: colors.semantic.danger, backgroundColor: colors.semantic.danger };
   return { borderColor: colors.border, backgroundColor: colors.border };
 }
 
@@ -1361,50 +1400,39 @@ function isUseOffsetApproval(item: PendingApproval | ApprovedApproval) {
   return false;
 }
 
-function approvalTimeline(item: PendingApproval | ApprovedApproval) {
-  const isLeave = item.request_type_code === 'leave';
-  const isUseOffset = isUseOffsetApproval(item);
-  const isSingleApprover = isLeave || isUseOffset;
-  const fallback = isSingleApprover ? [1] : [1, 2];
-  const summary = (item.approval_summary ?? [])
-    .filter((step) => !isSingleApprover || step.step_order === 1 || step.required_level === 1);
-  const rows: { label: string; status: string; actedAt: string | null }[] = summary.length
-    ? summary.map((step) => ({
-      label: approvalRoleLabel(step),
-      status: `L${step.required_level} | ${approvalStepStatus(step.status)}`,
-      actedAt: step.acted_at,
-    }))
-    : fallback.map((level) => ({
-      label: `Level ${level} Approver`,
-      status: `L${level} | ${level === 1 ? 'Pending to approve' : 'Not yet processed'}`,
-      actedAt: null,
-    }));
+function normalizeDisplayValue(value: string | null | undefined) {
+  const cleaned = value?.trim();
+  return cleaned || null;
+}
 
-  while (rows.length < fallback.length) {
-    const level = fallback[rows.length];
-    rows.push({ label: `Level ${level} Approver`, status: `L${level} | Not yet processed`, actedAt: null });
+function formatPersonNameWithMiddleInitial(value: string) {
+  if (value.toLowerCase().includes('system') || value.toLowerCase().includes('admin')) {
+    return value;
   }
+  const parts = value.trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 3) return value;
 
-  return rows.map((row) => ({
-    title: row.label,
-    subtitle: row.status,
-    date: row.actedAt ? formatSheetDate(row.actedAt) : undefined,
-    time: row.actedAt ? formatCompactTime(row.actedAt) : undefined,
-    tone: timelineTone(row.status),
-  }));
+  const [first, middle, ...rest] = parts;
+  const maybeInitial = middle.replace('.', '');
+  const middleText = maybeInitial.length === 1 ? `${maybeInitial}.` : `${maybeInitial[0]}.`;
+  return [first, middleText, ...rest].join(' ');
 }
 
 function approvalRoleLabel(step: PendingApproval['approval_summary'][number]) {
-  const approverName = step.approver_name?.trim();
-  if (approverName) return approverName;
+  const approverName = normalizeDisplayValue(step.approver_name);
+  if (approverName) return formatPersonNameWithMiddleInitial(approverName);
 
-  const positionName = step.approver_position_name?.trim();
+  const positionName = normalizeDisplayValue(step.approver_position_name);
   if (positionName) return positionName;
 
-  const skippedReason = step.skipped_reason?.trim();
+  const skippedReason = normalizeDisplayValue(step.skipped_reason);
   if (skippedReason) return skippedReason;
 
   return `Level ${step.required_level} Approver`;
+}
+
+function fallbackApprovalRoleLabel(level: number) {
+  return `Level ${level} Approver`;
 }
 
 function approvalStepStatus(status: string) {
@@ -1420,8 +1448,56 @@ function approvalStepStatus(status: string) {
 
 function timelineTone(status: string) {
   if (status.includes('Approved')) return 'success' as const;
+  if (status.includes('Rejected')) return 'danger' as const;
   if (status.includes('Pending to approve')) return 'warning' as const;
   return 'muted' as const;
+}
+
+function approvalTimeline(item: PendingApproval | ApprovedApproval) {
+  const isLeave = item.request_type_code === 'leave';
+  const isUseOffset = isUseOffsetApproval(item);
+  const isSingleApprover = isLeave || isUseOffset;
+  const fallback = isSingleApprover ? [1] : [1, 2];
+  const summary = (item.approval_summary ?? [])
+    .filter((step) => !isSingleApprover || step.step_order === 1 || step.required_level === 1)
+    .slice(0, fallback.length);
+  const rows: { label: string; status: string; actedAt: string | null }[] = summary.length
+    ? summary.map((step) => {
+        const isAutoApproved =
+          step.approver_name === 'HYG Portal System' ||
+          step.remarks?.toLowerCase().includes('auto-approved') ||
+          item.reason?.toLowerCase().includes('auto-approved');
+        const statusText = isAutoApproved
+          ? 'Auto-Approved'
+          : `L${step.required_level} • ${approvalStepStatus(step.status)}`;
+        return {
+          label: approvalRoleLabel(step),
+          status: statusText,
+          actedAt: step.acted_at,
+        };
+      })
+    : fallback.map((level) => ({
+        label: fallbackApprovalRoleLabel(level),
+        status: `L${level} • ${level === 1 ? 'Pending to approve' : 'Not yet processed'}`,
+        actedAt: null,
+      }));
+
+  while (rows.length < fallback.length) {
+    const level = fallback[rows.length];
+    rows.push({
+      label: fallbackApprovalRoleLabel(level),
+      status: `L${level} • Not yet processed`,
+      actedAt: null,
+    });
+  }
+
+  return rows.map((row) => ({
+    title: row.label,
+    subtitle: row.status,
+    date: row.actedAt ? formatSheetDate(row.actedAt) : undefined,
+    time: row.actedAt ? formatCompactTime(row.actedAt) : undefined,
+    tone: timelineTone(row.status),
+  }));
 }
 
 function formatEmployeeDisplayName(profile: EmployeeProfileSummary | null) {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Pressable, TextInput, Image, Modal, Linking, ActivityIndicator, Platform } from 'react-native';
 import { CalendarDays, Camera, Check, Clock3, Edit3, ExternalLink, Eye, FileText, Image as ImageIcon, MapPin, Users, X } from 'lucide-react-native';
 import { colors, radius, fontWeights, spacing } from '../theme';
@@ -596,7 +596,7 @@ export type TimelineStep = {
   subtitle: string;
   date?: string;
   time?: string;
-  tone?: string;
+  tone?: 'warning' | 'success' | 'danger' | 'muted' | string;
 };
 
 export function HorizontalApprovalTimeline({ steps }: { steps: TimelineStep[] }) {
@@ -628,7 +628,7 @@ export function HorizontalApprovalTimeline({ steps }: { steps: TimelineStep[] })
             return (
               <View key={idx} style={styles.stepperColumn}>
                 <View style={[styles.stepperDot, { backgroundColor: dotColor }]} />
-                <Text style={styles.stepTitleText} numberOfLines={1}>
+                <Text style={styles.stepTitleText} numberOfLines={2}>
                   {step.title}
                 </Text>
                 <Text style={styles.stepSubtitleText} numberOfLines={1}>
@@ -745,6 +745,8 @@ export function EsarfCardView({
   onHoursChange?: (val: string) => void;
 }) {
   const [previewProofUrl, setPreviewProofUrl] = useState<string | null>(null);
+  const inputRef = useRef<TextInput>(null);
+  const [isHoursInputFocused, setIsHoursInputFocused] = useState(false);
   const [thumbLoading, setThumbLoading] = useState(false);
   const [thumbError, setThumbError] = useState(false);
   const [resolvedThumbUri, setResolvedThumbUri] = useState<string>('');
@@ -929,18 +931,39 @@ export function EsarfCardView({
 
     if (!isEntryRejected) return rows;
 
-    return rows.map((step) => {
-      const isApprovedStep =
-        step.tone === 'approved' ||
-        step.tone === 'success' ||
-        step.title.toLowerCase().includes('approved') ||
-        step.subtitle.toLowerCase().includes('approved');
+    const hasPending = rows.some((s) => s.subtitle.toLowerCase().includes('pending'));
+    if (hasPending) {
+      return rows.map((step) => {
+        if (step.subtitle.toLowerCase().includes('pending')) {
+          const levelMatch = step.subtitle.match(/L\d+/);
+          const levelPrefix = levelMatch ? `${levelMatch[0]} • ` : '';
+          return {
+            ...step,
+            subtitle: `${levelPrefix}Rejected`,
+            tone: 'danger',
+          };
+        }
+        return step;
+      });
+    }
 
-      if (isApprovedStep) {
+    let lastApproverIndex = -1;
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const s = rows[i];
+      if (s.title.toLowerCase() !== 'submitted' && !s.subtitle.toLowerCase().includes('submitted')) {
+        lastApproverIndex = i;
+        break;
+      }
+    }
+
+    return rows.map((step, idx) => {
+      if (idx === lastApproverIndex) {
+        const levelMatch = step.subtitle.match(/L\d+/);
+        const levelPrefix = levelMatch ? `${levelMatch[0]} • ` : '';
         return {
           ...step,
-          subtitle: 'Rejected',
-          tone: 'rejected',
+          subtitle: `${levelPrefix}Rejected`,
+          tone: 'danger',
         };
       }
       return step;
@@ -1021,18 +1044,33 @@ export function EsarfCardView({
           {isEditableHours && !isEntryRejected && !isDisabled ? (
             <View>
               <View style={styles.editableHoursRow}>
-                <View style={styles.hoursInputShell}>
+                <Pressable
+                  style={[
+                    styles.hoursInputShell,
+                    isHoursInputFocused && styles.hoursInputShellFocused,
+                  ]}
+                  onPress={() => inputRef.current?.focus()}
+                >
                   <TextInput
+                    ref={inputRef}
                     style={styles.hoursInputField}
-                    value={adjustedHours !== undefined ? adjustedHours : entry.totalHours}
+                    value={
+                      adjustedHours !== undefined
+                        ? adjustedHours
+                        : entry.totalHours != null
+                        ? String(entry.totalHours)
+                        : ''
+                    }
                     onChangeText={onHoursChange}
+                    onFocus={() => setIsHoursInputFocused(true)}
+                    onBlur={() => setIsHoursInputFocused(false)}
                     keyboardType="decimal-pad"
-                    selectTextOnFocus
+                    selectTextOnFocus={false}
                     placeholder="0.00"
                     placeholderTextColor="#94a3b8"
                   />
                   <Text style={styles.hoursUnitText}>hrs</Text>
-                </View>
+                </Pressable>
                 {entry.actualHours ? (
                   <View style={styles.actualHoursBadge}>
                     <Text style={styles.actualHoursBadgeText}>
@@ -1438,27 +1476,52 @@ const styles = StyleSheet.create({
   hoursInputShell: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: '#cbd5e1',
-    backgroundColor: '#f8fafc',
-    borderRadius: 6,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
     paddingHorizontal: 8,
-    height: 32,
+    height: 34,
+    width: 96,
+    minWidth: 92,
     maxWidth: 110,
+    overflow: 'hidden',
+  },
+  hoursInputShellFocused: {
+    borderColor: '#2563eb',
+    backgroundColor: '#eff6ff',
   },
   hoursInputField: {
     flex: 1,
-    fontSize: Platform.OS === 'web' ? 16 : 13,
+    minWidth: 0,
+    width: '100%',
+    height: '100%',
+    fontSize: 14,
     fontWeight: fontWeights.heavy,
     color: '#0f172a',
     paddingVertical: 0,
     paddingHorizontal: 0,
+    backgroundColor: 'transparent',
+    ...(Platform.OS === 'android'
+      ? {
+          includeFontPadding: false,
+          textAlignVertical: 'center' as const,
+        }
+      : {}),
+    ...(Platform.OS === 'web'
+      ? ({
+          outlineStyle: 'none',
+          outlineWidth: 0,
+          outline: 'none',
+          boxShadow: 'none',
+        } as any)
+      : {}),
   },
   hoursUnitText: {
     fontSize: 11,
     fontWeight: fontWeights.bold,
     color: '#64748b',
-    marginLeft: 4,
+    marginLeft: 3,
   },
   originalHoursNote: {
     fontSize: 10,

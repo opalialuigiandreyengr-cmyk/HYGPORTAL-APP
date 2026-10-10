@@ -6,6 +6,7 @@ export type PendingApprovalStep = {
   required_level: number;
   status: string;
   acted_at: string | null;
+  remarks?: string | null;
   skipped_reason: string | null;
   approver_name: string | null;
   approver_position_name?: string | null;
@@ -140,8 +141,47 @@ export async function loadPendingApprovals() {
         }
       }
 
+      let approvalSummary = item.approval_summary;
+      if (!Array.isArray(approvalSummary) || approvalSummary.length === 0) {
+        try {
+          const { data: stepRows } = await supabase
+            .from('request_approval_steps')
+            .select(`
+              step_order,
+              required_level,
+              status,
+              acted_at,
+              skipped_reason,
+              remarks,
+              employees:assigned_approver_employee_id(first_name, middle_name, last_name, suffix)
+            `)
+            .eq('request_id', item.request_id)
+            .order('step_order', { ascending: true });
+
+          if (stepRows && stepRows.length > 0) {
+            approvalSummary = stepRows.map((s: any) => {
+              const emp = s.employees;
+              const nameParts = emp ? [emp.first_name, emp.middle_name, emp.last_name, emp.suffix].filter(Boolean).join(' ') : null;
+              return {
+                step_order: s.step_order || 1,
+                required_level: s.required_level || 1,
+                status: s.status || 'pending',
+                acted_at: s.acted_at || null,
+                skipped_reason: s.skipped_reason || null,
+                approver_name: nameParts || null,
+                approver_position_name: null,
+                remarks: s.remarks || null,
+              };
+            });
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       return {
         ...item,
+        approval_summary: approvalSummary || item.approval_summary || [],
         time_schedule: timeSchedule ?? item.time_schedule ?? null,
         day_off: dayOff ?? item.day_off ?? null,
         payroll_class: payrollClass ?? item.payroll_class ?? null,
@@ -266,7 +306,8 @@ export async function loadApprovedApprovals(
               status: step.status || 'approved',
               acted_at: step.acted_at || null,
               skipped_reason: step.skipped_reason || null,
-              approver_name: step.approver_name || 'Approver',
+              remarks: step.remarks || null,
+              approver_name: step.approver_name || null,
               approver_position_name: step.approver_position_name || null,
             })),
           };
@@ -308,6 +349,42 @@ export async function loadApprovedApprovals(
 
             const isLeave = Boolean(leaveDetails) || req.request_type_code === 'leave';
 
+            let fallbackSummary: PendingApprovalStep[] = [];
+            try {
+              const { data: stepRows } = await supabase
+                .from('request_approval_steps')
+                .select(`
+                  step_order,
+                  required_level,
+                  status,
+                  acted_at,
+                  skipped_reason,
+                  remarks,
+                  employees:assigned_approver_employee_id(first_name, middle_name, last_name, suffix)
+                `)
+                .eq('request_id', req.id)
+                .order('step_order', { ascending: true });
+
+              if (stepRows && stepRows.length > 0) {
+                fallbackSummary = stepRows.map((s: any) => {
+                  const emp = s.employees;
+                  const nameParts = emp ? [emp.first_name, emp.middle_name, emp.last_name, emp.suffix].filter(Boolean).join(' ') : null;
+                  return {
+                    step_order: s.step_order || 1,
+                    required_level: s.required_level || 1,
+                    status: s.status || 'approved',
+                    acted_at: s.acted_at || null,
+                    skipped_reason: s.skipped_reason || null,
+                    approver_name: nameParts || null,
+                    approver_position_name: null,
+                    remarks: s.remarks || null,
+                  };
+                });
+              }
+            } catch {
+              // ignore
+            }
+
             return {
               step_id: req.id,
               request_id: req.id,
@@ -337,7 +414,7 @@ export async function loadApprovedApprovals(
               submitted_at: req.created_at || req.submitted_at || new Date().toISOString(),
               approved_at: req.updated_at || null,
               status: 'approved',
-              approval_summary: [],
+              approval_summary: fallbackSummary,
             };
           }),
         );
