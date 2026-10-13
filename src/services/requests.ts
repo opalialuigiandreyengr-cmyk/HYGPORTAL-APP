@@ -49,14 +49,35 @@ export type MyRequest = {
 };
 
 import { isAutoApprovedBirthdayGrant } from './birthdayLeave';
+import { invalidateBalanceHistoryCache } from './balanceHistory';
 
-export async function loadMyRequests(forceRefresh = false) {
+let inFlightRequestsPromise: Promise<MyRequest[]> | null = null;
+let lastRequestsFetchAt = 0;
+const REQUESTS_CACHE_TTL_MS = 60_000; // 60 seconds freshness window
+
+export function invalidateRequestsCache() {
+  lastRequestsFetchAt = 0;
+  invalidateBalanceHistoryCache();
+}
+
+export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]> {
   const cacheKey = 'my_requests_v1';
   const cached = await getCacheJSON<MyRequest[]>(cacheKey);
 
-  try {
-    // Ensure session is fresh before fetching requests
-    await ensureFreshSession().catch(() => {});
+  // If cache is fresh and not forced, return cached data immediately (0 network calls)
+  if (!forceRefresh && cached && cached.length > 0 && Date.now() - lastRequestsFetchAt < REQUESTS_CACHE_TTL_MS) {
+    return cached;
+  }
+
+  // Deduplicate concurrent requests (e.g. Dashboard + RequestsTab + Realtime trigger)
+  if (inFlightRequestsPromise) {
+    return inFlightRequestsPromise;
+  }
+
+  inFlightRequestsPromise = (async () => {
+    try {
+      // Ensure session is fresh before fetching requests
+      await ensureFreshSession().catch(() => {});
 
     const { data, error } = await supabase.rpc('get_my_requests');
 
@@ -143,13 +164,19 @@ export async function loadMyRequests(forceRefresh = false) {
   }
 
     await setCacheJSON(cacheKey, items);
+    lastRequestsFetchAt = Date.now();
     return items;
   } catch (err) {
     if (cached && cached.length) {
       return cached;
     }
     return [];
+  } finally {
+    inFlightRequestsPromise = null;
   }
+  })();
+
+  return inFlightRequestsPromise;
 }
 
 export async function loadMyRequestsCached() {
@@ -257,6 +284,7 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
 
   if (rpcSuccess) {
     try {
+      invalidateRequestsCache();
       await removeCacheItem('my_requests_v1');
     } catch {
       // ignore
@@ -382,6 +410,7 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
   }
 
   try {
+    invalidateRequestsCache();
     await removeCacheItem('my_requests_v1');
   } catch {
     // ignore
@@ -524,6 +553,7 @@ export async function deleteMyPendingRequest(requestId: string, isPerk = false) 
   }
 
   try {
+    invalidateRequestsCache();
     await removeCacheItem('my_requests_v1');
   } catch {
     // ignore

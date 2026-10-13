@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, AppState, type AppStateStatus, Modal, PanResponder, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -24,6 +24,7 @@ import {
   formatUnifiedRequestCode,
   formatUnifiedRequestType,
   parseEsarfEntries,
+  type ParsedEsarfEntry,
 } from '../components/EsarfDetailsView';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
@@ -210,6 +211,26 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
     }
   };
 
+  const handleSwipeOpen = useCallback((id: string) => {
+    setSwipedCardId(id);
+  }, []);
+
+  const handleSwipeClose = useCallback((id: string) => {
+    setSwipedCardId((curr) => (curr === id ? null : curr));
+  }, []);
+
+  const handleView = useCallback((item: MyRequest, sequence: number) => {
+    setSelectedRequest({ item, sequence });
+  }, []);
+
+  const handleEdit = useCallback((item: MyRequest) => {
+    void handleEditRequest(item);
+  }, [onEditRequest]);
+
+  const handleDelete = useCallback((item: MyRequest, sequence?: number) => {
+    handleDeleteRequest(item, sequence);
+  }, []);
+
   async function refreshSilently() {
     try {
       const requests = await loadMyRequests(false);
@@ -231,7 +252,11 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
         setStatus('');
       }
       if (active) {
-        await refresh(true);
+        if (!cached || !cached.length) {
+          await refresh(true);
+        } else {
+          void refreshSilently();
+        }
       }
     })();
 
@@ -242,10 +267,10 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
       }
     });
 
-    // 3. Periodic silent polling (every 30 seconds while on screen as backup to Realtime WebSocket)
+    // 3. Periodic silent polling (every 60 seconds while on screen as backup to Realtime WebSocket)
     const pollInterval = setInterval(() => {
       void refreshSilently();
-    }, 30000);
+    }, 60000);
 
     // 4. Supabase Realtime channel subscription for instant database reflections
     let realtimeChannel: any = null;
@@ -295,19 +320,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
         );
       }
 
-      realtimeChannel
-        .on(
-          'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: 'request_approval_steps',
-          },
-          () => {
-            void refreshSilently();
-          },
-        )
-        .subscribe();
+      realtimeChannel.subscribe();
     }
 
     return () => {
@@ -379,8 +392,8 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
         .toLowerCase();
       return haystack.includes(normalizedQuery);
     }).sort((a, b) => {
-      const timeA = a.submitted_at ? new Date(a.submitted_at).getTime() : 0;
-      const timeB = b.submitted_at ? new Date(b.submitted_at).getTime() : 0;
+      const timeA = a.submitted_at ? Date.parse(a.submitted_at) : 0;
+      const timeB = b.submitted_at ? Date.parse(b.submitted_at) : 0;
       return timeB - timeA;
     });
   }, [activeCategory, activeStatus, dateFrom, dateTo, items, query]);
@@ -538,8 +551,6 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
 
         {paginatedItems.map((item, index) => {
           const sequence = (currentPage - 1) * pageSize + index + 1;
-          const canEdit = canEditRequest(item);
-          const canDelete = canDeleteRequest(item);
           return (
             <RequestCard
               key={item.request_id || `req-${index}`}
@@ -548,15 +559,11 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
               sequence={sequence}
               isDeleting={deletingId === item.request_id}
               isSwipedOpen={swipedCardId === item.request_id}
-              onSwipeOpen={() => setSwipedCardId(item.request_id)}
-              onSwipeClose={() => {
-                if (swipedCardId === item.request_id) {
-                  setSwipedCardId(null);
-                }
-              }}
-              onView={() => setSelectedRequest({ item, sequence })}
-              onEdit={canEdit && onEditRequest ? () => void handleEditRequest(item) : undefined}
-              onDelete={canDelete ? () => handleDeleteRequest(item, sequence) : undefined}
+              onSwipeOpen={handleSwipeOpen}
+              onSwipeClose={handleSwipeClose}
+              onView={handleView}
+              onEdit={onEditRequest ? handleEdit : undefined}
+              onDelete={handleDelete}
             />
           );
         })}
@@ -640,7 +647,7 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
   );
 }
 
-function RequestCard({
+const RequestCard = memo(function RequestCard({
   item,
   profile,
   sequence,
@@ -657,11 +664,11 @@ function RequestCard({
   sequence: number;
   isDeleting?: boolean;
   isSwipedOpen?: boolean;
-  onSwipeOpen?: () => void;
-  onSwipeClose?: () => void;
-  onView: () => void;
-  onEdit?: () => void;
-  onDelete?: () => void;
+  onSwipeOpen?: (id: string) => void;
+  onSwipeClose?: (id: string) => void;
+  onView: (item: MyRequest, sequence: number) => void;
+  onEdit?: (item: MyRequest) => void;
+  onDelete?: (item: MyRequest, sequence?: number) => void;
 }) {
   const statusKey = normalizeStatus(item.status, item);
   const isPending = statusKey === 'pending';
@@ -669,6 +676,8 @@ function RequestCard({
   const displayName = formatEmployeeDisplayName(profile);
   const department = formatProfileWorkUnit(profile);
   const isPerk = isPerkRequest(item);
+  const canEdit = canEditRequest(item);
+  const canDelete = canDeleteRequest(item);
 
   const translateX = useRef(new Animated.Value(0)).current;
   const isOpenRef = useRef(false);
@@ -693,7 +702,7 @@ function RequestCard({
   }, [isSwipedOpen]);
 
   const panResponder = useMemo(() => {
-    if (!isPending || !Boolean(onDelete)) {
+    if (!isPending || !Boolean(canDelete && onDelete)) {
       return null;
     }
 
@@ -734,17 +743,17 @@ function RequestCard({
 
         if (shouldBeOpen) {
           isOpenRef.current = true;
-          onSwipeOpenRef.current?.();
+          onSwipeOpenRef.current?.(item.request_id);
           Animated.spring(translateX, {
             toValue: -SWIPE_WIDTH,
             bounciness: 4,
             useNativeDriver: true,
           }).start(() => {
-            onDeleteRef.current?.();
+            onDeleteRef.current?.(item, sequence);
           });
         } else {
           isOpenRef.current = false;
-          onSwipeCloseRef.current?.();
+          onSwipeCloseRef.current?.(item.request_id);
           Animated.spring(translateX, {
             toValue: 0,
             bounciness: 4,
@@ -755,7 +764,7 @@ function RequestCard({
       onPanResponderTerminationRequest: () => false,
       onPanResponderTerminate: () => {
         isOpenRef.current = false;
-        onSwipeCloseRef.current?.();
+        onSwipeCloseRef.current?.(item.request_id);
         Animated.spring(translateX, {
           toValue: 0,
           bounciness: 4,
@@ -763,16 +772,16 @@ function RequestCard({
         }).start();
       },
     });
-  }, [isPending, Boolean(onDelete), SWIPE_WIDTH]);
+  }, [isPending, Boolean(canDelete && onDelete), item, sequence]);
 
   return (
     <View style={styles.cardOuter}>
-      {isPending && onDelete ? (
+      {isPending && canDelete && onDelete ? (
         <View style={styles.swipeDeleteActionBehind}>
           <Pressable
             style={styles.swipeDeleteBtn}
             onPress={() => {
-              onDelete();
+              onDelete(item, sequence);
             }}
             accessibilityLabel="Delete request"
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -836,10 +845,10 @@ function RequestCard({
               </View>
               {statusKey === 'pending' ? (
                 <>
-                  {!isPerk && onEdit ? (
+                  {!isPerk && canEdit && onEdit ? (
                     <Pressable
                       style={styles.editButton}
-                      onPress={onEdit}
+                      onPress={() => onEdit(item)}
                       accessibilityLabel="Edit request"
                       hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                     >
@@ -847,11 +856,11 @@ function RequestCard({
                       <Text style={styles.editText}>Edit</Text>
                     </Pressable>
                   ) : null}
-                  {onDelete ? (
+                  {canDelete && onDelete ? (
                     <Pressable
                       disabled={isDeleting}
                       style={[styles.deleteButton, isDeleting ? { opacity: 0.6 } : null]}
-                      onPress={onDelete}
+                      onPress={() => onDelete(item, sequence)}
                       accessibilityLabel="Delete request"
                       hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                     >
@@ -864,7 +873,7 @@ function RequestCard({
                   ) : null}
                 </>
               ) : null}
-              <Pressable style={styles.viewButton} onPress={onView}>
+              <Pressable style={styles.viewButton} onPress={() => onView(item, sequence)}>
                 <Eye size={15} color={colors.text} strokeWidth={2.3} />
                 <Text style={styles.viewText}>View</Text>
               </Pressable>
@@ -877,7 +886,7 @@ function RequestCard({
             style={styles.swipedCardOverlay}
             onPress={() => {
               isOpenRef.current = false;
-              onSwipeClose?.();
+              onSwipeClose?.(item.request_id);
               Animated.spring(translateX, {
                 toValue: 0,
                 bounciness: 4,
@@ -889,7 +898,7 @@ function RequestCard({
       </Animated.View>
     </View>
   );
-}
+});
 
 function RequestDetailsSheet({
   request,
@@ -1075,7 +1084,7 @@ function RequestDetailsSheet({
             ) : (
               /* ESARF entry cards matching exact image design */
               <View style={{ marginTop: 0 }}>
-                {parseEsarfEntries(item).map((entry) => (
+                {getCachedEsarfEntries(item).map((entry) => (
                   <EsarfCardView key={entry.index} entry={entry} timelineRows={timelineRows} />
                 ))}
                 {rejectedReason ? (
@@ -1230,9 +1239,24 @@ function timelineDotStyle(tone: 'warning' | 'success' | 'danger' | 'muted') {
 }
 
 
+const esarfEntriesCache = new Map<string, ParsedEsarfEntry[]>();
+
+function getCachedEsarfEntries(item: MyRequest): ParsedEsarfEntry[] {
+  const key = `${item.request_id || ''}:${item.reason || ''}`;
+  let entries = esarfEntriesCache.get(key);
+  if (!entries) {
+    entries = parseEsarfEntries(item);
+    if (esarfEntriesCache.size > 250) {
+      esarfEntriesCache.clear();
+    }
+    esarfEntriesCache.set(key, entries);
+  }
+  return entries;
+}
+
 function isPartialApproval(item: MyRequest): boolean {
   if (!item || item.request_type_code === 'leave' || isPerkRequest(item)) return false;
-  const entries = parseEsarfEntries(item);
+  const entries = getCachedEsarfEntries(item);
   if (entries.length <= 1) return false;
   const hasRejected = entries.some((e) => e.isRejected);
   const hasApproved = entries.some((e) => !e.isRejected);
@@ -1266,7 +1290,7 @@ function normalizeStatus(status: string, item?: MyRequest): StatusFilter {
 
 function statusLabel(item: MyRequest): string {
   if (isPartialApproval(item)) {
-    const entries = parseEsarfEntries(item);
+    const entries = getCachedEsarfEntries(item);
     const approvedCount = entries.filter((e) => !e.isRejected).length;
     return `${approvedCount}/${entries.length} APPROVED`;
   }
@@ -1290,7 +1314,7 @@ function statusLabel(item: MyRequest): string {
 
 function renderStatusPillContent(item: MyRequest) {
   if (isPartialApproval(item)) {
-    const entries = parseEsarfEntries(item);
+    const entries = getCachedEsarfEntries(item);
     const approvedCount = entries.filter((e) => !e.isRejected).length;
     return (
       <Text>

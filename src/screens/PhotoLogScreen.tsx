@@ -269,11 +269,11 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
   const fetchLogs = async (isPull = false) => {
     if (isPull) {
       setIsPullRefreshing(true);
-    } else {
+    } else if (logs.length === 0) {
       setIsLoading(true);
     }
     try {
-      const items = await loadPhotoProofs({ employeeId, employeeName, userEmail });
+      const items = await loadPhotoProofs({ employeeId, employeeName, userEmail }, isPull);
       setLogs(items);
     } catch (err) {
       console.error('Error loading photo logs:', err);

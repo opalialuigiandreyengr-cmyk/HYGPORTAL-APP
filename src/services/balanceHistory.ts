@@ -1,4 +1,5 @@
 import { ensureFreshSession, supabase } from '../lib/supabase';
+import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 
 export type BalanceHistoryItem = {
   id: string;
@@ -20,6 +21,28 @@ export type BalanceHistoryItem = {
   remainingDays?: number | null;
   expiryProgress?: number | null;
 };
+
+const OFFSET_HISTORY_KEY = 'offset_history_v1';
+const LEAVE_HISTORY_KEY = 'leave_history_v1';
+const BALANCE_HISTORY_TTL_MS = 60_000;
+
+let inFlightOffsetPromise: Promise<BalanceHistoryItem[]> | null = null;
+let inFlightLeavePromise: Promise<BalanceHistoryItem[]> | null = null;
+let lastOffsetFetchAt = 0;
+let lastLeaveFetchAt = 0;
+
+export function invalidateBalanceHistoryCache() {
+  lastOffsetFetchAt = 0;
+  lastLeaveFetchAt = 0;
+}
+
+export async function loadCachedOffsetHistory(): Promise<BalanceHistoryItem[]> {
+  return (await getCacheJSON<BalanceHistoryItem[]>(OFFSET_HISTORY_KEY)) ?? [];
+}
+
+export async function loadCachedLeaveHistory(): Promise<BalanceHistoryItem[]> {
+  return (await getCacheJSON<BalanceHistoryItem[]>(LEAVE_HISTORY_KEY)) ?? [];
+}
 
 const OFFSET_VALIDITY_DAYS = 90;
 
@@ -118,12 +141,28 @@ function parseEarnedOffsetHoursFromReason(reason?: string | null, fallbackHours:
   return hasValidMatch ? Number(totalEarned.toFixed(2)) : fallbackHours;
 }
 
-export async function fetchOffsetHistory(userId?: string, employeeId?: string): Promise<BalanceHistoryItem[]> {
-  await ensureFreshSession().catch(() => {});
-  const empId = await resolveEmployeeId(userId, employeeId);
-  if (!empId) return [];
+export async function fetchOffsetHistory(
+  userId?: string,
+  employeeId?: string,
+  forceRefresh = false,
+): Promise<BalanceHistoryItem[]> {
+  const cached = await getCacheJSON<BalanceHistoryItem[]>(OFFSET_HISTORY_KEY);
 
-  const itemsMap = new Map<string, BalanceHistoryItem>();
+  if (!forceRefresh && cached && cached.length > 0 && Date.now() - lastOffsetFetchAt < BALANCE_HISTORY_TTL_MS) {
+    return cached;
+  }
+
+  if (inFlightOffsetPromise) {
+    return inFlightOffsetPromise;
+  }
+
+  const fetchPromise = (async (): Promise<BalanceHistoryItem[]> => {
+    try {
+      await ensureFreshSession().catch(() => {});
+      const empId = await resolveEmployeeId(userId, employeeId);
+      if (!empId) return cached ?? [];
+
+      const itemsMap = new Map<string, BalanceHistoryItem>();
 
   // 1. Try RPC get_my_offset_history first
   try {
@@ -384,294 +423,371 @@ export async function fetchOffsetHistory(userId?: string, employeeId?: string): 
 
   const result = Array.from(itemsMap.values());
   result.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  return addOffsetExpiryAndFifo(result);
-}
+  const processed = addOffsetExpiryAndFifo(result);
 
-export async function fetchLeaveHistory(userId?: string, employeeId?: string): Promise<BalanceHistoryItem[]> {
-  await ensureFreshSession().catch(() => {});
-
-  // 1. Try RPC get_my_leave_history first
-  try {
-    const { data: rpcData, error: rpcError } = await supabase.rpc('get_my_leave_history');
-    if (!rpcError && Array.isArray(rpcData) && rpcData.length > 0) {
-      return rpcData.map((row: any) => {
-        const rawDays = Number(row.days ?? 0);
-        const txType = (row.transaction_type ?? '').toLowerCase();
-        const titleLower = (row.title ?? '').toLowerCase();
-        const hasRequestId = Boolean(row.request_id);
-
-        const isDeduction =
-          rawDays < 0 ||
-          row.category === 'use' ||
-          titleLower.includes('deduct') ||
-          txType === 'deduct' ||
-          txType === 'deduction' ||
-          txType === 'use_paid';
-
-        const isReimburse =
-          row.category === 'refund' ||
-          txType === 'reimburse' ||
-          titleLower.includes('reimburse');
-
-        const isGrant =
-          row.category === 'grant' ||
-          ['grant', 'credit', 'set_credits', 'annual_credit'].includes(txType) ||
-          titleLower.includes('grant') ||
-          titleLower.includes('allocation');
-
-        let category: BalanceHistoryItem['category'] = isDeduction ? 'use' : isReimburse ? 'refund' : isGrant ? 'grant' : 'adjustment';
-        let title = row.title;
-        let subtitle = row.subtitle;
-
-        if (isDeduction) {
-          category = 'use';
-          title = title || 'Leave Deducted';
-          subtitle = subtitle || (!hasRequestId ? 'Admin deduction' : 'Approved paid leave');
-        } else if (isReimburse) {
-          category = 'refund';
-          title = title || 'Credit Reimbursed';
-          subtitle = subtitle || (!hasRequestId ? 'Admin reimbursement' : 'Credits reimbursed');
-        } else if (isGrant) {
-          category = 'grant';
-          title = title || 'Annual Leave Credits Granted';
-          subtitle = subtitle || 'Annual leave allocation';
-        }
-
-        return {
-          id: String(row.id ?? Math.random()),
-          type: 'leave',
-          category,
-          title,
-          subtitle,
-          amount: isDeduction ? -Math.abs(rawDays) : Math.abs(rawDays),
-          unit: 'd',
-          balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
-          date: row.created_at || new Date().toISOString(),
-          status: row.request_status || null,
-          requestId: row.request_id || null,
-          reason: row.reason || null,
-          dateFrom: row.start_date || null,
-          dateTo: row.end_date || null,
-        };
-      });
+  if (processed.length > 0) {
+    lastOffsetFetchAt = Date.now();
+    await setCacheJSON(OFFSET_HISTORY_KEY, processed);
+  } else if (cached && cached.length > 0) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (!sessionData?.session?.user) {
+      return cached;
     }
-  } catch {
-    // Fall back to direct table queries
+    lastOffsetFetchAt = Date.now();
+    await setCacheJSON(OFFSET_HISTORY_KEY, processed);
+  } else {
+    lastOffsetFetchAt = Date.now();
+    await setCacheJSON(OFFSET_HISTORY_KEY, processed);
   }
 
-  // 2. Direct table fallback: query leave_transactions + leave_balances + audit_logs
-  const empId = await resolveEmployeeId(userId, employeeId);
-  if (!empId) return [];
+  return processed;
+} catch {
+  if (cached && cached.length > 0) {
+    return cached;
+  }
+  return [];
+} finally {
+  inFlightOffsetPromise = null;
+}
+})();
 
-  const items: BalanceHistoryItem[] = [];
+  inFlightOffsetPromise = fetchPromise;
+  return fetchPromise;
+}
 
-  try {
-    // Fetch leave_balances to check annual granted credits
-    const { data: balRow } = await supabase
-      .from('leave_balances')
-      .select('annual_credit_days, used_days, updated_at')
-      .eq('employee_id', empId)
-      .maybeSingle<{ annual_credit_days: number | null; used_days: number | null; updated_at: string | null }>();
+export async function fetchLeaveHistory(
+  userId?: string,
+  employeeId?: string,
+  forceRefresh = false,
+): Promise<BalanceHistoryItem[]> {
+  const cached = await getCacheJSON<BalanceHistoryItem[]>(LEAVE_HISTORY_KEY);
 
-    const annualCredit = Number(balRow?.annual_credit_days ?? 0);
-    if (annualCredit > 0) {
-      items.push({
-        id: `initial_grant_${empId}`,
-        type: 'leave',
-        category: 'grant',
-        title: 'Annual Leave Credits Granted',
-        subtitle: 'Annual leave allocation',
-        amount: annualCredit,
-        unit: 'd',
-        balanceAfter: annualCredit,
-        date: balRow?.updated_at || new Date().toISOString(),
-        status: 'approved',
-        reason: 'Annual leave credit entitlement',
-      });
-    }
+  if (!forceRefresh && cached && cached.length > 0 && Date.now() - lastLeaveFetchAt < BALANCE_HISTORY_TTL_MS) {
+    return cached;
+  }
 
-    // Query leave_transactions
-    const { data: ltRows } = await supabase
-      .from('leave_transactions')
-      .select('id, employee_id, request_id, transaction_type, days, balance_after, created_at')
-      .eq('employee_id', empId)
-      .order('created_at', { ascending: false });
+  if (inFlightLeavePromise) {
+    return inFlightLeavePromise;
+  }
 
-    if (ltRows && ltRows.length > 0) {
-      const requestIds = ltRows.map((r) => r.request_id).filter(Boolean) as string[];
-      let requestMap: Record<string, { status?: string; leave_category?: string; reason?: string; start_date?: string; end_date?: string }> = {};
+  const fetchPromise = (async (): Promise<BalanceHistoryItem[]> => {
+    try {
+      await ensureFreshSession().catch(() => {});
 
-      if (requestIds.length > 0) {
-        try {
-          const [reqRes, leaveRes] = await Promise.all([
-            supabase.from('requests').select('id, status, rejected_reason').in('id', requestIds),
-            supabase.from('leave_request_details').select('request_id, leave_category, leave_type, reason, start_date, end_date').in('request_id', requestIds),
-          ]);
-          if (reqRes.data) {
-            reqRes.data.forEach((r: any) => {
-              requestMap[r.id] = { ...requestMap[r.id], status: r.status, reason: r.rejected_reason };
+      // 1. Try RPC get_my_leave_history first
+      try {
+        const { data: rpcData, error: rpcError } = await supabase.rpc('get_my_leave_history');
+        if (!rpcError && Array.isArray(rpcData) && rpcData.length > 0) {
+          const rpcItems: BalanceHistoryItem[] = rpcData.map((row: any): BalanceHistoryItem => {
+            const rawDays = Number(row.days ?? 0);
+            const txType = (row.transaction_type ?? '').toLowerCase();
+            const titleLower = (row.title ?? '').toLowerCase();
+            const hasRequestId = Boolean(row.request_id);
+
+            const isDeduction =
+              rawDays < 0 ||
+              row.category === 'use' ||
+              titleLower.includes('deduct') ||
+              txType === 'deduct' ||
+              txType === 'deduction' ||
+              txType === 'use_paid';
+
+            const isReimburse =
+              row.category === 'refund' ||
+              txType === 'reimburse' ||
+              titleLower.includes('reimburse');
+
+            const isGrant =
+              row.category === 'grant' ||
+              ['grant', 'credit', 'set_credits', 'annual_credit'].includes(txType) ||
+              titleLower.includes('grant') ||
+              titleLower.includes('allocation');
+
+            let category: BalanceHistoryItem['category'] = isDeduction ? 'use' : isReimburse ? 'refund' : isGrant ? 'grant' : 'adjustment';
+            let title = row.title;
+            let subtitle = row.subtitle;
+
+            if (isDeduction) {
+              category = 'use';
+              title = title || 'Leave Deducted';
+              subtitle = subtitle || (!hasRequestId ? 'Admin deduction' : 'Approved paid leave');
+            } else if (isReimburse) {
+              category = 'refund';
+              title = title || 'Credit Reimbursed';
+              subtitle = subtitle || (!hasRequestId ? 'Admin reimbursement' : 'Credits reimbursed');
+            } else if (isGrant) {
+              category = 'grant';
+              title = title || 'Annual Leave Credits Granted';
+              subtitle = subtitle || 'Annual leave allocation';
+            }
+
+            return {
+              id: String(row.id ?? Math.random()),
+              type: 'leave',
+              category,
+              title,
+              subtitle,
+              amount: isDeduction ? -Math.abs(rawDays) : Math.abs(rawDays),
+              unit: 'd',
+              balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
+              date: row.created_at || new Date().toISOString(),
+              status: row.request_status || null,
+              requestId: row.request_id || null,
+              reason: row.reason || null,
+              dateFrom: row.start_date || null,
+              dateTo: row.end_date || null,
+            };
+          });
+
+          lastLeaveFetchAt = Date.now();
+          await setCacheJSON(LEAVE_HISTORY_KEY, rpcItems);
+          return rpcItems;
+        }
+      } catch {
+        // Fall back to direct table queries
+      }
+
+      // 2. Direct table fallback: query leave_transactions + leave_balances + audit_logs
+      const empId = await resolveEmployeeId(userId, employeeId);
+      if (!empId) return cached ?? [];
+
+      const items: BalanceHistoryItem[] = [];
+
+      try {
+        // Fetch leave_balances to check annual granted credits
+        const { data: balRow } = await supabase
+          .from('leave_balances')
+          .select('annual_credit_days, used_days, updated_at')
+          .eq('employee_id', empId)
+          .maybeSingle<{ annual_credit_days: number | null; used_days: number | null; updated_at: string | null }>();
+
+        const annualCredit = Number(balRow?.annual_credit_days ?? 0);
+        if (annualCredit > 0) {
+          items.push({
+            id: `initial_grant_${empId}`,
+            type: 'leave',
+            category: 'grant',
+            title: 'Annual Leave Credits Granted',
+            subtitle: 'Annual leave allocation',
+            amount: annualCredit,
+            unit: 'd',
+            balanceAfter: annualCredit,
+            date: balRow?.updated_at || new Date().toISOString(),
+            status: 'approved',
+            reason: 'Annual leave credit entitlement',
+          });
+        }
+
+        // Query leave_transactions
+        const { data: ltRows } = await supabase
+          .from('leave_transactions')
+          .select('id, employee_id, request_id, transaction_type, days, balance_after, created_at')
+          .eq('employee_id', empId)
+          .order('created_at', { ascending: false });
+
+        if (ltRows && ltRows.length > 0) {
+          const requestIds = ltRows.map((r) => r.request_id).filter(Boolean) as string[];
+          let requestMap: Record<string, { status?: string; leave_category?: string; reason?: string; start_date?: string; end_date?: string }> = {};
+
+          if (requestIds.length > 0) {
+            try {
+              const [reqRes, leaveRes] = await Promise.all([
+                supabase.from('requests').select('id, status, rejected_reason').in('id', requestIds),
+                supabase.from('leave_request_details').select('request_id, leave_category, leave_type, reason, start_date, end_date').in('request_id', requestIds),
+              ]);
+              if (reqRes.data) {
+                reqRes.data.forEach((r: any) => {
+                  requestMap[r.id] = { ...requestMap[r.id], status: r.status, reason: r.rejected_reason };
+                });
+              }
+              if (leaveRes.data) {
+                leaveRes.data.forEach((l: any) => {
+                  requestMap[l.request_id] = {
+                    ...requestMap[l.request_id],
+                    leave_category: l.leave_category,
+                    reason: l.reason || requestMap[l.request_id]?.reason,
+                    start_date: l.start_date,
+                    end_date: l.end_date,
+                  };
+                });
+              }
+            } catch {
+              // ignore enrichment failure
+            }
+          }
+
+          ltRows.forEach((row) => {
+            const reqDetail = row.request_id ? requestMap[row.request_id] : null;
+            const txType = (row.transaction_type ?? '').toLowerCase();
+            const hasRequestId = Boolean(row.request_id);
+            const rawDays = Number(row.days ?? 0);
+
+            const isDeduction =
+              rawDays < 0 ||
+              txType === 'use_paid' ||
+              txType === 'use' ||
+              txType === 'deduct' ||
+              txType === 'deduction';
+
+            const isReimburse = txType === 'reimburse' || txType === 'refund';
+
+            let category: BalanceHistoryItem['category'] = isDeduction ? 'use' : isReimburse ? 'refund' : 'grant';
+            let title = 'Leave Transaction';
+            let subtitle = 'Leave transaction';
+            let signedDays = isDeduction ? -Math.abs(rawDays) : Math.abs(rawDays);
+
+            if (isDeduction) {
+              title = reqDetail?.leave_category ? `${reqDetail.leave_category} (Paid)` : 'Leave Deducted';
+              subtitle = reqDetail?.leave_category ? 'Approved paid leave' : (hasRequestId ? 'Approved paid leave' : 'Admin deduction');
+            } else if (isReimburse) {
+              title = 'Credit Reimbursed';
+              subtitle = hasRequestId ? 'Credits reimbursed' : 'Admin reimbursement';
+            } else {
+              title = 'Annual Leave Credits Granted';
+              subtitle = hasRequestId ? 'Leave credit entitlement' : 'Admin credit allocation';
+            }
+
+            items.push({
+              id: String(row.id ?? Math.random()),
+              type: 'leave',
+              category,
+              title,
+              subtitle,
+              amount: signedDays,
+              unit: 'd',
+              balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
+              date: row.created_at || new Date().toISOString(),
+              status: reqDetail?.status || 'approved',
+              requestId: row.request_id || null,
+              reason: reqDetail?.reason || null,
+              dateFrom: reqDetail?.start_date || null,
+              dateTo: reqDetail?.end_date || null,
+            });
+          });
+        } else {
+          // Fallback: Check approved leave requests with paid days
+          const { data: leaveReqs } = await supabase
+            .from('leave_request_details')
+            .select('request_id, paid_days, leave_category, leave_type, reason, start_date, end_date, requests!inner(id, status, submitted_at, submitted_by_employee_id)')
+            .eq('requests.submitted_by_employee_id', empId)
+            .eq('requests.status', 'approved')
+            .gt('paid_days', 0)
+            .order('start_date', { ascending: false })
+            .limit(20);
+
+          if (leaveReqs && leaveReqs.length > 0) {
+            leaveReqs.forEach((item: any) => {
+              const days = Number(item.paid_days ?? 0);
+              items.push({
+                id: String(item.request_id),
+                type: 'leave',
+                category: 'use',
+                title: item.leave_category ? `${item.leave_category} (Paid)` : 'Leave Deducted',
+                subtitle: 'Approved paid leave',
+                amount: -Math.abs(days),
+                unit: 'd',
+                date: item.requests?.submitted_at || item.start_date || new Date().toISOString(),
+                status: item.requests?.status || 'approved',
+                requestId: item.request_id,
+                reason: item.reason || null,
+                dateFrom: item.start_date || null,
+                dateTo: item.end_date || null,
+              });
             });
           }
-          if (leaveRes.data) {
-            leaveRes.data.forEach((l: any) => {
-              requestMap[l.request_id] = {
-                ...requestMap[l.request_id],
-                leave_category: l.leave_category,
-                reason: l.reason || requestMap[l.request_id]?.reason,
-                start_date: l.start_date,
-                end_date: l.end_date,
-              };
+        }
+
+        // Also check audit_logs for any admin leave actions
+        try {
+          const { data: auditRows } = await supabase
+            .from('audit_logs')
+            .select('id, action, metadata, created_at')
+            .in('action', ['deduct_leave_credits', 'reimburse_leave_credits', 'set_leave_credits'])
+            .contains('metadata', { employee_id: empId })
+            .order('created_at', { ascending: false });
+
+          if (auditRows && auditRows.length > 0) {
+            auditRows.forEach((al: any) => {
+              const alTime = new Date(al.created_at).getTime();
+              const alreadyExists = items.some(
+                (it) => Math.abs(new Date(it.date).getTime() - alTime) < 5000
+              );
+              if (alreadyExists) return;
+
+              const meta = al.metadata || {};
+              if (al.action === 'deduct_leave_credits') {
+                const deductDays = Number(meta.deduct_days ?? 0);
+                if (deductDays > 0) {
+                  items.push({
+                    id: String(al.id),
+                    type: 'leave',
+                    category: 'use',
+                    title: 'Leave Deducted',
+                    subtitle: meta.reason || 'Admin deduction',
+                    amount: -Math.abs(deductDays),
+                    unit: 'd',
+                    date: al.created_at,
+                    status: 'approved',
+                    reason: meta.reason || null,
+                  });
+                }
+              } else if (al.action === 'reimburse_leave_credits') {
+                const reimburseDays = Number(meta.reimburse_days ?? 0);
+                if (reimburseDays > 0) {
+                  items.push({
+                    id: String(al.id),
+                    type: 'leave',
+                    category: 'refund',
+                    title: 'Credit Reimbursed',
+                    subtitle: meta.reason || 'Admin reimbursement',
+                    amount: Math.abs(reimburseDays),
+                    unit: 'd',
+                    date: al.created_at,
+                    status: 'approved',
+                    reason: meta.reason || null,
+                  });
+                }
+              }
             });
           }
         } catch {
-          // ignore enrichment failure
-        }
-      }
-
-      ltRows.forEach((row) => {
-        const reqDetail = row.request_id ? requestMap[row.request_id] : null;
-        const txType = (row.transaction_type ?? '').toLowerCase();
-        const hasRequestId = Boolean(row.request_id);
-        const rawDays = Number(row.days ?? 0);
-
-        const isDeduction =
-          rawDays < 0 ||
-          txType === 'use_paid' ||
-          txType === 'use' ||
-          txType === 'deduct' ||
-          txType === 'deduction';
-
-        const isReimburse = txType === 'reimburse' || txType === 'refund';
-
-        let category: BalanceHistoryItem['category'] = isDeduction ? 'use' : isReimburse ? 'refund' : 'grant';
-        let title = 'Leave Transaction';
-        let subtitle = 'Leave transaction';
-        let signedDays = isDeduction ? -Math.abs(rawDays) : Math.abs(rawDays);
-
-        if (isDeduction) {
-          title = reqDetail?.leave_category ? `${reqDetail.leave_category} (Paid)` : 'Leave Deducted';
-          subtitle = reqDetail?.leave_category ? 'Approved paid leave' : (hasRequestId ? 'Approved paid leave' : 'Admin deduction');
-        } else if (isReimburse) {
-          title = 'Credit Reimbursed';
-          subtitle = hasRequestId ? 'Credits reimbursed' : 'Admin reimbursement';
-        } else {
-          title = 'Annual Leave Credits Granted';
-          subtitle = hasRequestId ? 'Leave credit entitlement' : 'Admin credit allocation';
+          // ignore
         }
 
-        items.push({
-          id: String(row.id ?? Math.random()),
-          type: 'leave',
-          category,
-          title,
-          subtitle,
-          amount: signedDays,
-          unit: 'd',
-          balanceAfter: row.balance_after !== null && row.balance_after !== undefined ? Number(row.balance_after) : null,
-          date: row.created_at || new Date().toISOString(),
-          status: reqDetail?.status || 'approved',
-          requestId: row.request_id || null,
-          reason: reqDetail?.reason || null,
-          dateFrom: reqDetail?.start_date || null,
-          dateTo: reqDetail?.end_date || null,
-        });
-      });
-    } else {
-      // Fallback: Check approved leave requests with paid days
-      const { data: leaveReqs } = await supabase
-        .from('leave_request_details')
-        .select('request_id, paid_days, leave_category, leave_type, reason, start_date, end_date, requests!inner(id, status, submitted_at, submitted_by_employee_id)')
-        .eq('requests.submitted_by_employee_id', empId)
-        .eq('requests.status', 'approved')
-        .gt('paid_days', 0)
-        .order('start_date', { ascending: false })
-        .limit(20);
+        // Sort all by date descending
+        items.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-      if (leaveReqs && leaveReqs.length > 0) {
-        leaveReqs.forEach((item: any) => {
-          const days = Number(item.paid_days ?? 0);
-          items.push({
-            id: String(item.request_id),
-            type: 'leave',
-            category: 'use',
-            title: item.leave_category ? `${item.leave_category} (Paid)` : 'Leave Deducted',
-            subtitle: 'Approved paid leave',
-            amount: -Math.abs(days),
-            unit: 'd',
-            date: item.requests?.submitted_at || item.start_date || new Date().toISOString(),
-            status: item.requests?.status || 'approved',
-            requestId: item.request_id,
-            reason: item.reason || null,
-            dateFrom: item.start_date || null,
-            dateTo: item.end_date || null,
-          });
-        });
-      }
-    }
-
-    // Also check audit_logs for any admin leave actions
-    try {
-      const { data: auditRows } = await supabase
-        .from('audit_logs')
-        .select('id, action, metadata, created_at')
-        .in('action', ['deduct_leave_credits', 'reimburse_leave_credits', 'set_leave_credits'])
-        .contains('metadata', { employee_id: empId })
-        .order('created_at', { ascending: false });
-
-      if (auditRows && auditRows.length > 0) {
-        auditRows.forEach((al: any) => {
-          const alTime = new Date(al.created_at).getTime();
-          const alreadyExists = items.some(
-            (it) => Math.abs(new Date(it.date).getTime() - alTime) < 5000
-          );
-          if (alreadyExists) return;
-
-          const meta = al.metadata || {};
-          if (al.action === 'deduct_leave_credits') {
-            const deductDays = Number(meta.deduct_days ?? 0);
-            if (deductDays > 0) {
-              items.push({
-                id: String(al.id),
-                type: 'leave',
-                category: 'use',
-                title: 'Leave Deducted',
-                subtitle: meta.reason || 'Admin deduction',
-                amount: -Math.abs(deductDays),
-                unit: 'd',
-                date: al.created_at,
-                status: 'approved',
-                reason: meta.reason || null,
-              });
-            }
-          } else if (al.action === 'reimburse_leave_credits') {
-            const reimburseDays = Number(meta.reimburse_days ?? 0);
-            if (reimburseDays > 0) {
-              items.push({
-                id: String(al.id),
-                type: 'leave',
-                category: 'refund',
-                title: 'Credit Reimbursed',
-                subtitle: meta.reason || 'Admin reimbursement',
-                amount: Math.abs(reimburseDays),
-                unit: 'd',
-                date: al.created_at,
-                status: 'approved',
-                reason: meta.reason || null,
-              });
-            }
+        if (items.length > 0) {
+          lastLeaveFetchAt = Date.now();
+          await setCacheJSON(LEAVE_HISTORY_KEY, items);
+        } else if (cached && cached.length > 0) {
+          const { data: sessionData } = await supabase.auth.getSession();
+          if (!sessionData?.session?.user) {
+            return cached;
           }
-        });
+          lastLeaveFetchAt = Date.now();
+          await setCacheJSON(LEAVE_HISTORY_KEY, items);
+        } else {
+          lastLeaveFetchAt = Date.now();
+          await setCacheJSON(LEAVE_HISTORY_KEY, items);
+        }
+
+        return items;
+      } catch {
+        // ignore
       }
+
+      return items;
     } catch {
-      // ignore
+      if (cached && cached.length > 0) {
+        return cached;
+      }
+      return [];
+    } finally {
+      inFlightLeavePromise = null;
     }
+  })();
 
-    // Sort all by date descending
-    items.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    return items;
-  } catch {
-    // ignore
-  }
-
-  return items;
+  inFlightLeavePromise = fetchPromise;
+  return fetchPromise;
 }

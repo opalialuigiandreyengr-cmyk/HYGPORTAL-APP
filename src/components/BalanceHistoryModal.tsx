@@ -116,15 +116,16 @@ export function BalanceHistoryPage({
   const [expandedTransactionIds, setExpandedTransactionIds] = useState<Set<string>>(new Set());
 
   const loadData = async (isManualRefresh = false) => {
+    const hasData = (activeTab === 'offset' ? offsetHistory : leaveHistory).length > 0;
     if (isManualRefresh) {
       setRefreshing(true);
-    } else {
+    } else if (!hasData) {
       setLoading(true);
     }
 
     try {
       if (activeTab === 'offset') {
-        const data = await fetchOffsetHistory();
+        const data = await fetchOffsetHistory(undefined, undefined, isManualRefresh);
         setOffsetHistory(data);
         await Promise.all(
           data
@@ -136,7 +137,7 @@ export function BalanceHistoryPage({
             })),
         );
       } else {
-        const data = await fetchLeaveHistory();
+        const data = await fetchLeaveHistory(undefined, undefined, isManualRefresh);
         setLeaveHistory(data);
       }
     } catch {

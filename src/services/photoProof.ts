@@ -32,6 +32,13 @@ export type PhotoProofItem = {
 };
 
 const PHOTO_PROOFS_KEY = 'hyg_photo_proofs_list';
+const PHOTO_PROOFS_TTL_MS = 60_000;
+let lastPhotoProofsFetchAt = 0;
+let inFlightPhotoProofsPromise: Promise<PhotoProofItem[]> | null = null;
+
+export function invalidatePhotoProofsCache() {
+  lastPhotoProofsFetchAt = 0;
+}
 
 const GDRIVE_ROOT_FOLDER_ID = '1fxy0CgT7CfmLvAPOfs648AnSomZyadyR';
 const GDRIVE_CLIENT_EMAIL = 'hygportalapp@hyg-portal-app.iam.gserviceaccount.com';
@@ -336,12 +343,15 @@ export function isProofOwnedByUser(
   return false;
 }
 
-export async function loadPhotoProofs(userFilter?: {
-  employeeId?: string | null;
-  employeeName?: string | null;
-  userEmail?: string | null;
-  authUserId?: string | null;
-}): Promise<PhotoProofItem[]> {
+export async function loadPhotoProofs(
+  userFilter?: {
+    employeeId?: string | null;
+    employeeName?: string | null;
+    userEmail?: string | null;
+    authUserId?: string | null;
+  },
+  forceRefresh = false,
+): Promise<PhotoProofItem[]> {
   let localList: PhotoProofItem[] = [];
   try {
     const list = await getCacheJSON<PhotoProofItem[]>(PHOTO_PROOFS_KEY);
@@ -352,123 +362,149 @@ export async function loadPhotoProofs(userFilter?: {
     console.error('Failed to load local photo proofs:', err);
   }
 
-  try {
-    const { data, error } = await supabase
-      .from('photo_proofs')
-      .select('*')
-      .order('timestamp', { ascending: false })
-      .limit(200);
+  // Fast path: If cache is fresh and not forced, return cached items immediately (0 network calls)
+  if (!forceRefresh && localList.length > 0 && Date.now() - lastPhotoProofsFetchAt < PHOTO_PROOFS_TTL_MS) {
+    const sortedLocal = [...localList].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+    if (userFilter) {
+      return sortedLocal.filter((item) => isProofOwnedByUser(item, userFilter));
+    }
+    return sortedLocal;
+  }
 
-    if (!error && data && data.length > 0) {
-      const cloudItems: PhotoProofItem[] = data.map((row: any) => {
-        const driveImage = row.drive_file_id ? `https://lh3.googleusercontent.com/d/${row.drive_file_id}` : '';
-        return {
-          id: row.id,
-          photoUri: row.photo_url || driveImage || row.drive_web_view_link || '',
-          timestamp: row.timestamp,
-          timeDigits: row.time_digits,
-          timePeriod: row.time_period,
-          dateFormatted: row.date_formatted,
-          dayFormatted: row.day_formatted,
-          locationText: row.location_text,
-          latitude: row.latitude,
-          longitude: row.longitude,
-          employeeId: row.employee_id,
-          employeeName: row.employee_name,
-          storeName: row.store_name,
-          driveFileId: row.drive_file_id,
-          driveWebViewLink: row.drive_web_view_link,
-          syncedToCloud: true,
-          isWatermarked: row.is_watermarked ?? false,
-        };
-      });
+  // Deduplicate concurrent requests
+  if (inFlightPhotoProofsPromise) {
+    const allItems = await inFlightPhotoProofsPromise;
+    if (userFilter) {
+      return allItems.filter((item) => isProofOwnedByUser(item, userFilter));
+    }
+    return allItems;
+  }
 
-      const localById = new Map<string, PhotoProofItem>();
-      for (const loc of localList) {
-        localById.set(loc.id, loc);
-      }
+  inFlightPhotoProofsPromise = (async () => {
+    try {
+      const { data, error } = await supabase
+        .from('photo_proofs')
+        .select('*')
+        .order('timestamp', { ascending: false })
+        .limit(200);
 
-      // Deduplicate cloud rows to prevent duplicate cards if multiple syncs occurred
-      const uniqueCloudItems: PhotoProofItem[] = [];
-      const seenSignatures = new Set<string>();
-      for (const item of cloudItems) {
-        const sig = item.driveFileId
-          ? `drive_${item.driveFileId}`
-          : `${item.employeeName || ''}_${item.timestamp?.slice(0, 16) || ''}_${item.timeDigits || ''}`;
-        if (!seenSignatures.has(sig)) {
-          seenSignatures.add(sig);
-          uniqueCloudItems.push(item);
+      if (!error && data && data.length > 0) {
+        const cloudItems: PhotoProofItem[] = data.map((row: any) => {
+          const driveImage = row.drive_file_id ? `https://lh3.googleusercontent.com/d/${row.drive_file_id}` : '';
+          return {
+            id: row.id,
+            photoUri: row.photo_url || driveImage || row.drive_web_view_link || '',
+            timestamp: row.timestamp,
+            timeDigits: row.time_digits,
+            timePeriod: row.time_period,
+            dateFormatted: row.date_formatted,
+            dayFormatted: row.day_formatted,
+            locationText: row.location_text,
+            latitude: row.latitude,
+            longitude: row.longitude,
+            employeeId: row.employee_id,
+            employeeName: row.employee_name,
+            storeName: row.store_name,
+            driveFileId: row.drive_file_id,
+            driveWebViewLink: row.drive_web_view_link,
+            syncedToCloud: true,
+            isWatermarked: row.is_watermarked ?? false,
+          };
+        });
+
+        const localById = new Map<string, PhotoProofItem>();
+        for (const loc of localList) {
+          localById.set(loc.id, loc);
         }
-      }
 
-      const merged: PhotoProofItem[] = [];
-      const matchedLocalIds = new Set<string>();
-
-      for (const cloud of uniqueCloudItems) {
-        let matched = localById.get(cloud.id);
-        if (!matched) {
-          const cloudTime = Date.parse(cloud.timestamp);
-          for (const loc of localList) {
-            if (!matchedLocalIds.has(loc.id)) {
-              const sameDrive = Boolean(cloud.driveFileId && loc.driveFileId && cloud.driveFileId === loc.driveFileId);
-              const sameExactTime = cloud.timestamp === loc.timestamp;
-              const locTime = Date.parse(loc.timestamp);
-              const closeTime =
-                !isNaN(cloudTime) &&
-                !isNaN(locTime) &&
-                Math.abs(cloudTime - locTime) < 3000 &&
-                loc.timeDigits === cloud.timeDigits &&
-                loc.dateFormatted === cloud.dateFormatted &&
-                loc.employeeName === cloud.employeeName;
-
-              if (sameDrive || sameExactTime || closeTime) {
-                matched = loc;
-                break;
-              }
-            }
+        // Deduplicate cloud rows to prevent duplicate cards if multiple syncs occurred
+        const uniqueCloudItems: PhotoProofItem[] = [];
+        const seenSignatures = new Set<string>();
+        for (const item of cloudItems) {
+          const sig = item.driveFileId
+            ? `drive_${item.driveFileId}`
+            : `${item.employeeName || ''}_${item.timestamp?.slice(0, 16) || ''}_${item.timeDigits || ''}`;
+          if (!seenSignatures.has(sig)) {
+            seenSignatures.add(sig);
+            uniqueCloudItems.push(item);
           }
         }
 
-        if (matched) {
-          matchedLocalIds.add(matched.id);
-          // Preserve valid local photo URI if cloud image URL is empty
-          merged.push({
-            ...matched,
-            ...cloud,
-            photoUri: cloud.photoUri || matched.photoUri,
-            syncedToCloud: true,
-            isWatermarked: matched.isWatermarked ?? cloud.isWatermarked ?? false,
-          });
-        } else {
-          merged.push(cloud);
+        const merged: PhotoProofItem[] = [];
+        const matchedLocalIds = new Set<string>();
+
+        for (const cloud of uniqueCloudItems) {
+          let matched = localById.get(cloud.id);
+          if (!matched) {
+            const cloudTime = Date.parse(cloud.timestamp);
+            for (const loc of localList) {
+              if (!matchedLocalIds.has(loc.id)) {
+                const sameDrive = Boolean(cloud.driveFileId && loc.driveFileId && cloud.driveFileId === loc.driveFileId);
+                const sameExactTime = cloud.timestamp === loc.timestamp;
+                const locTime = Date.parse(loc.timestamp);
+                const closeTime =
+                  !isNaN(cloudTime) &&
+                  !isNaN(locTime) &&
+                  Math.abs(cloudTime - locTime) < 3000 &&
+                  loc.timeDigits === cloud.timeDigits &&
+                  loc.dateFormatted === cloud.dateFormatted &&
+                  loc.employeeName === cloud.employeeName;
+
+                if (sameDrive || sameExactTime || closeTime) {
+                  matched = loc;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (matched) {
+            matchedLocalIds.add(matched.id);
+            // Preserve valid local photo URI if cloud image URL is empty
+            merged.push({
+              ...matched,
+              ...cloud,
+              photoUri: cloud.photoUri || matched.photoUri,
+              syncedToCloud: true,
+              isWatermarked: matched.isWatermarked ?? cloud.isWatermarked ?? false,
+            });
+          } else {
+            merged.push(cloud);
+          }
         }
-      }
 
-      // Keep any local proofs that have not yet synced or are awaiting upload
-      for (const loc of localList) {
-        if (!matchedLocalIds.has(loc.id)) {
-          merged.push(loc);
+        // Keep any local proofs that have not yet synced or are awaiting upload
+        for (const loc of localList) {
+          if (!matchedLocalIds.has(loc.id)) {
+            merged.push(loc);
+          }
         }
-      }
 
-      const sorted = merged.sort(
-        (a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp),
-      );
+        const sorted = merged.sort(
+          (a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp),
+        );
 
-      if (userFilter) {
-        return sorted.filter((item) => isProofOwnedByUser(item, userFilter));
+        lastPhotoProofsFetchAt = Date.now();
+        await setCacheJSON(PHOTO_PROOFS_KEY, sorted).catch(() => {});
+        return sorted;
       }
-      return sorted;
+    } catch {
+      // Offline or table pending
     }
-  } catch {
-    // Offline or table pending
-  }
 
-  const sortedLocal = localList.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
-  if (userFilter) {
-    return sortedLocal.filter((item) => isProofOwnedByUser(item, userFilter));
+    lastPhotoProofsFetchAt = Date.now();
+    return [...localList].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  })();
+
+  try {
+    const finalItems = await inFlightPhotoProofsPromise;
+    if (userFilter) {
+      return finalItems.filter((item) => isProofOwnedByUser(item, userFilter));
+    }
+    return finalItems;
+  } finally {
+    inFlightPhotoProofsPromise = null;
   }
-  return sortedLocal;
 }
 
 export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boolean> {
@@ -907,6 +943,7 @@ export async function uploadGalleryPhotoProof({
 
 export async function savePhotoProof(item: PhotoProofItem): Promise<boolean> {
   try {
+    invalidatePhotoProofsCache();
     const current = await loadPhotoProofs();
     const updated = [item, ...current.filter((p) => p.id !== item.id)];
     await setCacheJSON(PHOTO_PROOFS_KEY, updated);
@@ -1170,6 +1207,7 @@ export async function deleteFromGoogleDrive(driveFileId: string): Promise<boolea
 }
 
 export async function deletePhotoProof(itemOrId: PhotoProofItem | string): Promise<void> {
+  invalidatePhotoProofsCache();
   const id = typeof itemOrId === 'string' ? itemOrId : itemOrId.id;
   let targetItem: PhotoProofItem | undefined;
 
