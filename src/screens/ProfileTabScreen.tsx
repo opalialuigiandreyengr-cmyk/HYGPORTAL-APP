@@ -24,6 +24,7 @@ import {
   User,
   UserRound,
   UsersRound,
+  WifiOff,
   X,
 } from 'lucide-react-native';
 
@@ -39,10 +40,14 @@ import { updateEmployeeProfile, uploadEmployeeProfilePhoto, type UpdateEmployeeP
 import { loadEmployeeCompanyOptions } from '../services/createProfile';
 import { normalizeUsername } from '../services/registerAccount';
 import { ensureMyHygPointGifts } from '../services/notificationCenter';
+import { isAppOnline, useNetworkStatus } from '../services/network';
+import { enqueueOfflineItem } from '../services/offlineQueue';
+import { setCacheJSON } from '../lib/localCache';
 
 type Props = {
   email: string;
   username: string;
+  userId?: string;
   isLoading: boolean;
   result: ProfileLoadResult | null;
   onToast?: (toast: ProfileToast) => void;
@@ -136,12 +141,14 @@ const PROFILE_SECTION_TABS: {
   { key: 'children', label: 'Children Information', icon: Baby, color: '#4f46e5' },
 ];
 
-export function ProfileTabScreen({ email, username, isLoading, result, onToast, onSignOut, onProfileUpdated, notificationCount = 0, onAssistant, onNotifications, onHelpTutorials, onOpenProfile, onOpenSettings, onOpenMyTeam, onOpenRewards, pointsBalance = 0 }: Props) {
+export function ProfileTabScreen({ email, username, userId, isLoading, result, onToast, onSignOut, onProfileUpdated, notificationCount = 0, onAssistant, onNotifications, onHelpTutorials, onOpenProfile, onOpenSettings, onOpenMyTeam, onOpenRewards, pointsBalance = 0 }: Props) {
   const resultProfile = result?.status === 'linked' ? result.profile : null;
   const [localProfile, setLocalProfile] = useState<EmployeeProfileSummary | null>(resultProfile);
   const profile = localProfile;
   const displayName = profile?.fullName || username || 'Employee';
   const insets = useSafeAreaInsets();
+  const network = useNetworkStatus();
+  const isOnline = network.isOnline;
 
   const [showModal, setShowModal] = useState(false);
   const [inlineEditSection, setInlineEditSection] = useState<ProfileSectionKey | null>(null);
@@ -279,6 +286,15 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
 
   async function pickProfilePhoto() {
     if (!profile?.employeeId || isUploadingPhoto) {
+      return;
+    }
+
+    if (!isAppOnline()) {
+      onToast?.({
+        tone: 'warning',
+        title: 'Offline',
+        message: 'Uploading a new profile photo requires an active internet connection.',
+      });
       return;
     }
 
@@ -436,30 +452,100 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
       return;
     }
 
+    const online = isAppOnline();
+
+    if (newPassword && !online) {
+      onToast?.({
+        tone: 'warning',
+        title: 'Password change requires internet',
+        message: 'Password changes require an active internet connection for security. Clear the password fields to save your profile details offline, or reconnect to the internet.',
+      });
+      return;
+    }
+
     setIsSaving(true);
     try {
       const savedForm = { ...form, username: normalizeUsername(form.username) };
-      await updateEmployeeProfile(savedForm);
-      if (newPassword) {
-        const { error } = await supabase.auth.updateUser({ password: newPassword });
-        if (error) {
-          throw new Error(error.message);
+      const updatedProfile = formToProfile(profile, savedForm);
+      const targetUserId = userId || (await supabase.auth.getSession()).data.session?.user?.id;
+
+      if (online) {
+        try {
+          await updateEmployeeProfile(savedForm);
+          if (newPassword) {
+            const { error } = await supabase.auth.updateUser({ password: newPassword });
+            if (error) {
+              throw new Error(error.message);
+            }
+          }
+
+          if (targetUserId && updatedProfile) {
+            await setCacheJSON(`employee_profile_result_v1:${targetUserId}`, {
+              status: 'linked',
+              profile: updatedProfile,
+            });
+          }
+
+          if (closeModal) {
+            setShowModal(false);
+            setNewPassword('');
+            setConfirmPassword('');
+          }
+          setInlineEditSection(null);
+          setLocalProfile(updatedProfile);
+          setForm(savedForm);
+          await ensureMyHygPointGifts();
+          await onProfileUpdated?.();
+          onToast?.({
+            tone: 'success',
+            title: 'Updated',
+            message: 'Saved successfully.',
+          });
+          return;
+        } catch (error: any) {
+          const msg = (error?.message || '').toLowerCase();
+          const isNetErr =
+            msg.includes('network') ||
+            msg.includes('fetch') ||
+            msg.includes('offline') ||
+            msg.includes('host') ||
+            msg.includes('failed to fetch');
+          if (!isNetErr) {
+            throw error;
+          }
+          console.warn('[Profile] Network error while online, saving offline instead:', error);
         }
       }
+
+      // Offline flow:
+      await enqueueOfflineItem({
+        id: 'profile_update_latest',
+        type: 'profile_update',
+        createdAt: new Date().toISOString(),
+        payload: savedForm,
+        syncAttempts: 0,
+      });
+
+      if (targetUserId && updatedProfile) {
+        await setCacheJSON(`employee_profile_result_v1:${targetUserId}`, {
+          status: 'linked',
+          profile: updatedProfile,
+        });
+      }
+
       if (closeModal) {
         setShowModal(false);
         setNewPassword('');
         setConfirmPassword('');
       }
       setInlineEditSection(null);
-      setLocalProfile((current) => formToProfile(current, savedForm));
+      setLocalProfile(updatedProfile);
       setForm(savedForm);
-      await ensureMyHygPointGifts();
-      await onProfileUpdated?.();
+
       onToast?.({
         tone: 'success',
-        title: 'Updated',
-        message: 'Saved successfully.',
+        title: 'Saved Offline 📱',
+        message: 'Your profile changes are saved on your phone and will automatically sync once connected.',
       });
     } catch (error) {
       onToast?.({
@@ -764,14 +850,43 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
                 </View>
               </View>
 
+              {Platform.OS === 'android' && !isOnline ? (
+                <View style={styles.modalOfflineBox}>
+                  <WifiOff size={14} color="#b91c1c" strokeWidth={2.4} />
+                  <Text style={styles.modalOfflineText}>
+                    Offline Mode: Profile details are saved on this device and will auto-sync once connected. (Password changes require an active internet connection)
+                  </Text>
+                </View>
+              ) : null}
+
               {/* Password */}
-              <Text style={styles.modalHint}>Leave password blank if you don't want to change it.</Text>
+              <Text style={styles.modalHint}>
+                {isOnline
+                  ? "Leave password blank if you don't want to change it."
+                  : 'Password change requires an internet connection.'}
+              </Text>
 
               <Text style={styles.modalLabel}>New Password</Text>
-              <TextInput style={styles.modalInput} value={newPassword} onChangeText={setNewPassword} placeholder="Enter new password" placeholderTextColor="#94a3b8" secureTextEntry />
+              <TextInput
+                style={[styles.modalInput, !isOnline && styles.modalInputDisabled]}
+                value={newPassword}
+                onChangeText={setNewPassword}
+                placeholder={isOnline ? "Enter new password" : "Requires internet connection"}
+                placeholderTextColor="#94a3b8"
+                secureTextEntry
+                editable={isOnline}
+              />
 
               <Text style={styles.modalLabel}>Confirm Password</Text>
-              <TextInput style={styles.modalInput} value={confirmPassword} onChangeText={setConfirmPassword} placeholder="Confirm new password" placeholderTextColor="#94a3b8" secureTextEntry />
+              <TextInput
+                style={[styles.modalInput, !isOnline && styles.modalInputDisabled]}
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+                placeholder={isOnline ? "Confirm new password" : "Requires internet connection"}
+                placeholderTextColor="#94a3b8"
+                secureTextEntry
+                editable={isOnline}
+              />
 
               {/* Actions */}
               <View style={styles.modalActions}>
@@ -779,7 +894,7 @@ export function ProfileTabScreen({ email, username, isLoading, result, onToast, 
                   <Text style={styles.modalCancelText}>CANCEL</Text>
                 </Pressable>
                 <Pressable disabled={isSaving} style={[styles.modalSaveBtn, isSaving ? styles.modalSaveBtnDisabled : null]} onPress={() => saveProfile()}>
-                  <Text style={styles.modalSaveText}>{isSaving ? 'SAVING...' : 'SAVE CHANGES'}</Text>
+                  <Text style={styles.modalSaveText}>{isSaving ? 'SAVING...' : isOnline ? 'SAVE CHANGES' : 'SAVE OFFLINE'}</Text>
                 </Pressable>
               </View>
             </ScrollView>
@@ -2176,6 +2291,25 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     marginTop: spacing.sm,
     marginBottom: 2,
+  },
+  modalOfflineBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: 8,
+    padding: spacing.sm,
+    marginTop: spacing.sm,
+    marginBottom: spacing.xs,
+  },
+  modalOfflineText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#991b1b',
+    fontWeight: fontWeights.semibold,
+    lineHeight: 16,
   },
   modalActions: {
     flexDirection: 'row',

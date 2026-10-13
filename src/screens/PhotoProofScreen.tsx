@@ -13,7 +13,7 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { ChevronLeft, Info, RefreshCw, SwitchCamera, X, Check, Eye, Pencil, MapPin, Images, Zap, ZapOff } from 'lucide-react-native';
+import { ChevronLeft, Info, RefreshCw, SwitchCamera, X, Check, Eye, Pencil, MapPin, Images, Zap, ZapOff, WifiOff } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -28,6 +28,8 @@ import {
   savePhotoProof,
   type PhotoProofItem,
 } from '../services/photoProof';
+import { useNetworkStatus, isAppOnline } from '../services/network';
+import { enqueueOfflineItem } from '../services/offlineQueue';
 
 type Props = {
   onBack: () => void;
@@ -48,6 +50,8 @@ export function PhotoProofScreen({
   userStoreName,
 }: Props) {
   const insets = useSafeAreaInsets();
+  const network = useNetworkStatus();
+  const isOnline = network.isOnline;
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
   // Automatic mirroring: Front camera is automatically mirrored/flipped; Back camera is left as-is
   const isMirrored = facingMode === 'user';
@@ -135,6 +139,12 @@ export function PhotoProofScreen({
   const refreshLocation = useCallback(async () => {
     setIsRefreshingLocation(true);
     try {
+      if (Platform.OS !== 'web') {
+        const { status } = await Location.getForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          await Location.requestForegroundPermissionsAsync();
+        }
+      }
       const info = await getCurrentLocationInfo(userStoreName);
       setLocationText(info.locationText);
       setTempAddress(info.locationText);
@@ -155,7 +165,11 @@ export function PhotoProofScreen({
     if (Platform.OS !== 'web') {
       void (async () => {
         try {
-          const { status } = await Location.getForegroundPermissionsAsync();
+          let { status } = await Location.getForegroundPermissionsAsync();
+          if (status !== 'granted') {
+            const req = await Location.requestForegroundPermissionsAsync();
+            status = req.status;
+          }
           if (status === 'granted') {
             sub = await Location.watchPositionAsync(
               {
@@ -165,10 +179,15 @@ export function PhotoProofScreen({
               },
               async (loc) => {
                 const { latitude, longitude } = loc.coords;
+                setCoordinates({ lat: latitude, lon: longitude });
                 const fullAddr = await reverseGeocodeCoordinates(latitude, longitude);
                 if (fullAddr) {
                   setLocationText(fullAddr);
-                  setCoordinates({ lat: latitude, lon: longitude });
+                  setTempAddress(fullAddr);
+                } else {
+                  const coordStr = `Lat: ${latitude.toFixed(5)}, Lon: ${longitude.toFixed(5)}`;
+                  setLocationText(coordStr);
+                  setTempAddress(coordStr);
                 }
               },
             );
@@ -181,10 +200,15 @@ export function PhotoProofScreen({
       watchId = navigator.geolocation.watchPosition(
         async (pos) => {
           const { latitude, longitude } = pos.coords;
+          setCoordinates({ lat: latitude, lon: longitude });
           const fullAddr = await reverseGeocodeCoordinates(latitude, longitude);
           if (fullAddr) {
             setLocationText(fullAddr);
-            setCoordinates({ lat: latitude, lon: longitude });
+            setTempAddress(fullAddr);
+          } else {
+            const coordStr = `Lat: ${latitude.toFixed(5)}, Lon: ${longitude.toFixed(5)}`;
+            setLocationText(coordStr);
+            setTempAddress(coordStr);
           }
         },
         () => { },
@@ -201,6 +225,13 @@ export function PhotoProofScreen({
       }
     };
   }, [refreshLocation]);
+
+  // Auto-refresh coordinates to full address when network connection is restored
+  useEffect(() => {
+    if (isOnline && (locationText.startsWith('Lat:') || locationText.includes('Acquiring'))) {
+      void refreshLocation();
+    }
+  }, [isOnline, locationText, refreshLocation]);
 
   // 3. Web Live Camera Stream initialization
   const startWebCamera = useCallback(async (facing: 'environment' | 'user') => {
@@ -524,23 +555,69 @@ export function PhotoProofScreen({
       };
 
       console.log('[PhotoProof] Capturing photo proof for employee:', employeeName, 'id:', employeeId, 'store:', userStoreName);
-      const cloudSyncSucceeded = await savePhotoProof(newItem);
-      console.log('[PhotoProof] Photo proof saved:', { cloudSyncSucceeded });
+      let cloudSyncSucceeded = false;
+      const appIsOnline = isAppOnline();
+
+      if (appIsOnline) {
+        try {
+          cloudSyncSucceeded = await savePhotoProof(newItem);
+        } catch (saveErr) {
+          console.warn('[PhotoProof] Cloud upload failed, saving to offline queue:', saveErr);
+          cloudSyncSucceeded = false;
+        }
+      } else {
+        // App is currently offline: persist to local photo cache
+        try {
+          await savePhotoProof({ ...newItem, syncedToCloud: false });
+        } catch (cacheErr) {
+          console.warn('[PhotoProof] Local cache save failed:', cacheErr);
+        }
+        cloudSyncSucceeded = false;
+      }
+
+      console.log('[PhotoProof] Photo proof saved:', { cloudSyncSucceeded, appIsOnline });
       if (!cloudSyncSucceeded) {
-        Alert.alert(
-          'Photo saved locally',
-          'The photo is saved on this device, but Google Drive sync did not complete. Keep the app online and retry from Photo Log.',
-        );
+        await enqueueOfflineItem({
+          id: newItem.id,
+          type: 'photo_proof',
+          createdAt: new Date().toISOString(),
+          payload: newItem,
+          syncAttempts: 0,
+        });
       }
       setLastSavedItem(newItem);
       showTemporarySavedModal();
+
+      if (!appIsOnline || !cloudSyncSucceeded) {
+        Alert.alert(
+          'Photo Saved Offline',
+          'The photo proof is saved safely on your device with timestamp & location. It will automatically upload to Google Drive & the database once connected to the internet.',
+          [{ text: 'OK' }]
+        );
+      }
     } catch (err: any) {
       screenFlashAnim.setValue(0);
       console.error('Failed to capture and save photo proof:', err);
-      Alert.alert('Capture Warning', `Photo saved locally, but cloud sync logged an issue: ${err?.message || err}`);
       if (newItem) {
+        try {
+          await enqueueOfflineItem({
+            id: newItem.id,
+            type: 'photo_proof',
+            createdAt: new Date().toISOString(),
+            payload: newItem,
+            syncAttempts: 0,
+            lastError: err?.message || String(err),
+          });
+        } catch {}
         setLastSavedItem(newItem);
         showTemporarySavedModal();
+        Alert.alert(
+          'Photo Saved Locally',
+          'The photo proof is saved safely on your device. It will automatically upload to Google Drive & the database once your internet connection is restored.',
+          [{ text: 'OK' }]
+        );
+      } else {
+        Alert.alert('Capture Warning', `Failed to capture photo: ${err?.message || err}`);
       }
     } finally {
       // Always ensure the screen flash overlay is completely cleared
@@ -594,6 +671,16 @@ export function PhotoProofScreen({
           <Info size={24} color="#0284c7" strokeWidth={2.2} />
         </Pressable>
       </View>
+
+      {/* Offline Mode Screen Banner (Android APK only) */}
+      {Platform.OS === 'android' && !isOnline && (
+        <View style={styles.offlineScreenBanner}>
+          <WifiOff size={14} color="#b45309" strokeWidth={2.4} />
+          <Text style={styles.offlineScreenBannerText}>
+            Offline Mode: Photos will be saved locally & auto-uploaded once connected.
+          </Text>
+        </View>
+      )}
 
       {/* Camera / Viewfinder Surface */}
       <View style={styles.viewfinderContainer}>
@@ -697,6 +784,26 @@ export function PhotoProofScreen({
                 </Text>
               </Pressable>
             )}
+          </View>
+        )}
+
+        {/* Viewfinder Top Right Controls / Offline Indicator Badge */}
+        {!capturedPhotoUri && !isOnline && (
+          <View style={styles.viewfinderTopRightBar}>
+            <View style={styles.offlineCameraBadge}>
+              <WifiOff size={13} color="#fef08a" strokeWidth={2.5} />
+              <Text style={styles.offlineCameraBadgeText}>Offline • Auto-Sync</Text>
+            </View>
+          </View>
+        )}
+
+        {/* Captured Photo Status Badge (Only shown when captured offline) */}
+        {capturedPhotoUri && (!isOnline || (lastSavedItem && !lastSavedItem.syncedToCloud && !lastSavedItem.driveFileId)) && (
+          <View style={styles.viewfinderTopRightBar}>
+            <View style={[styles.statusPill, styles.statusPillOffline]}>
+              <WifiOff size={11} color="#92400e" strokeWidth={2.4} />
+              <Text style={styles.statusPillTextOffline}>PENDING SYNC (OFFLINE)</Text>
+            </View>
           </View>
         )}
 
@@ -876,6 +983,15 @@ export function PhotoProofScreen({
               <Text style={styles.readOnlyAddressText}>{locationText}</Text>
             </View>
 
+            {locationText.startsWith('Lat:') && (
+              <View style={styles.offlineCoordsNoteBox}>
+                <WifiOff size={14} color="#b45309" strokeWidth={2.4} style={{ marginTop: 2 }} />
+                <Text style={styles.offlineCoordsNoteText}>
+                  Offline Mode: Pinpoint satellite GPS coordinates recorded. The complete street and city address will automatically resolve once internet connection is restored.
+                </Text>
+              </View>
+            )}
+
             <View style={styles.editModalActions}>
               <Pressable
                 style={({ pressed }) => [
@@ -940,7 +1056,14 @@ export function PhotoProofScreen({
             <View style={styles.savedCheckCircle}>
               <Check size={28} color="#16a34a" strokeWidth={3} />
             </View>
-            <Text style={styles.savedTitle}>Photo Proof Saved!</Text>
+            <Text style={styles.savedTitle}>
+              {isOnline ? 'Photo Proof Saved!' : 'Photo Saved Offline!'}
+            </Text>
+            {!isOnline && (
+              <Text style={styles.savedSubtitle}>
+                Stored locally • Will auto-upload once online
+              </Text>
+            )}
           </View>
         </Pressable>
       </Modal>
@@ -1224,6 +1347,24 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.semibold,
     color: '#0f172a',
   },
+  offlineCoordsNoteBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: '#fef3c7',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    borderRadius: radius.md,
+    padding: spacing.sm + 2,
+    marginBottom: spacing.md,
+  },
+  offlineCoordsNoteText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#92400e',
+    fontWeight: fontWeights.medium,
+  },
   editModalActions: {
     width: '100%',
   },
@@ -1414,6 +1555,91 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.heavy,
     color: '#0f172a',
     textAlign: 'center',
+  },
+  savedSubtitle: {
+    fontSize: 13,
+    color: '#64748b',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  offlineScreenBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#fef3c7',
+    borderBottomWidth: 1,
+    borderBottomColor: '#fde68a',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  offlineScreenBannerText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: fontWeights.medium,
+    color: '#92400e',
+    lineHeight: 16,
+  },
+  viewfinderTopRightBar: {
+    position: 'absolute',
+    top: spacing.md,
+    right: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    zIndex: 5,
+  },
+  offlineCameraBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: 'rgba(15, 23, 42, 0.78)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.8)',
+  },
+  offlineCameraBadgeText: {
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+    color: '#fef08a',
+    letterSpacing: 0.3,
+  },
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4.5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 2,
+    elevation: 3,
+  },
+  statusPillOffline: {
+    backgroundColor: '#fef3c7',
+    borderColor: '#fde68a',
+  },
+  statusPillOnline: {
+    backgroundColor: '#dcfce7',
+    borderColor: '#86efac',
+  },
+  statusPillTextOffline: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
+    textTransform: 'uppercase',
+  },
+  statusPillTextOnline: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: fontWeights.bold,
+    color: '#15803d',
+    textTransform: 'uppercase',
   },
   shutterColumn: {
     width: '100%',

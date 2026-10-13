@@ -20,8 +20,9 @@ type DashboardFabProps = {
 
 export function DashboardFab({ onPhotoProof, onPhotoLog, onActivityLog }: DashboardFabProps) {
   const insets = useSafeAreaInsets();
-  const baseBottom = getBottomTabBarHeight(insets.bottom) + 12;
-  const subBottom = baseBottom + 5;
+  // Ensure the FAB sits comfortably above the floating bottom tab bar with 16dp clearance
+  const baseBottom = getBottomTabBarHeight(insets.bottom) + 16;
+  const subBottom = baseBottom + 6;
   const [isOpen, setIsOpen] = useState(false);
   const animation = useRef(new Animated.Value(0)).current;
 
@@ -212,7 +213,7 @@ const styles = StyleSheet.create({
   subActionWrapper: {
     position: 'absolute',
     right: 25,
-    bottom: 97,
+    bottom: 110,
     width: 52,
     height: 52,
     alignItems: 'center',
@@ -242,7 +243,7 @@ const styles = StyleSheet.create({
   mainButtonWrapper: {
     position: 'absolute',
     right: 20,
-    bottom: 92,
+    bottom: 104,
     width: 62,
     height: 62,
     zIndex: 101,
@@ -252,7 +253,7 @@ const styles = StyleSheet.create({
     width: 62,
     height: 62,
     borderRadius: 31,
-    backgroundColor: '#f5af00',
+    backgroundColor: '#FACC15',
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',

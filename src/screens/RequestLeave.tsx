@@ -24,6 +24,7 @@ import {
   Sparkles,
   Trash2,
   WalletCards,
+  WifiOff,
   X,
 } from 'lucide-react-native';
 
@@ -43,6 +44,8 @@ import { calculateLeaveDays, dateStringToDate, formatDateInput, hasCompletedOneY
 import { updateMyPendingRequest, type MyRequest } from '../services/requests';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
+import { isAppOnline, useNetworkStatus } from '../services/network';
+import { enqueueOfflineItem } from '../services/offlineQueue';
 import { getDisabledLeaveTypes, getLeaveBreakdown } from '../utils/requestCalculations';
 import {
   checkBirthdayLeaveAppliedForYear,
@@ -108,6 +111,8 @@ const RequestLeave = ({
   const [hasAppliedBirthdayLeaveThisYear, setHasAppliedBirthdayLeaveThisYear] =
     useState<boolean>(false);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const network = useNetworkStatus();
+  const isOnline = network.isOnline;
 
   const handlePullRefresh = async () => {
     if (!onRefresh) return;
@@ -812,9 +817,117 @@ const RequestLeave = ({
     return nextErrors;
   }
 
+  async function saveLeaveOffline() {
+    try {
+      setIsSubmitting(true);
+      setSubmitStatus('Saving leave request offline on this device...');
+
+      const payloadEntries: Array<{
+        leaveType: string;
+        leaveCategory: string;
+        startDate: string;
+        endDate: string;
+        paidDays: number;
+        unpaidDays: number;
+        reason: string;
+      }> = [];
+
+      const displayItems: MyRequest[] = [];
+
+      for (let i = 0; i < entries.length; i++) {
+        const ent = entries[i];
+        const tDays = calculateLeaveDays(ent.dateFrom, ent.dateTo);
+        const bd = getLeaveBreakdown(ent.leaveType, tDays, ent.paidDays, ent.unpaidDays);
+        const offlineReqId = `offline_leave_${Date.now()}_${i}`;
+
+        payloadEntries.push({
+          leaveType: ent.leaveType.trim(),
+          leaveCategory: ent.leaveCategory.trim(),
+          startDate: ent.dateFrom,
+          endDate: ent.dateTo,
+          paidDays: bd.paidDays,
+          unpaidDays: bd.unpaidDays,
+          reason: ent.reason.trim(),
+        });
+
+        displayItems.push({
+          request_id: offlineReqId,
+          request_type_code: 'leave',
+          request_type_name: 'Leave',
+          status: 'Pending Sync (Offline)',
+          submitted_at: new Date().toISOString(),
+          final_approved_at: null,
+          rejected_at: null,
+          rejected_reason: null,
+          date_from: ent.dateFrom,
+          date_to: ent.dateTo,
+          start_date: ent.dateFrom,
+          end_date: ent.dateTo,
+          time_from: null,
+          time_to: null,
+          total_hours: null,
+          leave_type: ent.leaveType.trim(),
+          leave_category: ent.leaveCategory.trim(),
+          total_days: tDays,
+          paid_days: bd.paidDays,
+          unpaid_days: bd.unpaidDays,
+          reason: ent.reason.trim(),
+          approval_summary: [
+            {
+              step_order: 1,
+              required_level: 1,
+              status: 'Pending Sync (Offline)',
+              acted_at: null,
+              remarks: 'Saved on device. Will auto-sync to database once internet is restored.',
+              skipped_reason: null,
+              approver_name: 'Local Device Queue',
+              approver_employee_no: 'SYS-LOCAL',
+            },
+          ],
+        });
+      }
+
+      await enqueueOfflineItem({
+        id: `offline_leave_${Date.now()}`,
+        type: 'leave',
+        createdAt: new Date().toISOString(),
+        payload: {
+          entries: payloadEntries,
+          identities: {
+            username,
+            employeeId,
+            userEmail,
+            hasCompletedOneYear,
+          },
+        },
+        displayItems,
+        syncAttempts: 0,
+      });
+
+      setSubmitStatus('Leave request saved locally on device.');
+      onToast?.({
+        tone: 'success',
+        title: 'Saved Offline 📱',
+        message: 'Your leave request was saved safely on this device. It will automatically sync to the database once connected.',
+      });
+      await onSubmitted?.();
+    } catch (saveErr) {
+      console.warn('[RequestLeave] Failed to save offline:', saveErr);
+      onToast?.({ tone: 'error', title: 'Save Failed', message: 'Could not save offline request.' });
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   async function executeSubmit() {
     setIsSubmitting(true);
     setSubmitStatus('Submitting leave request(s)...');
+
+    // If offline, immediately save locally without network timeout
+    if (!isAppOnline()) {
+      await saveLeaveOffline();
+      return;
+    }
 
     const warningTimer = setTimeout(() => {
       setSubmitStatus((current) =>
@@ -1055,6 +1168,20 @@ const RequestLeave = ({
       await onSubmitted?.();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to submit leave request.';
+      const isNetError =
+        !isAppOnline() ||
+        message.toLowerCase().includes('network') ||
+        message.toLowerCase().includes('timeout') ||
+        message.toLowerCase().includes('timed out') ||
+        message.toLowerCase().includes('fetch failed') ||
+        message.toLowerCase().includes('connection');
+
+      if (isNetError) {
+        console.log('[RequestLeave] Network failure during submit, saving offline...');
+        await saveLeaveOffline();
+        return;
+      }
+
       setSubmitStatus(`Failed: ${message}`);
       setSubmissionErrorModal(message);
       onToast?.({
@@ -1092,8 +1219,13 @@ const RequestLeave = ({
     }
 
     const isEdit = Boolean(editingRequest);
-    const actionText = isEdit ? 'Update' : 'Submit';
-    const confirmTitle = isEdit ? 'Confirm Leave Update' : 'Confirm Leave Submission';
+    const isOffline = !isAppOnline();
+    const actionText = isOffline ? 'Save Offline' : isEdit ? 'Update' : 'Submit';
+    const confirmTitle = isOffline
+      ? 'Save Leave Offline'
+      : isEdit
+      ? 'Confirm Leave Update'
+      : 'Confirm Leave Submission';
     const firstEntry = entries[0];
     const isSingleDayBirthday =
       entries.length === 1 &&
@@ -1102,7 +1234,9 @@ const RequestLeave = ({
       hasCompletedOneYear;
 
     let confirmMsg: string;
-    if (isEdit) {
+    if (isOffline) {
+      confirmMsg = `You are currently offline. Your ${entries.length} leave request(s) will be saved safely on this device and automatically submitted once an internet connection is detected.`;
+    } else if (isEdit) {
       confirmMsg = 'Are you sure you want to update this leave request?';
     } else if (isSingleDayBirthday) {
       confirmMsg =
@@ -1216,6 +1350,18 @@ const RequestLeave = ({
             ) : undefined
           }
         >
+          {Platform.OS === 'android' && !isOnline && (
+            <View style={styles.offlineScreenBanner}>
+              <WifiOff size={16} color="#b91c1c" strokeWidth={2.4} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.offlineScreenBannerTitle}>Offline Mode Active</Text>
+                <Text style={styles.offlineScreenBannerSub}>
+                  No internet connection detected. You can still submit this leave request. It will be saved securely on this device and synced automatically once you are back online.
+                </Text>
+              </View>
+            </View>
+          )}
+
           {/* Available Paid Leave card */}
           <View style={styles.creditPanel}>
             <View style={styles.creditHeader}>
@@ -1578,6 +1724,18 @@ const RequestLeave = ({
             <Text style={styles.addEntryBelowText}>Add Request</Text>
           </Pressable>
 
+          {!isOnline && (
+            <View style={styles.offlineNoticeCard}>
+              <WifiOff size={15} color="#b91c1c" strokeWidth={2.4} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.offlineNoticeTitle}>Ready to Save Offline</Text>
+                <Text style={styles.offlineNoticeDesc}>
+                  Your leave request will be safely saved on this device. Once an internet connection is detected, it will automatically sync to the database.
+                </Text>
+              </View>
+            </View>
+          )}
+
           {/* Action Buttons */}
           <View style={styles.actions}>
             <Pressable style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
@@ -1585,17 +1743,23 @@ const RequestLeave = ({
             </Pressable>
             <Pressable
               disabled={isSubmitting}
-              style={[styles.submitButton, isSubmitting ? styles.submitButtonDisabled : null]}
+              style={[
+                styles.submitButton,
+                isSubmitting ? styles.submitButtonDisabled : null,
+                !isOnline ? styles.submitButtonOffline : null,
+              ]}
               onPress={submit}
             >
               <Text style={styles.submitText}>
                 {isSubmitting
-                  ? 'Submitting...'
+                  ? 'Saving...'
+                  : !isOnline
+                  ? 'Save Offline (Auto-Sync)'
                   : editingRequest
-                    ? 'Update Request'
-                    : entries.length > 1
-                      ? `Submit ${entries.length} Requests`
-                      : 'Submit Request'}
+                  ? 'Update Request'
+                  : entries.length > 1
+                  ? `Submit ${entries.length} Requests`
+                  : 'Submit Request'}
               </Text>
             </Pressable>
           </View>
@@ -2510,5 +2674,52 @@ const styles = StyleSheet.create({
   },
   deadlineStrong: {
     fontWeight: fontWeights.heavy,
+  },
+  offlineScreenBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 14,
+    gap: 10,
+  },
+  offlineScreenBannerTitle: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#991b1b',
+  },
+  offlineScreenBannerSub: {
+    fontSize: 11.5,
+    color: '#7f1d1d',
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  offlineNoticeCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 12,
+    gap: 10,
+  },
+  offlineNoticeTitle: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
+  },
+  offlineNoticeDesc: {
+    fontSize: 11.5,
+    color: '#78350f',
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  submitButtonOffline: {
+    backgroundColor: '#0284c7',
   },
 });

@@ -18,46 +18,61 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
   const currentUserId = userId || sessionResult.session?.user?.id;
   const cacheKey = currentUserId ? `dashboard_summary_v2_${currentUserId}` : 'dashboard_summary_v2';
 
-  if (!currentUserId) {
-    const cached = await getCacheJSON<DashboardSummary>(cacheKey);
+  const cached = await getCacheJSON<DashboardSummary>(cacheKey);
+
+  if (!currentUserId && cached) {
+    return cached;
+  }
+
+  let empId = employeeId;
+  let rpcResult: any = { data: null, error: null };
+  let hygPointsBalance = cached?.hyg_points_balance ?? 0;
+  let leaveBalanceRow: any = { data: null, error: null };
+  let offsetBalanceRow: any = { data: null, error: null };
+
+  try {
+    if (!empId && currentUserId) {
+      const { data: userProfile } = await supabase
+        .from('user_profiles')
+        .select('employee_id')
+        .eq('auth_user_id', currentUserId)
+        .maybeSingle<{ employee_id: string | null }>();
+      empId = userProfile?.employee_id ?? undefined;
+    }
+
+    const [rpcRes, pointsBal, leaveBal, offsetBal] = await Promise.all([
+      supabase.rpc('get_my_dashboard_summary'),
+      loadHygPointsBalance(currentUserId, empId),
+      empId
+        ? supabase
+            .from('leave_balances')
+            .select('annual_credit_days, used_days')
+            .eq('employee_id', empId)
+            .maybeSingle<{ annual_credit_days: number | null; used_days: number | null }>()
+        : Promise.resolve({ data: null, error: null }),
+      empId
+        ? supabase
+            .from('offset_balances')
+            .select('balance_hours')
+            .eq('employee_id', empId)
+            .maybeSingle<{ balance_hours: number | null }>()
+        : Promise.resolve({ data: null, error: null }),
+    ]);
+
+    rpcResult = rpcRes;
+    hygPointsBalance = pointsBal;
+    leaveBalanceRow = leaveBal;
+    offsetBalanceRow = offsetBal;
+  } catch (netErr) {
+    console.log('[Dashboard] Network fetch failed (offline), returning cached summary:', netErr);
     if (cached) {
       return cached;
     }
   }
 
-  let empId = employeeId;
-  if (!empId && currentUserId) {
-    const { data: userProfile } = await supabase
-      .from('user_profiles')
-      .select('employee_id')
-      .eq('auth_user_id', currentUserId)
-      .maybeSingle<{ employee_id: string | null }>();
-    empId = userProfile?.employee_id ?? undefined;
-  }
-
-  const [rpcResult, hygPointsBalance, leaveBalanceRow, offsetBalanceRow] = await Promise.all([
-    supabase.rpc('get_my_dashboard_summary'),
-    loadHygPointsBalance(currentUserId, empId),
-    empId
-      ? supabase
-          .from('leave_balances')
-          .select('annual_credit_days, used_days')
-          .eq('employee_id', empId)
-          .maybeSingle<{ annual_credit_days: number | null; used_days: number | null }>()
-      : Promise.resolve({ data: null, error: null }),
-    empId
-      ? supabase
-          .from('offset_balances')
-          .select('balance_hours')
-          .eq('employee_id', empId)
-          .maybeSingle<{ balance_hours: number | null }>()
-      : Promise.resolve({ data: null, error: null }),
-  ]);
-
   const { data, error } = rpcResult;
 
   if (error && !leaveBalanceRow.data && !offsetBalanceRow.data) {
-    const cached = await getCacheJSON<DashboardSummary>(cacheKey);
     if (cached) {
       return { ...cached, hyg_points_balance: hygPointsBalance };
     }
@@ -104,7 +119,6 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
   } satisfies DashboardSummary;
 
   // Guard: if all values are 0, check if this is due to an unauthenticated/expired session wiping data
-  const cached = await getCacheJSON<DashboardSummary>(cacheKey);
   if (
     cached &&
     (cached.annual_credit_days > 0 || cached.leave_credit_remaining > 0 || cached.pending_requests > 0 || cached.pending_approvals > 0) &&
@@ -131,31 +145,41 @@ export async function loadHygPointsBalance(userId?: string, employeeId?: string)
     return 0;
   }
 
-  let empId = employeeId;
-  if (!empId) {
-    const { data: userProfile } = await supabase
-      .from('user_profiles')
-      .select('employee_id')
-      .eq('auth_user_id', currentUserId)
-      .maybeSingle<{ employee_id: string | null }>();
-    empId = userProfile?.employee_id ?? undefined;
+  const pointsCacheKey = `hyg_points_balance_v1_${currentUserId}`;
+
+  try {
+    let empId = employeeId;
+    if (!empId) {
+      const { data: userProfile } = await supabase
+        .from('user_profiles')
+        .select('employee_id')
+        .eq('auth_user_id', currentUserId)
+        .maybeSingle<{ employee_id: string | null }>();
+      empId = userProfile?.employee_id ?? undefined;
+    }
+
+    let query = supabase
+      .from('user_hyg_point_accounts')
+      .select('balance');
+
+    if (empId) {
+      query = query.or(`auth_user_id.eq.${currentUserId},employee_id.eq.${empId}`);
+    } else {
+      query = query.eq('auth_user_id', currentUserId);
+    }
+
+    const { data, error } = await query.order('updated_at', { ascending: false }).limit(1);
+
+    if (error || !data || data.length === 0) {
+      const cached = await getCacheJSON<number>(pointsCacheKey);
+      return cached ?? 0;
+    }
+
+    const bal = Number(data[0].balance ?? 0);
+    await setCacheJSON(pointsCacheKey, bal);
+    return bal;
+  } catch {
+    const cached = await getCacheJSON<number>(pointsCacheKey);
+    return cached ?? 0;
   }
-
-  let query = supabase
-    .from('user_hyg_point_accounts')
-    .select('balance');
-
-  if (empId) {
-    query = query.or(`auth_user_id.eq.${currentUserId},employee_id.eq.${empId}`);
-  } else {
-    query = query.eq('auth_user_id', currentUserId);
-  }
-
-  const { data, error } = await query.order('updated_at', { ascending: false }).limit(1);
-
-  if (error || !data || data.length === 0) {
-    return 0;
-  }
-
-  return Number(data[0].balance ?? 0);
 }

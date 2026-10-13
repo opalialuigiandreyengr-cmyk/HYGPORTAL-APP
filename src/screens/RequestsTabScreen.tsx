@@ -11,6 +11,8 @@ import { getSafeBottomInset, getScreenBottomPadding } from '../utils/safeArea';
 import { Avatar } from '../components/Avatar';
 import { TopBar } from '../components/TopBar';
 import { deleteMyPendingRequest, loadMyRequests, loadMyRequestsCached, type MyRequest } from '../services/requests';
+import { syncAllOfflineItems } from '../services/offlineQueue';
+import { isAppOnline } from '../services/network';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { DeleteConfirmationModal } from '../components/DeleteConfirmationModal';
@@ -137,27 +139,32 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
       }
       return;
     }
-    setDeletingId(item.request_id);
+
+    const targetId = item.request_id;
+    // Immediately dismiss modal and swiped card so screen never freezes or locks touch
+    setRequestToDelete(null);
+    setSwipedCardId(null);
+    if (selectedRequest?.item.request_id === targetId) {
+      setSelectedRequest(null);
+    }
+    setDeletingId(targetId);
+
+    // Optimistically remove from list immediately for 0-lag UI feedback
+    const previousItems = items;
+    setItems((prev) => prev.filter((r) => r.request_id !== targetId));
+
     try {
-      const lockInfo = await checkApproverActiveViewing(item.request_id);
+      const lockInfo = await checkApproverActiveViewing(targetId);
       if (lockInfo.isLocked) {
-        if (selectedRequest) {
-          setSelectedRequest(null);
-        }
-        setRequestToDelete(null);
-        setSwipedCardId(null);
+        setItems(previousItems);
         setActiveLockInfo(lockInfo);
         return;
       }
 
-      await deleteMyPendingRequest(item.request_id, isPerk);
-      if (selectedRequest?.item.request_id === item.request_id) {
-        setSelectedRequest(null);
-      }
-      setRequestToDelete(null);
-      setSwipedCardId(null);
+      await deleteMyPendingRequest(targetId, isPerk);
       await refresh(true);
     } catch (error) {
+      setItems(previousItems);
       const msg = error instanceof Error ? error.message : 'Unable to delete request.';
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
         window.alert(msg);
@@ -177,7 +184,13 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
       setItems(requests);
       setStatus(requests.length ? '' : 'No requests yet.');
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Unable to load requests.');
+      const cached = await loadMyRequestsCached();
+      if (cached && cached.length) {
+        setItems(cached);
+        setStatus('');
+      } else {
+        setStatus(error instanceof Error ? error.message : 'Unable to load requests.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -188,6 +201,9 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
   const handlePullRefresh = async () => {
     setIsPullRefreshing(true);
     try {
+      if (isAppOnline()) {
+        await syncAllOfflineItems().catch(() => {});
+      }
       await refresh(true);
     } finally {
       setIsPullRefreshing(false);
@@ -226,10 +242,10 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
       }
     });
 
-    // 3. Periodic silent polling (every 8 seconds while on screen) to guarantee real-time sync
+    // 3. Periodic silent polling (every 30 seconds while on screen as backup to Realtime WebSocket)
     const pollInterval = setInterval(() => {
       void refreshSilently();
-    }, 8000);
+    }, 30000);
 
     // 4. Supabase Realtime channel subscription for instant database reflections
     let realtimeChannel: any = null;
@@ -658,6 +674,13 @@ function RequestCard({
   const isOpenRef = useRef(false);
   const SWIPE_WIDTH = 84;
 
+  const onDeleteRef = useRef(onDelete);
+  onDeleteRef.current = onDelete;
+  const onSwipeOpenRef = useRef(onSwipeOpen);
+  onSwipeOpenRef.current = onSwipeOpen;
+  const onSwipeCloseRef = useRef(onSwipeClose);
+  onSwipeCloseRef.current = onSwipeClose;
+
   useEffect(() => {
     if (!isSwipedOpen && isOpenRef.current) {
       isOpenRef.current = false;
@@ -670,7 +693,7 @@ function RequestCard({
   }, [isSwipedOpen]);
 
   const panResponder = useMemo(() => {
-    if (!isPending || !onDelete) {
+    if (!isPending || !Boolean(onDelete)) {
       return null;
     }
 
@@ -711,17 +734,17 @@ function RequestCard({
 
         if (shouldBeOpen) {
           isOpenRef.current = true;
-          onSwipeOpen?.();
+          onSwipeOpenRef.current?.();
           Animated.spring(translateX, {
             toValue: -SWIPE_WIDTH,
             bounciness: 4,
             useNativeDriver: true,
           }).start(() => {
-            onDelete();
+            onDeleteRef.current?.();
           });
         } else {
           isOpenRef.current = false;
-          onSwipeClose?.();
+          onSwipeCloseRef.current?.();
           Animated.spring(translateX, {
             toValue: 0,
             bounciness: 4,
@@ -732,7 +755,7 @@ function RequestCard({
       onPanResponderTerminationRequest: () => false,
       onPanResponderTerminate: () => {
         isOpenRef.current = false;
-        onSwipeClose?.();
+        onSwipeCloseRef.current?.();
         Animated.spring(translateX, {
           toValue: 0,
           bounciness: 4,
@@ -740,7 +763,7 @@ function RequestCard({
         }).start();
       },
     });
-  }, [isPending, onDelete, onSwipeOpen, onSwipeClose, SWIPE_WIDTH]);
+  }, [isPending, Boolean(onDelete), SWIPE_WIDTH]);
 
   return (
     <View style={styles.cardOuter}>

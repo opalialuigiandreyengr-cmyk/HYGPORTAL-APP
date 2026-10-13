@@ -5,6 +5,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { supabase } from '../lib/supabase';
 import { env } from '../lib/env';
+import { isAppOnline } from './network';
 
 export type PhotoProofItem = {
   id: string;
@@ -279,6 +280,9 @@ export function isProofOwnedByUser(
 ): boolean {
   if (!user) return true;
 
+  // Locally captured offline proof awaiting sync always belongs to the current device user
+  if (!item.syncedToCloud) return true;
+
   const clean = (s?: string | null) => (s ? s.trim().toLowerCase() : '');
 
   const targetEmpId = clean(user.employeeId);
@@ -384,10 +388,23 @@ export async function loadPhotoProofs(userFilter?: {
         localById.set(loc.id, loc);
       }
 
+      // Deduplicate cloud rows to prevent duplicate cards if multiple syncs occurred
+      const uniqueCloudItems: PhotoProofItem[] = [];
+      const seenSignatures = new Set<string>();
+      for (const item of cloudItems) {
+        const sig = item.driveFileId
+          ? `drive_${item.driveFileId}`
+          : `${item.employeeName || ''}_${item.timestamp?.slice(0, 16) || ''}_${item.timeDigits || ''}`;
+        if (!seenSignatures.has(sig)) {
+          seenSignatures.add(sig);
+          uniqueCloudItems.push(item);
+        }
+      }
+
       const merged: PhotoProofItem[] = [];
       const matchedLocalIds = new Set<string>();
 
-      for (const cloud of cloudItems) {
+      for (const cloud of uniqueCloudItems) {
         let matched = localById.get(cloud.id);
         if (!matched) {
           const cloudTime = Date.parse(cloud.timestamp);
@@ -498,7 +515,29 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
     return false;
   }
 
-  // 1. Resolve employeeId upfront
+  // 1. Auto-resolve raw coordinates into human-readable street address upon cloud sync
+  const hasRawCoordsOnly = !item.locationText || item.locationText.startsWith('Lat:') || item.locationText.includes('Lon:');
+  if (hasRawCoordsOnly && typeof item.latitude === 'number' && typeof item.longitude === 'number') {
+    try {
+      console.log(`[PhotoProofSync] Auto-resolving offline coordinates (${item.latitude}, ${item.longitude}) to complete street address...`);
+      const resolvedAddress = await reverseGeocodeCoordinates(item.latitude, item.longitude);
+      if (resolvedAddress) {
+        console.log('[PhotoProofSync] Successfully resolved complete address:', resolvedAddress);
+        item.locationText = resolvedAddress;
+        try {
+          const current = await loadPhotoProofs();
+          const updated = current.map((p) => (p.id === item.id ? { ...p, locationText: resolvedAddress } : p));
+          await setCacheJSON(PHOTO_PROOFS_KEY, updated);
+        } catch {
+          // ignore cache error
+        }
+      }
+    } catch (geoErr) {
+      console.warn('[PhotoProofSync] Failed to reverse geocode coordinates on sync:', geoErr);
+    }
+  }
+
+  // 2. Resolve employeeId upfront
   let resolvedEmployeeId = item.employeeId || null;
   if (!resolvedEmployeeId) {
     try {
@@ -606,6 +645,7 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
           employee_id: isUUID ? resolvedEmployeeId : null,
           employee_name: item.employeeName || 'Employee',
           store_name: item.storeName || item.userEmail || undefined,
+          location_text: item.locationText,
         })
         .eq('id', cloudRecordId)
         .select();
@@ -618,7 +658,9 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
         item.syncedToCloud = true;
         const current = await loadPhotoProofs();
         const updated = current.map((p) =>
-          p.id === oldId || p.id === item.id ? { ...p, id: cloudRecordId!, employeeId: isUUID ? resolvedEmployeeId : null, syncedToCloud: true } : p,
+          p.id === oldId || p.id === item.id
+            ? { ...p, id: cloudRecordId!, employeeId: isUUID ? resolvedEmployeeId : null, locationText: item.locationText, syncedToCloud: true }
+            : p,
         );
         await setCacheJSON(PHOTO_PROOFS_KEY, updated);
         return true;
@@ -627,6 +669,60 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
       // If update was blocked (e.g. by RLS or foreign key), delete the incomplete record from the Edge Function so we don't leave a NULL row
       console.warn('[PhotoProofSync] Update failed or blocked by RLS. Replacing incomplete cloud record with clean insert...');
       await supabase.from('photo_proofs').delete().eq('id', cloudRecordId);
+    }
+
+    // Check if a record for this photo proof already exists in Supabase to prevent duplicate inserts
+    let existingId: string | null = null;
+    if (driveResult?.driveFileId) {
+      const { data: matchDrive } = await supabase
+        .from('photo_proofs')
+        .select('id')
+        .eq('drive_file_id', driveResult.driveFileId)
+        .maybeSingle();
+      if (matchDrive?.id) {
+        existingId = matchDrive.id;
+      }
+    }
+
+    if (!existingId && item.timestamp && (item.employeeName || resolvedEmployeeId)) {
+      let query = supabase
+        .from('photo_proofs')
+        .select('id')
+        .eq('timestamp', item.timestamp);
+      if (isUUID && resolvedEmployeeId) {
+        query = query.eq('employee_id', resolvedEmployeeId);
+      }
+      const { data: matchTime } = await query.maybeSingle();
+      if (matchTime?.id) {
+        existingId = matchTime.id;
+      }
+    }
+
+    if (existingId) {
+      console.log('[PhotoProofSync] Record already exists in Supabase (' + existingId + '), updating instead of inserting duplicate...');
+      await supabase
+        .from('photo_proofs')
+        .update({
+          location_text: item.locationText,
+          latitude: item.latitude,
+          longitude: item.longitude,
+          photo_url: driveResult?.photoUrl || (item.photoUri.startsWith('http') ? item.photoUri : null),
+          drive_file_id: driveResult?.driveFileId || item.driveFileId || null,
+          drive_web_view_link: driveResult?.driveWebViewLink || item.driveWebViewLink || null,
+        })
+        .eq('id', existingId);
+
+      const oldId = item.id;
+      item.id = existingId;
+      item.syncedToCloud = true;
+      const current = await loadPhotoProofs();
+      const updated = current.map((p) =>
+        p.id === oldId || p.id === item.id
+          ? { ...p, id: existingId, locationText: item.locationText, syncedToCloud: true }
+          : p,
+      );
+      await setCacheJSON(PHOTO_PROOFS_KEY, updated);
+      return true;
     }
 
     // Otherwise, perform the single insert
@@ -1214,6 +1310,50 @@ export async function reverseGeocodeCoordinates(
   lat: number,
   lon: number,
 ): Promise<string | null> {
+  // If the device is offline, reverse geocoding web services are unavailable
+  if (!isAppOnline()) {
+    return null;
+  }
+
+  // Provider 0: Native Device Geocoder (Android OS Google Play Services / iOS CoreLocation)
+  if (Platform.OS !== 'web') {
+    try {
+      const results = await Location.reverseGeocodeAsync({
+        latitude: lat,
+        longitude: lon,
+      });
+      if (results && results.length > 0) {
+        const item = results[0];
+        const parts: string[] = [];
+        const streetPart = [item.streetNumber, item.street].filter(Boolean).join(' ');
+        if (item.name && item.name !== item.street && item.name !== item.city) {
+          parts.push(item.name);
+        }
+        if (streetPart) parts.push(streetPart);
+        if (item.district && item.district !== item.city && !parts.includes(item.district)) {
+          parts.push(item.district);
+        }
+        if (item.subregion && item.subregion !== item.city && !parts.includes(item.subregion)) {
+          parts.push(item.subregion);
+        }
+        if (item.city && !parts.includes(item.city)) {
+          parts.push(item.city);
+        }
+        if (item.region && item.region !== item.city && !parts.includes(item.region)) {
+          parts.push(item.region);
+        }
+        if (item.postalCode && !parts.includes(item.postalCode)) {
+          parts.push(item.postalCode);
+        }
+        if (parts.length >= 2) {
+          return parts.join(', ');
+        }
+      }
+    } catch (nativeErr) {
+      console.log('[PhotoProofLocation] Native reverse geocoding fallback to web provider:', nativeErr);
+    }
+  }
+
   // Provider 1: OpenStreetMap Nominatim with full address components
   try {
     const controller = new AbortController();
@@ -1396,13 +1536,16 @@ export async function getAccurateGPSCoordinates(): Promise<{
   longitude: number;
   accuracy?: number;
 } | null> {
-  // 1. Native Expo Go / Mobile location detection (Highest Hardware Satellite Accuracy)
+  // 1. Native Expo Go / Mobile location detection (Hardware Satellite / Fused Provider)
   if (Platform.OS !== 'web') {
+    // Attempt A: High Accuracy with 6-second timeout
     try {
-      const loc = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Highest,
+      const locPromise = Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
       });
-      if (loc?.coords) {
+      const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 6000));
+      const loc = await Promise.race([locPromise, timeoutPromise]);
+      if (loc && 'coords' in loc && loc.coords) {
         return {
           latitude: loc.coords.latitude,
           longitude: loc.coords.longitude,
@@ -1410,20 +1553,39 @@ export async function getAccurateGPSCoordinates(): Promise<{
         };
       }
     } catch {
-      try {
-        const lastLoc = await Location.getLastKnownPositionAsync({
-          maxAge: 30000,
-        });
-        if (lastLoc?.coords) {
-          return {
-            latitude: lastLoc.coords.latitude,
-            longitude: lastLoc.coords.longitude,
-            accuracy: lastLoc.coords.accuracy ?? undefined,
-          };
-        }
-      } catch {
-        // fallback
+      // Continue to fallbacks
+    }
+
+    // Attempt B: Last Known Position from device cache (up to 24 hours old)
+    try {
+      const lastLoc = await Location.getLastKnownPositionAsync({
+        maxAge: 86400000,
+      });
+      if (lastLoc?.coords) {
+        return {
+          latitude: lastLoc.coords.latitude,
+          longitude: lastLoc.coords.longitude,
+          accuracy: lastLoc.coords.accuracy ?? undefined,
+        };
       }
+    } catch {
+      // Continue
+    }
+
+    // Attempt C: Balanced Accuracy
+    try {
+      const balLoc = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      if (balLoc?.coords) {
+        return {
+          latitude: balLoc.coords.latitude,
+          longitude: balLoc.coords.longitude,
+          accuracy: balLoc.coords.accuracy ?? undefined,
+        };
+      }
+    } catch {
+      // Continue
     }
   }
 

@@ -24,6 +24,8 @@ import { DashboardFab } from '../components/DashboardFab';
 import type { DashboardSummary } from '../services/dashboard';
 import { loadPerkUsage, type PerkUsage } from '../services/perks';
 import { loadMyRequests, type MyRequest } from '../services/requests';
+import { syncAllOfflineItems } from '../services/offlineQueue';
+import { isAppOnline } from '../services/network';
 import { addAppNotification } from '../services/notificationCenter';
 import {
   checkBirthdayLeaveAppliedForYear,
@@ -111,12 +113,15 @@ export function DashboardScreen({
 
   const refreshSupplemental = async () => {
     try {
-      const [usage, requests] = await Promise.all([loadPerkUsage(), loadMyRequests(true)]);
-      setPerkUsage(usage);
-      setRecentRequests(requests);
-    } catch {
-      setPerkUsage(null);
-      setRecentRequests([]);
+      const [usage, requests] = await Promise.all([loadPerkUsage(), loadMyRequests(false)]);
+      if (usage) {
+        setPerkUsage(usage);
+      }
+      if (requests && requests.length > 0) {
+        setRecentRequests(requests);
+      }
+    } catch (err) {
+      console.log('[Dashboard] Supplemental fetch offline, keeping existing state:', err);
     }
   };
 
@@ -131,6 +136,9 @@ export function DashboardScreen({
   const handlePullRefresh = async () => {
     setIsPullRefreshing(true);
     try {
+      if (isAppOnline()) {
+        await syncAllOfflineItems().catch(() => {});
+      }
       await Promise.allSettled([
         Promise.resolve(onRefreshDashboard()),
         Promise.resolve(onRefreshProfile()),
@@ -142,6 +150,25 @@ export function DashboardScreen({
   };
 
   useEffect(() => {
+    // 1. Immediately hydrate from SQLite cache so data appears instantly even offline
+    void (async () => {
+      try {
+        const [cachedRequests, cachedPerks] = await Promise.all([
+          getCacheJSON<MyRequest[]>('my_requests_v1'),
+          getCacheJSON<PerkUsage>('my_perk_usage_v1'),
+        ]);
+        if (cachedRequests && cachedRequests.length > 0) {
+          setRecentRequests(cachedRequests);
+        }
+        if (cachedPerks) {
+          setPerkUsage(cachedPerks);
+        }
+      } catch {
+        // ignore
+      }
+    })();
+
+    // 2. Fetch fresh updates
     refreshDashboard();
 
     const sub = AppState.addEventListener('change', (nextState) => {

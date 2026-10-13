@@ -3,7 +3,7 @@ import { KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, Scrol
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
-import { BadgePercent, CalendarDays, Check, ChevronDown, Plus, ShoppingCart, X } from 'lucide-react-native';
+import { BadgePercent, CalendarDays, Check, ChevronDown, Plus, ShoppingCart, WifiOff, X } from 'lucide-react-native';
 
 import { TopBar } from '../components/TopBar';
 import type { AppToastMessage } from '../components/AppToast';
@@ -14,6 +14,7 @@ import { loadPerkUsage, startPerkRequest, verifyPerkRequest, type PerkProductInp
 import { formatDateInput, dateStringToDate } from '../utils/dateTime';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { env } from '../lib/env';
+import { isAppOnline, useNetworkStatus } from '../services/network';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getSafeBottomInset, getScreenBottomPadding } from '../utils/safeArea';
 
@@ -65,6 +66,8 @@ export function ApplyDiscountScreen({
   onRefresh?: () => void | Promise<void>;
 }) {
   const insets = useSafeAreaInsets();
+  const network = useNetworkStatus();
+  const isOnline = network.isOnline;
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
 
   const handlePullRefresh = async () => {
@@ -288,6 +291,22 @@ export function ApplyDiscountScreen({
   }
 
   async function submit() {
+    if (!isAppOnline()) {
+      const modeLabel = mode === 'cash' ? 'Cash Discount' : 'Employee Charge';
+      setSubmitStatus('Internet connection required to receive approval code via email.');
+      onToast?.({
+        tone: 'warning',
+        title: 'Internet Connection Required',
+        message: `Applying for ${modeLabel} requires an active internet connection to receive the approval code via email.`,
+      });
+      platformAlert(
+        'Internet Connection Required',
+        `Applying for ${modeLabel} generates a one-time 6-digit approval code sent directly to your registered email in real-time.\n\nPlease connect to Wi-Fi or mobile data to proceed.`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
     const selectedProducts = buildProducts();
     if (!transactionDate || !selectedProducts.length || totals.purchaseAmount <= 0) {
       setSubmitStatus('Please complete the transaction date and product details.');
@@ -333,6 +352,21 @@ export function ApplyDiscountScreen({
   }
 
   async function verifyCode() {
+    if (!isAppOnline()) {
+      setSubmitStatus('Internet connection required to verify approval code.');
+      onToast?.({
+        tone: 'warning',
+        title: 'Internet Connection Required',
+        message: 'Verifying your approval code requires an active internet connection.',
+      });
+      platformAlert(
+        'Internet Connection Required',
+        'Verifying your approval code and generating your e-receipt requires an active internet connection.\n\nPlease connect to Wi-Fi or mobile data to proceed.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
     if (!pendingVerification || !approvalCode.trim()) {
       setSubmitStatus('Enter the approval code sent to your email.');
       return;
@@ -581,16 +615,44 @@ export function ApplyDiscountScreen({
           ) : null}
 
           {!pendingVerification ? (
-          <Pressable
-            disabled={isSubmitting}
-            style={[styles.submitButton, isSubmitting ? styles.submitButtonDisabled : null]}
-            onPress={submit}
-          >
-            <BadgePercent size={16} color={colors.brand.ink} strokeWidth={2.8} />
-            <Text style={styles.submitText}>
-              {isSubmitting ? 'Sending code...' : mode === 'cash' ? 'Apply cash discount' : 'Apply employee charge'}
-            </Text>
-          </Pressable>
+            <>
+              {!isOnline ? (
+                <View style={styles.perksOfflineNotice}>
+                  <WifiOff size={16} color="#b91c1c" strokeWidth={2.4} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.perksOfflineNoticeTitle}>Internet Connection Required</Text>
+                    <Text style={styles.perksOfflineNoticeText}>
+                      Applying for {mode === 'cash' ? 'Cash Discount' : 'Employee Charge'} requires an active internet connection to receive the 6-digit approval code sent to your registered email.
+                    </Text>
+                  </View>
+                </View>
+              ) : null}
+
+              <Pressable
+                disabled={isSubmitting}
+                style={[
+                  styles.submitButton,
+                  isSubmitting ? styles.submitButtonDisabled : null,
+                  !isOnline ? styles.submitButtonOffline : null,
+                ]}
+                onPress={submit}
+              >
+                {!isOnline ? (
+                  <WifiOff size={16} color="#991b1b" strokeWidth={2.5} />
+                ) : (
+                  <BadgePercent size={16} color={colors.brand.ink} strokeWidth={2.8} />
+                )}
+                <Text style={[styles.submitText, !isOnline ? styles.submitTextOffline : null]}>
+                  {isSubmitting
+                    ? 'Sending code...'
+                    : isOnline
+                    ? mode === 'cash'
+                      ? 'Apply cash discount'
+                      : 'Apply employee charge'
+                    : 'Internet required to apply'}
+                </Text>
+              </Pressable>
+            </>
           ) : null}
           {submitStatus ? <Text style={styles.submitStatus}>{submitStatus}</Text> : null}
         </View>
@@ -1233,6 +1295,37 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontWeight: fontWeights.bold,
     marginTop: spacing.sm,
+  },
+  perksOfflineNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  perksOfflineNoticeTitle: {
+    color: '#991b1b',
+    fontSize: 14,
+    fontWeight: fontWeights.heavy,
+    marginBottom: 2,
+  },
+  perksOfflineNoticeText: {
+    color: '#b91c1c',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: fontWeights.medium,
+  },
+  submitButtonOffline: {
+    backgroundColor: '#fee2e2',
+    borderColor: '#fca5a5',
+    borderWidth: 1,
+  },
+  submitTextOffline: {
+    color: '#991b1b',
   },
   emailPanel: {
     borderRadius: radius.md,

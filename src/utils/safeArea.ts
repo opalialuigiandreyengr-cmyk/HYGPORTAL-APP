@@ -8,6 +8,11 @@ import { useSafeAreaInsets, type EdgeInsets } from 'react-native-safe-area-conte
 export const ANDROID_3BUTTON_NAV_HEIGHT = 48;
 
 /**
+ * Height of the floating bottom tab bar container itself.
+ */
+export const FLOATING_TAB_BAR_HEIGHT = 64;
+
+/**
  * Calculates a safe bottom inset.
  * Returns the reported bottom inset (e.g. from react-native-safe-area-context / iOS home indicator / gesture bar),
  * or falls back to a minimum inset when unmeasured (e.g. 0 on web/desktop).
@@ -20,41 +25,73 @@ export function getSafeBottomInset(insetsBottom: number, fallback = 0): number {
 }
 
 /**
- * Calculates safe bottom inset specifically for the bottom tab bar.
- * Avoids excessive blank space while ensuring clearance above the home indicator / navigation bar.
+ * Calculates safe bottom floating offset specifically for the floating bottom tab bar.
+ * Ensures clean, responsive clearance above the home indicator, 3-button navigation, or screen bottom,
+ * including seamless support for iOS Safari and standalone PWA modes.
  */
-export function getBottomTabBarSafeInset(insetsBottom: number): number {
+export function getFloatingTabBarBottomOffset(insetsBottom: number): number {
   if (Platform.OS === 'android') {
-    // On Android:
-    // When 3-button navigation is enabled in edge-to-edge mode, insetsBottom is ~48dp,
-    // providing full clearance above the Back, Home, and Recents buttons.
-    // When gesture navigation is enabled, insetsBottom is ~16-24dp.
-    // When non-edge-to-edge (system bar outside app window), insetsBottom is 0, using 6dp baseline.
+    // When 3-button navigation or gesture nav is active in edge-to-edge mode:
     if (insetsBottom > 0) {
-      return insetsBottom;
+      return insetsBottom + 8;
     }
-    return 6;
+    return 14;
   }
 
-  // On iOS / Web:
-  if (insetsBottom > 0) {
-    // On iOS devices with home indicator (34px inset),
-    // 24-26px gives comfortable clearance for the home indicator without excessive blank space.
-    if (insetsBottom >= 30) {
-      return Math.max(insetsBottom - 8, 22);
+  // On native iOS:
+  if (Platform.OS === 'ios') {
+    if (insetsBottom > 0) {
+      return insetsBottom + 8;
     }
-    return insetsBottom;
+    return 14;
   }
-  return 6;
+
+  // On Web / PWA:
+  if (Platform.OS === 'web') {
+    if (insetsBottom > 0) {
+      return insetsBottom + 8;
+    }
+
+    // Detect if running on an iOS device (iPhone/iPad) in browser or installed PWA
+    const isIosWeb =
+      typeof navigator !== 'undefined' &&
+      (/iPad|iPhone|iPod/.test(navigator.userAgent || '') ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+
+    if (isIosWeb) {
+      // Check if running in standalone PWA mode (added to home screen)
+      const isStandalonePwa =
+        (typeof window !== 'undefined' && (window.navigator as any)?.standalone === true) ||
+        (typeof window !== 'undefined' &&
+          window.matchMedia?.('(display-mode: standalone)').matches);
+
+      // In iOS standalone PWA with Face ID, the Home Indicator takes ~34px.
+      // Floating 8px above it yields 42px clearance.
+      // In Safari browser mode, 20px provides clean clearance above the toolbar.
+      return isStandalonePwa ? 42 : 20;
+    }
+
+    return 14;
+  }
+
+  return insetsBottom > 0 ? insetsBottom + 8 : 14;
 }
 
 /**
- * Calculates total bottom tab bar height including safe area padding.
+ * Calculates safe bottom inset specifically for the bottom tab bar.
+ * Retained for backwards compatibility with any existing imports.
+ */
+export function getBottomTabBarSafeInset(insetsBottom: number): number {
+  return getFloatingTabBarBottomOffset(insetsBottom);
+}
+
+/**
+ * Calculates total bottom tab bar height including its floating offset from screen bottom.
+ * Used by screens and DashboardFab to avoid any overlapping.
  */
 export function getBottomTabBarHeight(insetsBottom: number): number {
-  const safeBottom = getBottomTabBarSafeInset(insetsBottom);
-  // Base tab bar container: 6dp top padding + 46dp tab button = 52dp
-  return 52 + safeBottom;
+  const bottomOffset = getFloatingTabBarBottomOffset(insetsBottom);
+  return FLOATING_TAB_BAR_HEIGHT + bottomOffset;
 }
 
 /**
