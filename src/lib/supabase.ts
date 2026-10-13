@@ -28,6 +28,19 @@ const fetchWithTimeout: typeof fetch = async (input, init) => {
     return response;
   } catch (err: any) {
     if (controller.signal.aborted && (!init?.signal || !init.signal.aborted)) {
+      if (typeof Response !== 'undefined') {
+        return new Response(
+          JSON.stringify({
+            message: 'Network request timed out. Please check your connection.',
+            code: 'FETCH_TIMEOUT',
+          }),
+          {
+            status: 408,
+            statusText: 'Request Timeout',
+            headers: { 'Content-Type': 'application/json' },
+          },
+        );
+      }
       throw new Error('Network request timed out. Please check your connection.');
     }
     throw err;

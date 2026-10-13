@@ -1,12 +1,14 @@
-import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, DeviceEventEmitter, Easing, Image, Linking, Modal, Platform, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Bell, ChartNoAxesColumnIncreasing, Check, ChevronLeft, ChevronRight, CircleHelp, ExternalLink, Info, LogOut, Menu, MessageCircle, RefreshCw, Settings, ShieldCheck, Sparkles, UsersRound, X } from 'lucide-react-native';
+import { Bell, ChartNoAxesColumnIncreasing, Check, ChevronLeft, ChevronRight, CircleHelp, ExternalLink, Info, LogOut, Menu, MessageCircle, RefreshCw, Settings, ShieldCheck, Sparkles, UsersRound, Wifi, WifiOff, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getSafeBottomInset } from '../utils/safeArea';
 
 import { NATIVE_APP_VERSION } from '../services/appUpdates';
 import { colors, fontWeights } from '../theme';
 import { Avatar } from './Avatar';
+import { useNetworkStatus, isOfflineSupported } from '../services/network';
+import { getPendingOfflineCount, syncAllOfflineItems } from '../services/offlineQueue';
 
 const hygHorizontalLogo = require('../../assets/hyghorizontal.png');
 const hygCoinsImage = require('../../assets/hygcoins.png');
@@ -71,6 +73,53 @@ export function TopBar({
   const containerSafeTop = Platform.OS === 'web' ? insets.top : Math.max(insets.top, 10);
   const openProfile = onOpenProfile ?? onAvatar;
 
+  // Network connectivity and offline queue
+  const network = useNetworkStatus();
+  const isOnline = network.isOnline;
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [pendingCounts, setPendingCounts] = useState({ total: 0, esarf: 0, leave: 0, photoProof: 0, profile: 0 });
+  const [showNetworkModal, setShowNetworkModal] = useState(false);
+  const [justSyncedNotice, setJustSyncedNotice] = useState<string | null>(null);
+  const syncNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refreshPending = useCallback(async () => {
+    try {
+      const counts = await getPendingOfflineCount();
+      setPendingCounts(counts);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshPending();
+
+    const qSub = DeviceEventEmitter.addListener('offline_queue_changed', () => {
+      void refreshPending();
+    });
+    const syncStartSub = DeviceEventEmitter.addListener('offline_sync_started', () => {
+      setIsSyncing(true);
+    });
+    const syncEndSub = DeviceEventEmitter.addListener('offline_sync_completed', (info) => {
+      setIsSyncing(false);
+      void refreshPending();
+      if (info && info.total > 0) {
+        setJustSyncedNotice(`Saved online! ${info.total} offline item(s) synced.`);
+        if (syncNoticeTimer.current) clearTimeout(syncNoticeTimer.current);
+        syncNoticeTimer.current = setTimeout(() => {
+          setJustSyncedNotice(null);
+        }, 6000);
+      }
+    });
+
+    return () => {
+      qSub.remove();
+      syncStartSub.remove();
+      syncEndSub.remove();
+      if (syncNoticeTimer.current) clearTimeout(syncNoticeTimer.current);
+    };
+  }, [refreshPending]);
+
   useEffect(() => {
     Animated.timing(sidebarProgress, {
       toValue: isSidebarOpen ? 1 : 0,
@@ -126,6 +175,48 @@ export function TopBar({
               <Menu size={24} color={colors.text} strokeWidth={2.6} />
             )}
           </Pressable>
+
+          {/* Online/Offline Status Indicator next to the burger icon (Android APK only) */}
+          {isOfflineSupported ? (
+            <Pressable
+              style={[
+                styles.networkBadge,
+                isSyncing
+                  ? styles.networkBadgeSyncing
+                  : isOnline
+                  ? styles.networkBadgeOnline
+                  : styles.networkBadgeOffline,
+              ]}
+              onPress={() => setShowNetworkModal(true)}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={`Connection Status: ${isOnline ? 'Online' : 'Offline'}`}
+            >
+              <View
+                style={[
+                  styles.networkDot,
+                  isSyncing
+                    ? styles.networkDotSyncing
+                    : isOnline
+                    ? styles.networkDotOnline
+                    : styles.networkDotOffline,
+                ]}
+              />
+              <Text
+                style={[
+                  styles.networkBadgeText,
+                  isSyncing
+                    ? styles.networkTextSyncing
+                    : isOnline
+                    ? styles.networkTextOnline
+                    : styles.networkTextOffline,
+                ]}
+                numberOfLines={1}
+              >
+                {isSyncing ? 'Syncing' : isOnline ? 'Online' : 'Offline'}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
 
         {backTitle ? (
@@ -196,6 +287,159 @@ export function TopBar({
           ) : null}
         </View>
       </View>
+
+      {/* Offline Status Banner on screens (Android APK only) */}
+      {isOfflineSupported && !isOnline ? (
+        <Pressable
+          style={styles.offlineBanner}
+          onPress={() => setShowNetworkModal(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Offline status banner"
+        >
+          <WifiOff size={13} color="#b91c1c" strokeWidth={2.5} />
+          <Text style={styles.offlineBannerText} numberOfLines={1}>
+            Offline Mode — Requests & proofs save locally and auto-sync
+          </Text>
+          {pendingCounts.total > 0 ? (
+            <View style={styles.offlineBannerBadge}>
+              <Text style={styles.offlineBannerBadgeText}>{pendingCounts.total} queued</Text>
+            </View>
+          ) : null}
+        </Pressable>
+      ) : null}
+
+      {/* Sync Success Banner when requests are saved online (Android APK only) */}
+      {isOfflineSupported && justSyncedNotice ? (
+        <View style={styles.syncSuccessBanner}>
+          <Check size={14} color="#15803d" strokeWidth={2.8} />
+          <Text style={styles.syncSuccessBannerText} numberOfLines={1}>
+            {justSyncedNotice}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* Network & Offline Status Modal (Android APK only) */}
+      {isOfflineSupported ? (
+        <Modal
+          transparent
+          visible={showNetworkModal}
+          animationType="fade"
+          onRequestClose={() => setShowNetworkModal(false)}
+        >
+        <View style={styles.networkModalRoot}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowNetworkModal(false)} />
+          <View style={styles.networkModalCard}>
+            <View style={styles.networkModalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                {isOnline ? (
+                  <Wifi size={20} color="#15803d" strokeWidth={2.5} />
+                ) : (
+                  <WifiOff size={20} color="#b91c1c" strokeWidth={2.5} />
+                )}
+                <Text style={styles.networkModalTitle}>Network & Sync</Text>
+              </View>
+              <Pressable onPress={() => setShowNetworkModal(false)} hitSlop={8} style={styles.networkModalCloseBtn}>
+                <X size={20} color={colors.muted} strokeWidth={2.4} />
+              </Pressable>
+            </View>
+
+            {/* Status Box */}
+            <View
+              style={[
+                styles.networkStatusBox,
+                isOnline ? styles.networkStatusBoxOnline : styles.networkStatusBoxOffline,
+              ]}
+            >
+              <View
+                style={[
+                  styles.networkStatusDotLarge,
+                  isOnline ? styles.dotOnlineLarge : styles.dotOfflineLarge,
+                ]}
+              />
+              <View style={{ flex: 1 }}>
+                <Text
+                  style={[
+                    styles.networkStatusBoxTitle,
+                    { color: isOnline ? '#15803d' : '#b91c1c' },
+                  ]}
+                >
+                  {isOnline ? 'Online — Connected' : 'Offline — No Internet'}
+                </Text>
+                <Text style={styles.networkStatusBoxSub}>
+                  {isOnline
+                    ? `Active Connection: ${String(network.connectionType).toUpperCase()}`
+                    : 'No internet or mobile data connection detected'}
+                </Text>
+              </View>
+            </View>
+
+            {/* Offline Storage & Queue Info */}
+            <View style={styles.networkQueueCard}>
+              <Text style={styles.networkQueueTitle}>
+                {pendingCounts.total > 0
+                  ? `Pending Local Submissions (${pendingCounts.total})`
+                  : 'Offline Capabilities'}
+              </Text>
+              {pendingCounts.total > 0 ? (
+                <View style={{ marginTop: 4 }}>
+                  <Text style={styles.networkQueueDesc}>
+                    {[
+                      pendingCounts.esarf > 0 ? `• ESARF Requests: ${pendingCounts.esarf}` : null,
+                      pendingCounts.leave > 0 ? `• Leave Requests: ${pendingCounts.leave}` : null,
+                      pendingCounts.photoProof > 0 ? `• Photo Proofs: ${pendingCounts.photoProof}` : null,
+                      pendingCounts.profile > 0 ? `• Profile Updates: ${pendingCounts.profile}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join('\n')}
+                  </Text>
+                  <Text style={[styles.networkQueueDesc, { marginTop: 6, fontWeight: fontWeights.semibold }]}>
+                    {isOnline
+                      ? 'Connected! You can sync these now or let them auto-sync in the background.'
+                      : 'Saved securely on this device. Once you reconnect to internet or mobile data, they will sync automatically.'}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.networkQueueDesc}>
+                  You can apply for ESARF, request Leave, capture photo proofs, and update your profile even without internet connection. Everything is saved locally and will automatically sync to the database once connected.
+                </Text>
+              )}
+
+              {isOnline && pendingCounts.total > 0 ? (
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  style={styles.networkSyncBtn}
+                  disabled={isSyncing}
+                  onPress={async () => {
+                    setIsSyncing(true);
+                    await syncAllOfflineItems();
+                    await refreshPending();
+                    setIsSyncing(false);
+                  }}
+                >
+                  {isSyncing ? (
+                    <Text style={styles.networkSyncBtnText}>Syncing now...</Text>
+                  ) : (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <RefreshCw size={14} color="#ffffff" strokeWidth={2.4} />
+                      <Text style={styles.networkSyncBtnText}>Sync All Now</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              ) : null}
+            </View>
+
+            {/* Close Button */}
+            <TouchableOpacity
+              activeOpacity={0.8}
+              style={styles.networkModalDoneBtn}
+              onPress={() => setShowNetworkModal(false)}
+            >
+              <Text style={styles.networkModalDoneText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+      ) : null}
 
       <Modal transparent visible={isSidebarMounted} animationType="none" onRequestClose={closeSidebar}>
         <View style={styles.sidebarRoot}>
@@ -401,10 +645,11 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
   },
   left: {
-    width: 86,
+    minWidth: 96,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-start',
+    gap: 6,
   },
   menuBtn: {
     width: 38,
@@ -785,5 +1030,216 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     fontWeight: fontWeights.medium,
     marginTop: 2,
+  },
+  networkBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 5,
+  },
+  networkBadgeOnline: {
+    backgroundColor: '#ecfdf5',
+    borderColor: '#a7f3d0',
+  },
+  networkBadgeOffline: {
+    backgroundColor: '#fef2f2',
+    borderColor: '#fecaca',
+  },
+  networkBadgeSyncing: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#bfdbfe',
+  },
+  networkDot: {
+    width: 6.5,
+    height: 6.5,
+    borderRadius: 3.5,
+  },
+  networkDotOnline: {
+    backgroundColor: '#16a34a',
+  },
+  networkDotOffline: {
+    backgroundColor: '#dc2626',
+  },
+  networkDotSyncing: {
+    backgroundColor: '#2563eb',
+  },
+  networkBadgeText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+  },
+  networkTextOnline: {
+    color: '#15803d',
+  },
+  networkTextOffline: {
+    color: '#b91c1c',
+  },
+  networkTextSyncing: {
+    color: '#1d4ed8',
+  },
+  offlineBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fef2f2',
+    borderBottomWidth: 1,
+    borderBottomColor: '#fecaca',
+    paddingVertical: 5,
+    paddingHorizontal: 14,
+    gap: 7,
+  },
+  offlineBannerText: {
+    flexShrink: 1,
+    fontSize: 11,
+    color: '#991b1b',
+    fontWeight: fontWeights.medium,
+    textAlign: 'center',
+  },
+  offlineBannerBadge: {
+    backgroundColor: '#fee2e2',
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#fca5a5',
+  },
+  offlineBannerBadgeText: {
+    fontSize: 9.5,
+    fontWeight: fontWeights.bold,
+    color: '#991b1b',
+  },
+  syncSuccessBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#ecfdf5',
+    borderBottomWidth: 1,
+    borderBottomColor: '#a7f3d0',
+    paddingVertical: 5,
+    paddingHorizontal: 14,
+    gap: 7,
+  },
+  syncSuccessBannerText: {
+    flexShrink: 1,
+    fontSize: 11,
+    color: '#15803d',
+    fontWeight: fontWeights.bold,
+    textAlign: 'center',
+  },
+  networkModalRoot: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  networkModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: colors.surface,
+    borderRadius: 20,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  networkModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  networkModalTitle: {
+    fontSize: 16,
+    fontWeight: fontWeights.heavy,
+    color: colors.text,
+  },
+  networkModalCloseBtn: {
+    padding: 4,
+  },
+  networkStatusBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 14,
+    gap: 12,
+    marginBottom: 12,
+  },
+  networkStatusBoxOnline: {
+    backgroundColor: '#ecfdf5',
+    borderWidth: 1,
+    borderColor: '#a7f3d0',
+  },
+  networkStatusBoxOffline: {
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+  },
+  networkStatusDotLarge: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+  },
+  dotOnlineLarge: {
+    backgroundColor: '#16a34a',
+  },
+  dotOfflineLarge: {
+    backgroundColor: '#dc2626',
+  },
+  networkStatusBoxTitle: {
+    fontSize: 13.5,
+    fontWeight: fontWeights.heavy,
+  },
+  networkStatusBoxSub: {
+    fontSize: 11,
+    color: colors.muted,
+    marginTop: 2,
+  },
+  networkQueueCard: {
+    backgroundColor: colors.background,
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 14,
+  },
+  networkQueueTitle: {
+    fontSize: 12.5,
+    fontWeight: fontWeights.bold,
+    color: colors.text,
+    marginBottom: 4,
+  },
+  networkQueueDesc: {
+    fontSize: 11,
+    color: colors.muted,
+    lineHeight: 16,
+  },
+  networkSyncBtn: {
+    backgroundColor: colors.primary,
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 10,
+  },
+  networkSyncBtnText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+  },
+  networkModalDoneBtn: {
+    backgroundColor: colors.background,
+    paddingVertical: 11,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  networkModalDoneText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
   },
 });

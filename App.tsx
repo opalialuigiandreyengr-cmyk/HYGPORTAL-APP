@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, AppState, type AppStateStatus, BackHandler, DeviceEventEmitter, Dimensions, Easing, Image, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, useWindowDimensions, View } from 'react-native';
+import { Alert, Animated, AppState, type AppStateStatus, BackHandler, DeviceEventEmitter, Dimensions, Easing, Image, Keyboard, KeyboardAvoidingView, LogBox, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, useWindowDimensions, View } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Notifications from 'expo-notifications';
@@ -9,6 +9,17 @@ import type { User } from '@supabase/supabase-js';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Activity, Bell, BriefcaseBusiness, CalendarDays, Check, ChevronRight, ClipboardCheck, Download, Eye, EyeOff, Fingerprint, Gift, KeyRound, Layers3, ListChecks, LogOut, Moon, Plus, Route, ShieldCheck, Smartphone, Trash2, UsersRound, X } from 'lucide-react-native';
 import { SafeAreaProvider, initialWindowMetrics, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+// Suppress dev LogBox popup overlays for expected offline network/DNS errors
+LogBox.ignoreLogs([
+  'fetch failed',
+  'Network request failed',
+  'java.net.UnknownHostException',
+  'Unable to resolve host',
+  'Failed to fetch',
+  'ExpoLocation.reverseGeocodeAsync',
+  'Native reverse geocoding fallback',
+]);
 
 import { PickerField, SelectButton } from './src/components/formControls';
 import { ProfilePanel, RequestTile, SummaryCard } from './src/components/portalCards';
@@ -93,6 +104,7 @@ import {
   type AppUpdateState,
   NATIVE_APP_VERSION,
 } from './src/services/appUpdates';
+import { initNetworkService } from './src/services/network';
 import { AssistantScreen } from './src/screens/AssistantScreen';
 import { ApplyDiscountScreen } from './src/screens/ApplyDiscountScreen';
 import { ApplyEsarfScreen } from './src/screens/ApplyEsarfScreen';
@@ -370,10 +382,22 @@ export default function App() {
       if (!isRecoveryUrl) {
         setSignedInUser(session.user);
         if ((session.user.email ?? '').toLowerCase() !== SUPER_ADMIN_EMAIL) {
-          await loadProfileForUser(session.user);
-          await refreshDashboard();
-          await refreshPendingApprovalCount();
-          await refreshNotificationUnreadCount();
+          try {
+            await loadProfileForUser(session.user);
+          } catch (e) {
+            console.log('[Startup] Profile offline:', e);
+          }
+          try {
+            await refreshDashboard(true);
+          } catch (e) {
+            console.log('[Startup] Dashboard offline:', e);
+          }
+          try {
+            await refreshPendingApprovalCount();
+          } catch (e) {}
+          try {
+            await refreshNotificationUnreadCount();
+          } catch (e) {}
         }
       }
     })();
@@ -404,10 +428,18 @@ export default function App() {
         if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && !isRecoveryUrl && !recoverySession) {
           setSignedInUser(session.user);
           if (event === 'SIGNED_IN' && (session.user.email ?? '').toLowerCase() !== SUPER_ADMIN_EMAIL) {
-            await loadProfileForUser(session.user);
-            await refreshDashboard();
-            await refreshPendingApprovalCount();
-            await refreshNotificationUnreadCount();
+            try {
+              await loadProfileForUser(session.user);
+            } catch (e) {}
+            try {
+              await refreshDashboard(true);
+            } catch (e) {}
+            try {
+              await refreshPendingApprovalCount();
+            } catch (e) {}
+            try {
+              await refreshNotificationUnreadCount();
+            } catch (e) {}
           }
         }
       }
@@ -453,6 +485,21 @@ export default function App() {
       setRequestsRefreshKey((k) => k + 1);
     }
   }, [activeTab, canUseApprovals, canUseMyTeam]);
+
+  useEffect(() => {
+    const profileOnlineSub = DeviceEventEmitter.addListener('profile_updated_online', () => {
+      if (signedInUser) {
+        void loadProfileForUser(signedInUser);
+      }
+    });
+    const refreshDashSub = DeviceEventEmitter.addListener('refresh_dashboard', () => {
+      void refreshDashboard(true);
+    });
+    return () => {
+      profileOnlineSub.remove();
+      refreshDashSub.remove();
+    };
+  }, [signedInUser]);
 
   // ─── Android hardware back-button / gesture handler ─────────────────────────
   useEffect(() => {
@@ -708,15 +755,21 @@ export default function App() {
 
   async function loadProfileForUser(user: User) {
     setIsLoadingProfile(true);
+    const cacheKey = `employee_profile_result_v1:${user.id}`;
     try {
-      const cacheKey = `employee_profile_result_v1:${user.id}`;
       const cached = await getCacheJSON<ProfileLoadResult>(cacheKey);
       if (cached) {
         setProfileResult(cached);
       }
-      const result = await loadEmployeeProfile(user.id);
-      setProfileResult(result);
-      await setCacheJSON(cacheKey, result);
+      try {
+        const result = await loadEmployeeProfile(user.id);
+        if (result && result.status !== 'error') {
+          setProfileResult(result);
+          await setCacheJSON(cacheKey, result);
+        }
+      } catch (err) {
+        console.log('[Profile] Offline / network error loading profile, preserving cache:', err);
+      }
     } finally {
       setIsLoadingProfile(false);
     }
@@ -727,22 +780,24 @@ export default function App() {
       setDashboardStatus('Refreshing dashboard...');
     }
     try {
-      const cacheKey = signedInUser ? `dashboard_summary_v2:${signedInUser.id}` : 'dashboard_summary_v2';
-      if (!silent) {
-        const cached = await getCacheJSON<DashboardSummary>(cacheKey);
-        if (cached) {
-          setDashboardSummary(cached);
-        }
+      const cacheKey = signedInUser ? `dashboard_summary_v2_${signedInUser.id}` : 'dashboard_summary_v2';
+      // Always hydrate from cache first so metrics appear instantly even offline
+      const cached = await getCacheJSON<DashboardSummary>(cacheKey);
+      if (cached) {
+        setDashboardSummary(cached);
       }
       const employeeId = profileResult?.status === 'linked' ? profileResult.profile.employeeId : undefined;
       const summary = await loadDashboardSummary(signedInUser?.id, employeeId);
-      setDashboardSummary(summary);
+      if (summary) {
+        setDashboardSummary(summary);
+      }
       if (!silent) {
         setDashboardStatus('');
       }
     } catch (error) {
+      console.log('[Dashboard] Refresh error (offline):', error);
       if (!silent) {
-        setDashboardStatus(error instanceof Error ? error.message : 'Unable to refresh dashboard.');
+        setDashboardStatus('');
       }
     }
   }
@@ -832,10 +887,18 @@ export default function App() {
     setPublicScreen('login');
     setSignedInUser(user);
     if ((user.email ?? '').toLowerCase() !== SUPER_ADMIN_EMAIL) {
-      await loadProfileForUser(user);
-      await refreshDashboard();
-      await refreshPendingApprovalCount();
-      await refreshNotificationUnreadCount();
+      try {
+        await loadProfileForUser(user);
+      } catch (e) {}
+      try {
+        await refreshDashboard();
+      } catch (e) {}
+      try {
+        await refreshPendingApprovalCount();
+      } catch (e) {}
+      try {
+        await refreshNotificationUnreadCount();
+      } catch (e) {}
       if (notificationsEnabled) {
         try {
           await registerPushDevice();
@@ -1024,11 +1087,36 @@ export default function App() {
   }, [biometricAvailable, biometricEnabled, isSubmitting, publicScreen, savedUsername, signedInUser]);
 
   useEffect(() => {
-    const sub = DeviceEventEmitter.addListener('open_rewards_tab', () => {
+    initNetworkService();
+
+    const rewardsSub = DeviceEventEmitter.addListener('open_rewards_tab', () => {
       setActiveTab('rewards');
     });
+
+    const syncSub = DeviceEventEmitter.addListener(
+      'requests_synced_online',
+      (data: { total: number; esarf: number; leave: number; photos: number }) => {
+        void refreshDashboard(true);
+        void refreshPendingApprovalCount();
+        setRequestsRefreshKey((k) => k + 1);
+
+        const parts: string[] = [];
+        if (data.esarf > 0) parts.push(`${data.esarf} ESARF`);
+        if (data.leave > 0) parts.push(`${data.leave} Leave`);
+        if (data.photos > 0) parts.push(`${data.photos} Photo Proof${data.photos > 1 ? 's' : ''}`);
+        const breakdown = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+
+        setAppToast({
+          tone: 'success',
+          title: 'Requests Saved Online! 🎉',
+          message: `${data.total} offline request${data.total > 1 ? 's' : ''}${breakdown} synced and saved to the database.`,
+        });
+      },
+    );
+
     return () => {
-      sub.remove();
+      rewardsSub.remove();
+      syncSub.remove();
     };
   }, []);
 
@@ -1348,6 +1436,7 @@ export default function App() {
         <ProfileTabScreen
           email={signedInUser.email ?? ''}
           username={email}
+          userId={signedInUser.id}
           isLoading={isLoadingProfile}
           result={profileResult}
           onToast={setAppToast}

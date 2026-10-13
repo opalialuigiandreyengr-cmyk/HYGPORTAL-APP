@@ -1,5 +1,6 @@
 import { ensureFreshSession, supabase } from '../lib/supabase';
 import { getCacheJSON, removeCacheItem, setCacheJSON } from '../lib/localCache';
+import { removeOfflineItem } from './offlineQueue';
 
 export type RequestApprovalSummary = {
   step_order: number;
@@ -51,28 +52,22 @@ import { isAutoApprovedBirthdayGrant } from './birthdayLeave';
 
 export async function loadMyRequests(forceRefresh = false) {
   const cacheKey = 'my_requests_v1';
-  if (forceRefresh) {
-    try {
-      await removeCacheItem(cacheKey);
-    } catch {
-      // ignore
+  const cached = await getCacheJSON<MyRequest[]>(cacheKey);
+
+  try {
+    // Ensure session is fresh before fetching requests
+    await ensureFreshSession().catch(() => {});
+
+    const { data, error } = await supabase.rpc('get_my_requests');
+
+    if (error) {
+      if (cached && cached.length) {
+        return cached;
+      }
+      throw error;
     }
-  }
 
-  // Ensure session is fresh before fetching requests
-  await ensureFreshSession().catch(() => {});
-
-  const { data, error } = await supabase.rpc('get_my_requests');
-
-  if (error) {
-    const cached = await getCacheJSON<MyRequest[]>(cacheKey);
-    if (cached) {
-      return cached;
-    }
-    throw error;
-  }
-
-  let items = (data ?? []) as MyRequest[];
+    let items = (data ?? []) as MyRequest[];
 
   // Normalize request status from database
   items = items.map((req) => {
@@ -106,8 +101,6 @@ export async function loadMyRequests(forceRefresh = false) {
     return req;
   });
 
-  const cached = await getCacheJSON<MyRequest[]>(cacheKey);
-
   // If server returns empty list but we have cached requests, verify user session before overwriting
   if (items.length === 0 && cached && cached.length > 0) {
     const { data: sessionData } = await supabase.auth.getSession();
@@ -135,10 +128,28 @@ export async function loadMyRequests(forceRefresh = false) {
         items = [bdayItem, ...items];
       }
     }
+
+    // Preserve any pending offline requests awaiting sync
+    const offlineItems = cached.filter(
+      (item) =>
+        item.request_id?.startsWith('offline_') ||
+        (item.status || '').toLowerCase().includes('offline'),
+    );
+    for (const offItem of offlineItems) {
+      if (!items.some((serverItem) => serverItem.request_id === offItem.request_id)) {
+        items = [offItem, ...items];
+      }
+    }
   }
 
-  await setCacheJSON(cacheKey, items);
-  return items;
+    await setCacheJSON(cacheKey, items);
+    return items;
+  } catch (err) {
+    if (cached && cached.length) {
+      return cached;
+    }
+    return [];
+  }
 }
 
 export async function loadMyRequestsCached() {
@@ -169,7 +180,8 @@ export type UpdatePendingRequestParams = {
   reason?: string | null;
 };
 
-import { checkApproverActiveViewing } from './requestViewerLock';
+import { checkApproverActiveViewing, type ActiveViewerInfo } from './requestViewerLock';
+import { withTimeout } from '../utils/withTimeout';
 
 export async function updateMyPendingRequest(params: UpdatePendingRequestParams) {
   const targetId = params.requestId;
@@ -381,7 +393,27 @@ export async function deleteMyPendingRequest(requestId: string, isPerk = false) 
     throw new Error('Missing Request ID.');
   }
 
-  const lockInfo = await checkApproverActiveViewing(requestId);
+  // 1. Handle local offline requests immediately without hitting Supabase
+  if (requestId.startsWith('offline_') || requestId.includes('local')) {
+    await removeOfflineItem(requestId).catch(() => {});
+    try {
+      const cached = await getCacheJSON<MyRequest[]>('my_requests_v1');
+      if (cached && cached.length) {
+        const filtered = cached.filter((c) => c.request_id !== requestId);
+        await setCacheJSON('my_requests_v1', filtered);
+      }
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  const lockInfo: ActiveViewerInfo = await withTimeout(
+    checkApproverActiveViewing(requestId),
+    5000,
+    'Checking approver review status timed out.',
+  ).catch((): ActiveViewerInfo => ({ isLocked: false }));
+
   if (lockInfo.isLocked) {
     throw new Error(
       `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Deleting is temporarily disabled while they are viewing it to prevent data conflicts.`,
@@ -390,12 +422,16 @@ export async function deleteMyPendingRequest(requestId: string, isPerk = false) 
 
   // Prevent deletion if any approval step has already been approved
   if (!isPerk) {
-    const { data: deleteApprovedSteps } = await supabase
-      .from('request_approval_steps')
-      .select('id')
-      .eq('request_id', requestId)
-      .ilike('status', '%approved%')
-      .limit(1);
+    const { data: deleteApprovedSteps } = await withTimeout<{ data: any[] | null; error?: any }>(
+      supabase
+        .from('request_approval_steps')
+        .select('id')
+        .eq('request_id', requestId)
+        .ilike('status', '%approved%')
+        .limit(1),
+      8000,
+      'Checking approval steps timed out.',
+    ).catch(() => ({ data: null }));
 
     if (deleteApprovedSteps && deleteApprovedSteps.length > 0) {
       throw new Error('This request has already received an approval in the timeline and can no longer be deleted.');
@@ -404,10 +440,14 @@ export async function deleteMyPendingRequest(requestId: string, isPerk = false) 
 
   let rpcSuccess = false;
   try {
-    const { error: rpcErr } = await supabase.rpc('delete_my_pending_request', {
-      p_request_id: requestId,
-      p_is_perk: isPerk,
-    });
+    const { error: rpcErr } = await withTimeout<{ data: any; error: any }>(
+      supabase.rpc('delete_my_pending_request', {
+        p_request_id: requestId,
+        p_is_perk: isPerk,
+      }),
+      10000,
+      'Database delete operation timed out.',
+    );
     if (!rpcErr) {
       rpcSuccess = true;
     }
@@ -417,10 +457,14 @@ export async function deleteMyPendingRequest(requestId: string, isPerk = false) 
 
   if (!rpcSuccess) {
     try {
-      const { error: adminErr } = await supabase.rpc('admin_delete_request', {
-        p_request_id: requestId,
-        p_is_perk: isPerk,
-      });
+      const { error: adminErr } = await withTimeout<{ data: any; error: any }>(
+        supabase.rpc('admin_delete_request', {
+          p_request_id: requestId,
+          p_is_perk: isPerk,
+        }),
+        10000,
+        'Admin delete fallback timed out.',
+      );
       if (!adminErr) {
         rpcSuccess = true;
       }

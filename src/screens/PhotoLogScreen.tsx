@@ -30,6 +30,7 @@ import {
   Plus,
   Share2,
   Trash2,
+  WifiOff,
   X,
 } from 'lucide-react-native';
 import Svg, {
@@ -763,95 +764,114 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
               </Pressable>
             </View>
           }
-          renderItem={({ item }) => (
-            <View style={styles.logCard}>
-              {/* Image with overlay */}
-              <Pressable
-                style={styles.imageWrapper}
-                onPress={() => setSelectedPhoto(item)}
-              >
-                {item.photoUri ? (
-                  <Image source={{ uri: item.photoUri }} style={styles.logImage} resizeMode="cover" />
-                ) : (
-                  <View style={styles.imagePlaceholder}>
-                    <Camera size={34} color="#94a3b8" strokeWidth={1.8} />
-                    <Text style={styles.imagePlaceholderText}>
-                      {item.driveWebViewLink ? 'Stored in Google Drive' : 'Syncing photo...'}
-                    </Text>
-                  </View>
-                )}
-                {/* Details overlay only shown if the photo does not already have a burned watermark */}
-                {!isPhotoWatermarked(item) && (
-                  <View style={styles.imageOverlayGradient}>
-                    <View style={styles.overlayTimeRow}>
-                      <Text style={styles.overlayTimeText}>
-                        {item.timeDigits}
-                        <Text style={styles.overlayTimePeriod}> {item.timePeriod}</Text>
+          renderItem={({ item }) => {
+            const isOffline = !item.syncedToCloud && !item.driveFileId;
+            return (
+              <View style={styles.logCard}>
+                {/* Image with overlay */}
+                <Pressable
+                  style={styles.imageWrapper}
+                  onPress={() => setSelectedPhoto(item)}
+                >
+                  {item.photoUri ? (
+                    <Image source={{ uri: item.photoUri }} style={styles.logImage} resizeMode="cover" />
+                  ) : (
+                    <View style={styles.imagePlaceholder}>
+                      <Camera size={34} color="#94a3b8" strokeWidth={1.8} />
+                      <Text style={styles.imagePlaceholderText}>
+                        {item.driveWebViewLink ? 'Stored in Google Drive' : 'Syncing photo...'}
                       </Text>
-                      <View style={styles.overlayDivider} />
-                      <View>
-                        <Text style={styles.overlayDateText}>{item.dateFormatted}</Text>
-                        <Text style={styles.overlayDayText}>{item.dayFormatted}</Text>
+                    </View>
+                  )}
+                  {/* Floating Status Pill Badge (Top Left of Image - Only shown when offline) */}
+                  {isOffline && (
+                    <View style={[styles.imageFloatingStatusPill, styles.statusPillOffline]}>
+                      <WifiOff size={11} color="#92400e" strokeWidth={2.4} />
+                      <Text style={styles.statusPillTextOffline}>PENDING SYNC (OFFLINE)</Text>
+                    </View>
+                  )}
+                  {/* Details overlay only shown if the photo does not already have a burned watermark */}
+                  {!isPhotoWatermarked(item) && (
+                    <View style={styles.imageOverlayGradient}>
+                      <View style={styles.overlayTimeRow}>
+                        <Text style={styles.overlayTimeText}>
+                          {item.timeDigits}
+                          <Text style={styles.overlayTimePeriod}> {item.timePeriod}</Text>
+                        </Text>
+                        <View style={styles.overlayDivider} />
+                        <View>
+                          <Text style={styles.overlayDateText}>{item.dateFormatted}</Text>
+                          <Text style={styles.overlayDayText}>{item.dayFormatted}</Text>
+                        </View>
+                      </View>
+                      <Text style={styles.overlayLocationText} numberOfLines={2}>
+                        {item.locationText}
+                      </Text>
+                    </View>
+                  )}
+                  <View style={styles.expandBadge}>
+                    <Eye size={16} color="#ffffff" strokeWidth={2.4} />
+                  </View>
+                </Pressable>
+
+                {/* Card Meta Details & Actions */}
+                <View style={styles.cardDetails}>
+                  {isOffline && (
+                    <View style={styles.cardHeaderRow}>
+                      <View style={[styles.statusPill, styles.statusPillOffline]}>
+                        <WifiOff size={11} color="#92400e" strokeWidth={2.4} />
+                        <Text style={styles.statusPillTextOffline}>PENDING SYNC (OFFLINE)</Text>
                       </View>
                     </View>
-                    <Text style={styles.overlayLocationText} numberOfLines={2}>
+                  )}
+
+                  <View style={styles.metaRow}>
+                    <MapPin size={15} color="#64748b" strokeWidth={2.2} />
+                    <Text style={styles.metaLocationText} numberOfLines={4}>
                       {item.locationText}
                     </Text>
                   </View>
-                )}
-                <View style={styles.expandBadge}>
-                  <Eye size={16} color="#ffffff" strokeWidth={2.4} />
-                </View>
-              </Pressable>
 
-              {/* Card Meta Details & Actions */}
-              <View style={styles.cardDetails}>
-                <View style={styles.metaRow}>
-                  <MapPin size={15} color="#64748b" strokeWidth={2.2} />
-                  <Text style={styles.metaLocationText} numberOfLines={4}>
-                    {item.locationText}
-                  </Text>
-                </View>
+                  <View style={styles.cardBottomRow}>
+                    <View style={styles.metaInfoGroup}>
+                      <View style={styles.metaChip}>
+                        <Clock size={13} color="#0284c7" strokeWidth={2.2} />
+                        <Text style={styles.metaChipText}>
+                          {item.timeDigits} {item.timePeriod}
+                        </Text>
+                      </View>
+                      <View style={styles.metaChip}>
+                        <Calendar size={13} color="#059669" strokeWidth={2.2} />
+                        <Text style={styles.metaChipText}>{item.dateFormatted}</Text>
+                      </View>
+                    </View>
 
-                <View style={styles.cardBottomRow}>
-                  <View style={styles.metaInfoGroup}>
-                    <View style={styles.metaChip}>
-                      <Clock size={13} color="#0284c7" strokeWidth={2.2} />
-                      <Text style={styles.metaChipText}>
-                        {item.timeDigits} {item.timePeriod}
-                      </Text>
-                    </View>
-                    <View style={styles.metaChip}>
-                      <Calendar size={13} color="#059669" strokeWidth={2.2} />
-                      <Text style={styles.metaChipText}>{item.dateFormatted}</Text>
-                    </View>
+                    <Pressable
+                      style={styles.deleteButton}
+                      onPress={() => handleDelete(item)}
+                      hitSlop={10}
+                    >
+                      <Trash2 size={18} color="#ef4444" strokeWidth={2.2} />
+                    </Pressable>
                   </View>
-
-                  <Pressable
-                    style={styles.deleteButton}
-                    onPress={() => handleDelete(item)}
-                    hitSlop={10}
-                  >
-                    <Trash2 size={18} color="#ef4444" strokeWidth={2.2} />
-                  </Pressable>
+                  {!item.syncedToCloud && !item.driveFileId && (
+                    <Pressable
+                      style={styles.retryUploadButton}
+                      onPress={() => void retryUpload(item)}
+                      disabled={retryingUploadId === item.id}
+                    >
+                      {retryingUploadId === item.id ? (
+                        <ActivityIndicator size="small" color="#2563eb" />
+                      ) : null}
+                      <Text style={styles.retryUploadText}>
+                        {retryingUploadId === item.id ? 'Retrying upload…' : 'Retry Google Drive upload'}
+                      </Text>
+                    </Pressable>
+                  )}
                 </View>
-                {!item.syncedToCloud && !item.driveFileId && (
-                  <Pressable
-                    style={styles.retryUploadButton}
-                    onPress={() => void retryUpload(item)}
-                    disabled={retryingUploadId === item.id}
-                  >
-                    {retryingUploadId === item.id ? (
-                      <ActivityIndicator size="small" color="#2563eb" />
-                    ) : null}
-                    <Text style={styles.retryUploadText}>
-                      {retryingUploadId === item.id ? 'Retrying upload…' : 'Retry Google Drive upload'}
-                    </Text>
-                  </Pressable>
-                )}
               </View>
-            </View>
-          )}
+            );
+          }}
         />
       )}
 
@@ -882,7 +902,15 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
             >
               <ChevronLeft size={28} color="#0f172a" strokeWidth={2.4} />
             </Pressable>
-            <Text style={styles.headerTitle}>Photo Proof</Text>
+            <View style={styles.viewerHeaderCenter}>
+              <Text style={styles.headerTitle}>Photo Proof</Text>
+              {selectedPhoto && !selectedPhoto.syncedToCloud && !selectedPhoto.driveFileId && (
+                <View style={[styles.statusPill, styles.statusPillOffline, { marginTop: 4 }]}>
+                  <WifiOff size={10} color="#92400e" strokeWidth={2.4} />
+                  <Text style={styles.statusPillTextOffline}>PENDING SYNC (OFFLINE)</Text>
+                </View>
+              )}
+            </View>
             {selectedPhoto ? (
               <Pressable
                 style={styles.headerIconButton}
@@ -1440,6 +1468,64 @@ const styles = StyleSheet.create({
     height: 32,
     borderRadius: 16,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  imageFloatingStatusPill: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4.5,
+    paddingHorizontal: 9,
+    paddingVertical: 4.5,
+    borderRadius: 999,
+    zIndex: 5,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 2,
+    elevation: 3,
+  },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    marginBottom: 2,
+  },
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4.5,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  statusPillOffline: {
+    backgroundColor: '#fef3c7',
+    borderColor: '#fde68a',
+  },
+  statusPillOnline: {
+    backgroundColor: '#dcfce7',
+    borderColor: '#86efac',
+  },
+  statusPillTextOffline: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
+    textTransform: 'uppercase',
+  },
+  statusPillTextOnline: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: fontWeights.bold,
+    color: '#15803d',
+    textTransform: 'uppercase',
+  },
+  viewerHeaderCenter: {
     alignItems: 'center',
     justifyContent: 'center',
   },

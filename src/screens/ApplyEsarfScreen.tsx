@@ -39,6 +39,7 @@ import {
   RotateCcw,
   Trash2,
   Upload,
+  WifiOff,
   X,
 } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
@@ -63,6 +64,8 @@ import { loadMyFlexibleSchedule } from '../services/team';
 import { updateMyPendingRequest, type MyRequest } from '../services/requests';
 import { removeCacheItem } from '../lib/localCache';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
+import { isAppOnline, useNetworkStatus } from '../services/network';
+import { enqueueOfflineItem } from '../services/offlineQueue';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { formatEsarfDateRange, parseEsarfEntries, getDirectProofImageUrl, getExternalProofWebUrl } from '../components/EsarfDetailsView';
 import { colors, fontWeights, radius, spacing } from '../theme';
@@ -343,6 +346,8 @@ export function ApplyEsarfScreen({
 }) {
   const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const network = useNetworkStatus();
+  const isOnline = network.isOnline;
 
   const handlePullRefresh = async () => {
     if (!onRefresh) return;
@@ -1539,9 +1544,256 @@ export function ApplyEsarfScreen({
     return errors;
   }
 
+  async function saveEsarfOffline(groupsToSave?: EsarfEntry[][]) {
+    try {
+      setIsSubmitting(true);
+      setSubmitStatus('Saving ESARF offline on this device...');
+
+      // Save any local photo proofs to local cache first
+      for (let i = 0; i < entries.length; i++) {
+        const e = entries[i];
+        const entryProofs = getEntryProofs(e);
+        for (let pIdx = 0; pIdx < entryProofs.length; pIdx++) {
+          const proof = entryProofs[pIdx];
+          if (!proof.photoProofId) {
+            try {
+              const now = new Date(proof.timestamp || Date.now());
+              const tsFormatted = formatProofTimestamp(now);
+              const userInfo = await resolveCurrentUserInfo();
+              const proofItem: PhotoProofItem = {
+                id: `proof_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+                photoUri: proof.uri,
+                timestamp: proof.timestamp || now.toISOString(),
+                timeDigits: tsFormatted.timeDigits,
+                timePeriod: tsFormatted.timePeriod,
+                dateFormatted: tsFormatted.dateFormatted,
+                dayFormatted: tsFormatted.dayFormatted,
+                locationText: proof.locationText || userInfo.resolvedStore || 'Tacloban City, 6500',
+                employeeId: userInfo.resolvedEmpId || null,
+                employeeName: userInfo.resolvedName,
+                userEmail: userInfo.resolvedEmail || null,
+                storeName: userInfo.resolvedStore,
+                isWatermarked: false,
+                syncedToCloud: false,
+              };
+              await savePhotoProof(proofItem);
+              proof.photoProofId = proofItem.id;
+            } catch {
+              // ignore
+            }
+          }
+        }
+        e.proof = entryProofs[0] || null;
+        e.proofs = entryProofs;
+      }
+
+      const regularEntries = entries.filter(
+        (e) => !parseEntryTransactions(e.transaction).includes('use_offset'),
+      );
+      const useOffsetEntries = entries.filter(
+        (e) => parseEntryTransactions(e.transaction).includes('use_offset'),
+      );
+      const targetGroups = groupsToSave || [
+        ...(regularEntries.length > 0 ? [regularEntries] : []),
+        ...(useOffsetEntries.length > 0 ? [useOffsetEntries] : []),
+      ];
+
+      for (let g = 0; g < targetGroups.length; g++) {
+        const groupEntries = targetGroups[g];
+        const allTransKeys = groupEntries.flatMap((e) => parseEntryTransactions(e.transaction));
+        const isUseOffset = allTransKeys.includes('use_offset');
+        const isOffsetEarn = allTransKeys.includes('offset');
+
+        let primaryRequestType: RequestTypeCode = 'overtime';
+        if (isUseOffset) {
+          primaryRequestType = 'use_offset';
+        } else if (isOffsetEarn) {
+          primaryRequestType = 'offset_earn';
+        }
+
+        const transactionTypesPerEntry = groupEntries.map((e) => {
+          const keys = parseEntryTransactions(e.transaction);
+          const opts = transactionOptions.filter((t) => keys.includes(t.key));
+          return opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
+        });
+        const combinedTransactionType = Array.from(new Set(transactionTypesPerEntry)).join(', ');
+
+        const totalHoursSum = groupEntries.reduce((sum, e) => {
+          const keys = parseEntryTransactions(e.transaction);
+          const hrs = getEntryTotalHours(e);
+          if (keys.includes('offset')) {
+            return sum + calculateCreditedOffsetHours(hrs);
+          }
+          return sum + hrs;
+        }, 0);
+
+        const allDatesFrom = groupEntries.map((e) => e.dateFrom).filter(Boolean);
+        const allDatesTo = groupEntries.map((e) => e.dateTo || e.dateFrom).filter(Boolean);
+        const sortedFrom = [...allDatesFrom].sort();
+        const sortedTo = [...allDatesTo].sort();
+
+        const firstEntry = groupEntries[0];
+        const lastEntry = groupEntries[groupEntries.length - 1];
+        const overallDateFrom = sortedFrom[0] || firstEntry.dateFrom;
+        const overallDateTo = sortedTo[sortedTo.length - 1] || lastEntry.dateTo || lastEntry.dateFrom || firstEntry.dateFrom;
+        const overallTimeFrom = firstEntry.timeFrom;
+        const overallTimeTo = lastEntry.timeTo || firstEntry.timeTo;
+
+        const formatProofTags = (proofInput?: EsarfAttachment[] | EsarfAttachment | null) => {
+          if (!proofInput) return '';
+          const proofsList = Array.isArray(proofInput) ? proofInput : [proofInput];
+          let tags = '';
+          for (const proof of proofsList) {
+            if (!proof) continue;
+            const link = proof.driveWebViewLink || (proof.uri?.startsWith('http') ? proof.uri : proof.uri);
+            if (!link) continue;
+            tags += ` [Proof: ${link}]`;
+            if (proof.timestamp) tags += ` [ProofTime: ${proof.timestamp}]`;
+            if (proof.locationText) tags += ` [ProofLoc: ${proof.locationText.replace(/[\[\]]/g, '').trim()}]`;
+            if (proof.photoProofId) tags += ` [ProofId: ${proof.photoProofId}]`;
+          }
+          return tags;
+        };
+
+        const cleanReasonText = (text: string) => {
+          if (!text) return '';
+          let cleaned = text.trim();
+          const match = cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)\s*.*?\([^)]*\):\s*([\s\S]*)$/i)
+            || cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)[^:]*:\s*([\s\S]*)$/i);
+          if (match) cleaned = match[1].trim();
+          return cleaned
+            .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
+            .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
+            .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
+            .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
+            .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
+            .trim();
+        };
+
+        let combinedReason: string;
+        if (groupEntries.length === 1) {
+          const fEntry = groupEntries[0];
+          const keys = parseEntryTransactions(fEntry.transaction);
+          const isOffset = keys.includes('offset');
+          const hrs = getEntryTotalHours(fEntry);
+          const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
+          const proofTag = formatProofTags(getEntryProofs(fEntry));
+          combinedReason = `${cleanReasonText(fEntry.reason)}${actualTag}${proofTag}`.trim();
+        } else {
+          combinedReason = groupEntries
+            .map((e, idx) => {
+              const keys = parseEntryTransactions(e.transaction);
+              const opts = transactionOptions.filter((t) => keys.includes(t.key));
+              const transLabel = opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
+              const dateStr = formatEsarfDateRange(e.dateFrom, e.dateTo);
+              const timeFromStr = e.timeFrom ? formatTimeDisplay(e.timeFrom) : '';
+              const timeToStr = e.timeTo ? formatTimeDisplay(e.timeTo) : '';
+              const hrs = getEntryTotalHours(e);
+              const isOffset = keys.includes('offset');
+              const creditedHrs = isOffset ? calculateCreditedOffsetHours(hrs) : hrs;
+              const cleanReason = cleanReasonText(e.reason);
+              const proofTag = formatProofTags(getEntryProofs(e));
+              const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
+              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr} (${creditedHrs.toFixed(2)} hrs): ${cleanReason}${actualTag}${proofTag}`;
+            })
+            .join('\n');
+        }
+
+        const offlineReqId = `offline_esarf_${Date.now()}_${g}`;
+        const displayItem: MyRequest = {
+          request_id: offlineReqId,
+          request_type_code: primaryRequestType,
+          request_type_name: 'ESARF',
+          status: 'Pending Sync (Offline)',
+          submitted_at: new Date().toISOString(),
+          final_approved_at: null,
+          rejected_at: null,
+          rejected_reason: null,
+          date_from: overallDateFrom,
+          date_to: overallDateTo,
+          time_from: overallTimeFrom,
+          time_to: overallTimeTo,
+          total_hours: totalHoursSum,
+          time_schedule: schedule,
+          day_off: dayOff,
+          payroll_class: payrollClass,
+          transaction_type: combinedTransactionType,
+          leave_type: null,
+          leave_category: null,
+          start_date: null,
+          end_date: null,
+          total_days: null,
+          paid_days: null,
+          unpaid_days: null,
+          reason: combinedReason,
+          approval_summary: [
+            {
+              step_order: 1,
+              required_level: 1,
+              status: 'Pending Sync (Offline)',
+              acted_at: null,
+              remarks: 'Saved locally on device. Will auto-sync to database once internet is restored.',
+              skipped_reason: null,
+              approver_name: 'Local Device Queue',
+              approver_employee_no: 'SYS-LOCAL',
+            },
+          ],
+        };
+
+        await enqueueOfflineItem({
+          id: offlineReqId,
+          type: 'esarf',
+          createdAt: new Date().toISOString(),
+          payload: {
+            primaryRequestType,
+            overallDateFrom,
+            overallDateTo,
+            overallTimeFrom,
+            overallTimeTo,
+            totalHoursSum,
+            combinedReason,
+            schedule,
+            dayOff,
+            payrollClass,
+            combinedTransactionType,
+            attachedProofs: groupEntries.flatMap((e) => getEntryProofs(e)).map((p) => ({
+              photoProofId: p.photoProofId,
+              uri: p.uri,
+              localFileUri: (p as any).localFileUri || p.uri,
+              timestamp: p.timestamp,
+              locationText: p.locationText,
+              driveWebViewLink: p.driveWebViewLink,
+            })),
+          },
+          displayItem,
+          syncAttempts: 0,
+        });
+      }
+
+      setSubmitStatus('ESARF saved locally on this device.');
+      onToast?.({
+        tone: 'success',
+        title: 'Saved Offline 📱',
+        message: 'Your ESARF request and photos are saved safely on this device. They will automatically sync to the database once connected.',
+      });
+      await onSubmitted?.();
+    } catch (saveErr) {
+      console.warn('[ApplyEsarf] Failed to save offline:', saveErr);
+      onToast?.({ tone: 'error', title: 'Save Failed', message: 'Could not save offline request.' });
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   async function executeSubmit() {
     setIsSubmitting(true);
     setSubmitStatus(`Submitting ${entries.length} request(s)...`);
+
+    // If device is offline, immediately save offline without timeout delay
+    if (!isAppOnline()) {
+      await saveEsarfOffline();
+      return;
+    }
 
     const warningTimer = setTimeout(() => {
       setSubmitStatus((current) =>
@@ -1985,6 +2237,20 @@ export function ApplyEsarfScreen({
       await onSubmitted?.();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to submit ESARF.';
+      const isNetError =
+        !isAppOnline() ||
+        message.toLowerCase().includes('network') ||
+        message.toLowerCase().includes('timeout') ||
+        message.toLowerCase().includes('timed out') ||
+        message.toLowerCase().includes('fetch failed') ||
+        message.toLowerCase().includes('connection');
+
+      if (isNetError) {
+        console.log('[ApplyEsarf] Network error encountered during submit. Falling back to offline queue...');
+        await saveEsarfOffline();
+        return;
+      }
+
       setSubmitStatus(message);
       setSubmissionErrorModal(message);
       onToast?.({ tone: 'error', title: 'ESARF failed', message });
@@ -2026,8 +2292,13 @@ export function ApplyEsarfScreen({
     }
 
     const isEdit = Boolean(editingRequest);
-    const actionText = isEdit ? 'Update' : 'Submit';
-    const confirmTitle = isEdit ? 'Confirm ESARF Update' : 'Confirm ESARF Submission';
+    const isOffline = !isAppOnline();
+    const actionText = isOffline ? 'Save Offline' : isEdit ? 'Update' : 'Submit';
+    const confirmTitle = isOffline
+      ? 'Save ESARF Offline'
+      : isEdit
+      ? 'Confirm ESARF Update'
+      : 'Confirm ESARF Submission';
     const hasRegular = entries.some((e) => !parseEntryTransactions(e.transaction).includes('use_offset'));
     const hasUseOffset = entries.some((e) => parseEntryTransactions(e.transaction).includes('use_offset'));
     const isSplit = !isEdit && hasRegular && hasUseOffset;
@@ -2047,11 +2318,16 @@ export function ApplyEsarfScreen({
       offsetNote += `\n\n• ${totalEarnOffsetHours.toFixed(2)} hr(s) will be credited to your offset balance upon approval.`;
     }
 
-    const confirmMsg = isEdit
+    let offlineNote = '';
+    if (isOffline) {
+      offlineNote = '\n\n📱 Offline Mode Active: You have no internet connection. This ESARF request and attached photo proofs will be saved locally on your device and will sync automatically to the database once connected.';
+    }
+
+    const confirmMsg = (isEdit
       ? `Are you sure you want to update this ESARF request?${offsetNote}`
       : isSplit
         ? `Your request contains both regular ESARF entries and Use Offset. These will be automatically split and submitted as 2 separate requests for approval.${offsetNote}`
-        : `Are you sure you want to submit this ESARF request with ${entries.length} entry(ies)?${offsetNote}`;
+        : `Are you sure you want to submit this ESARF request with ${entries.length} entry(ies)?${offsetNote}`) + offlineNote;
 
     platformAlert(confirmTitle, confirmMsg, [
       { text: 'Cancel', style: 'cancel' },
@@ -2110,6 +2386,18 @@ export function ApplyEsarfScreen({
             ) : undefined
           }
         >
+          {Platform.OS === 'android' && !isOnline && (
+            <View style={styles.offlineScreenBanner}>
+              <WifiOff size={16} color="#b91c1c" strokeWidth={2.4} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.offlineScreenBannerTitle}>Offline Mode Active</Text>
+                <Text style={styles.offlineScreenBannerSub}>
+                  No internet connection detected. You can still apply for ESARF and capture photo proofs. Everything is saved safely on this device and will automatically sync once connected.
+                </Text>
+              </View>
+            </View>
+          )}
+
           <View
             style={[
               styles.scheduleCard,
@@ -2933,16 +3221,38 @@ export function ApplyEsarfScreen({
             </Pressable>
           </View>
 
+          {!isOnline && (
+            <View style={styles.offlineNoticeCard}>
+              <WifiOff size={15} color="#b91c1c" strokeWidth={2.4} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.offlineNoticeTitle}>Ready to Save Offline</Text>
+                <Text style={styles.offlineNoticeDesc}>
+                  Your request and photo proofs will be safely saved on this device. Once internet or mobile data is detected, they will automatically sync to the database.
+                </Text>
+              </View>
+            </View>
+          )}
+
           <View style={styles.actions}>
             <Pressable style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
               <Text style={styles.cancelText}>Cancel</Text>
             </Pressable>
             <Pressable
               disabled={isSubmitting}
-              style={[styles.submitButton, isSubmitting ? styles.submitButtonDisabled : null]}
+              style={[
+                styles.submitButton,
+                isSubmitting ? styles.submitButtonDisabled : null,
+                !isOnline ? styles.submitButtonOffline : null,
+              ]}
               onPress={submit}
             >
-              <Text style={styles.submitText}>{isSubmitting ? 'Submitting...' : 'Submit Request'}</Text>
+              <Text style={styles.submitText}>
+                {isSubmitting
+                  ? 'Saving...'
+                  : !isOnline
+                  ? 'Save Offline (Auto-Sync)'
+                  : 'Submit Request'}
+              </Text>
             </Pressable>
           </View>
           {submissionErrorModal ? (() => {
@@ -3142,9 +3452,17 @@ export function ApplyEsarfScreen({
                                       />
                                     )}
                                     <View style={styles.proofPickerItemInfo}>
-                                      <Text style={styles.proofPickerItemTime}>
-                                        {item.dateFormatted} • {item.timeDigits} {item.timePeriod}
-                                      </Text>
+                                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                        <Text style={styles.proofPickerItemTime}>
+                                          {item.dateFormatted} • {item.timeDigits} {item.timePeriod}
+                                        </Text>
+                                        {!item.syncedToCloud && !item.driveFileId ? (
+                                          <View style={styles.proofPickerOfflineBadge}>
+                                            <WifiOff size={9} color="#92400e" strokeWidth={2.4} />
+                                            <Text style={styles.proofPickerOfflineBadgeText}>OFFLINE</Text>
+                                          </View>
+                                        ) : null}
+                                      </View>
                                       {item.locationText ? (
                                         <Text style={styles.proofPickerItemLocation} numberOfLines={2}>
                                           {item.locationText}
@@ -6008,6 +6326,23 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.semibold,
     color: '#0f172a',
   },
+  proofPickerOfflineBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: '#fef3c7',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+  },
+  proofPickerOfflineBadgeText: {
+    fontSize: 9,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
+    textTransform: 'uppercase',
+  },
   proofPickerItemLocation: {
     fontSize: 11,
     color: '#64748b',
@@ -6154,5 +6489,52 @@ const styles = StyleSheet.create({
     color: '#64748b',
     textAlign: 'center',
     maxWidth: 290,
+  },
+  offlineScreenBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 14,
+    gap: 10,
+  },
+  offlineScreenBannerTitle: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#991b1b',
+  },
+  offlineScreenBannerSub: {
+    fontSize: 11.5,
+    color: '#7f1d1d',
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  offlineNoticeCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 12,
+    gap: 10,
+  },
+  offlineNoticeTitle: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
+  },
+  offlineNoticeDesc: {
+    fontSize: 11.5,
+    color: '#78350f',
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  submitButtonOffline: {
+    backgroundColor: '#0284c7',
   },
 });
