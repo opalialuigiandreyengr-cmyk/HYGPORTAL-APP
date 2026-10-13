@@ -387,8 +387,9 @@ export async function checkBirthdayLeaveAppliedForYear(
   // 3. Check Supabase database if connected
   try {
     const {
-      data: { user },
-    } = await supabase.auth.getUser();
+      data: { session },
+    } = await supabase.auth.getSession();
+    const user = session?.user;
 
     if (user) {
       const userIdentities = extractIdentityKeys([

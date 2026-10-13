@@ -586,7 +586,7 @@ export function ApplyEsarfScreen({
 
     if (!resolvedEmpId || !resolvedEmail || !resolvedAuthId || !resolvedName) {
       try {
-        const authUser = (await supabase.auth.getUser()).data?.user;
+        const authUser = (await supabase.auth.getSession()).data?.session?.user;
         if (authUser) {
           if (!resolvedAuthId) resolvedAuthId = authUser.id;
           if (!resolvedEmail) resolvedEmail = authUser.email;

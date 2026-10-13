@@ -23,6 +23,8 @@ export type AppNotification = {
 const CACHE_KEY = 'app_notifications_v1';
 const ENABLED_KEY = 'hygportal_notifications_enabled';
 const WEB_PUSH_ENDPOINT_KEY = 'hygportal_web_push_endpoint';
+let lastServerNotificationLoadAt = 0;
+let lastServerNotifications: AppNotification[] | null = null;
 
 export async function configureNotificationChannel() {
   // Browser notification channels are managed by the user agent.
@@ -93,6 +95,10 @@ async function loadServerNotifications() {
   const { data: sessionResult } = await supabase.auth.getSession();
   const userId = sessionResult.session?.user?.id;
   const serverCacheKey = userId ? `server_notifications_v1_${userId}` : 'server_notifications_v1';
+
+  if (lastServerNotifications && Date.now() - lastServerNotificationLoadAt < 60_000) {
+    return lastServerNotifications;
+  }
 
   if (!sessionResult.session?.user) {
     const cached = await getCacheJSON<AppNotification[]>(serverCacheKey);
@@ -178,6 +184,8 @@ async function loadServerNotifications() {
   }
 
   await setCacheJSON(serverCacheKey, serverNotifications);
+  lastServerNotifications = serverNotifications;
+  lastServerNotificationLoadAt = Date.now();
   return serverNotifications;
 }
 

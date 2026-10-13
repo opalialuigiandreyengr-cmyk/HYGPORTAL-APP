@@ -1184,10 +1184,12 @@ export default function App() {
       };
     }
 
-    // 2. Periodic background refresh every 12 seconds (matching admin desktop interval)
+    // Realtime handles immediate updates. Keep a slow fallback poll only for
+    // cases where the WebSocket is unavailable, so every active user does not
+    // repeatedly run the full dashboard query set.
     const pollInterval = setInterval(() => {
       void refreshDashboard(true);
-    }, 12000);
+    }, 60000);
 
     // 3. Supabase Realtime channel subscription on leave_balances & requests tables
     const employeeId = profileResult?.status === 'linked' ? profileResult.profile.employeeId : undefined;
@@ -1232,6 +1234,7 @@ export default function App() {
             event: '*',
             schema: 'public',
             table: 'request_approval_steps',
+            filter: `assigned_approver_employee_id=eq.${employeeId}`,
           },
           () => {
             void refreshDashboard(true);

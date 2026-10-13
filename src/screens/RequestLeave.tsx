@@ -179,8 +179,9 @@ const RequestLeave = ({
     async function loadFallbackBirthDate() {
       try {
         const {
-          data: { user },
-        } = await supabase.auth.getUser();
+          data: { session },
+        } = await supabase.auth.getSession();
+        const user = session?.user;
         if (!user) return;
         const { data: profile } = await supabase
           .from('user_profiles')
@@ -214,8 +215,9 @@ const RequestLeave = ({
     async function loadFallbackDateHired() {
       try {
         const {
-          data: { user },
-        } = await supabase.auth.getUser();
+          data: { session },
+        } = await supabase.auth.getSession();
+        const user = session?.user;
         if (!user) return;
         const { data: profile } = await supabase
           .from('user_profiles')

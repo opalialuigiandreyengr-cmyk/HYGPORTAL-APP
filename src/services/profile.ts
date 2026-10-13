@@ -199,8 +199,9 @@ async function getName(table: string, id?: string | null) {
 
 export async function loadEmployeeProfile(authUserId: string): Promise<ProfileLoadResult> {
   const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    data: { session },
+  } = await supabase.auth.getSession();
+  const user = session?.user ?? null;
 
   await supabase.rpc('ensure_own_employee_profile_link');
 

@@ -541,8 +541,8 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
   let resolvedEmployeeId = item.employeeId || null;
   if (!resolvedEmployeeId) {
     try {
-      const { data: userRes } = await supabase.auth.getUser();
-      const authUserId = userRes?.user?.id;
+      const { data: sessionRes } = await supabase.auth.getSession();
+      const authUserId = sessionRes?.session?.user?.id;
       if (authUserId) {
         const { data: prof } = await supabase
           .from('user_profiles')
@@ -750,7 +750,7 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
     if (insertErr) {
       console.warn('[PhotoProofSync] Primary insert error:', insertErr);
       if (insertErr.message?.includes('foreign key') || insertErr.code === '23503') {
-        const fallbackUserId = (await supabase.auth.getUser()).data?.user?.id ?? null;
+        const fallbackUserId = (await supabase.auth.getSession()).data?.session?.user?.id ?? null;
         console.log('[PhotoProofSync] Foreign key failed. Retrying with auth user ID fallback:', fallbackUserId);
         const retry = await supabase
           .from('photo_proofs')
@@ -833,8 +833,8 @@ export async function uploadGalleryPhotoProof({
 
   if (!resolvedEmpId || !resolvedName || !resolvedEmail) {
     try {
-      const { data: userRes } = await supabase.auth.getUser();
-      const authUser = userRes?.user;
+      const { data: sessionRes } = await supabase.auth.getSession();
+      const authUser = sessionRes?.session?.user;
       if (authUser) {
         if (!resolvedEmail) resolvedEmail = authUser.email || null;
         if (!resolvedEmpId) resolvedEmpId = authUser.id;

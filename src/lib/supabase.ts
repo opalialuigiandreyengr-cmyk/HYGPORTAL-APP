@@ -1,5 +1,5 @@
 import 'react-native-url-polyfill/auto';
-import { AppState, Platform } from 'react-native';
+import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 
@@ -28,19 +28,6 @@ const fetchWithTimeout: typeof fetch = async (input, init) => {
     return response;
   } catch (err: any) {
     if (controller.signal.aborted && (!init?.signal || !init.signal.aborted)) {
-      if (typeof Response !== 'undefined') {
-        return new Response(
-          JSON.stringify({
-            message: 'Network request timed out. Please check your connection.',
-            code: 'FETCH_TIMEOUT',
-          }),
-          {
-            status: 408,
-            statusText: 'Request Timeout',
-            headers: { 'Content-Type': 'application/json' },
-          },
-        );
-      }
       throw new Error('Network request timed out. Please check your connection.');
     }
     throw err;
@@ -55,9 +42,6 @@ export const supabase = createClient(env.supabaseUrl || fallbackSupabaseUrl, env
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
-    // Workaround for Safari / iOS WebKit Web Locks deadlock bug where backgrounded/suspended
-    // tabs leave zombie locks and cause getSession() and all API calls to hang indefinitely.
-    lock: async (_name, _acquireTimeout, fn) => fn(),
   },
   global: {
     fetch: fetchWithTimeout,
