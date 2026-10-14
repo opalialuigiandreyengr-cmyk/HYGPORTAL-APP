@@ -21,6 +21,7 @@ export type PendingApproval = {
   requester_name: string;
   requester_employee_no: string | null;
   requester_photo_url?: string | null;
+  department_name?: string | null;
   date_from: string | null;
   date_to: string | null;
   time_from: string | null;
@@ -96,9 +97,74 @@ export async function loadPendingApprovals() {
     }
   }
 
+  // Resolve departments for all pending items
+  const deptMap: Record<string, string> = {};
+
+  items.forEach((it: any) => {
+    const d = it.department_name || it.department;
+    if (d && it.request_id) deptMap[it.request_id] = d;
+    if (d && it.requester_employee_no) deptMap[`emp_${it.requester_employee_no}`] = d;
+  });
+
+  const hasMissingDept = items.some((it: any) => !it.department_name && !deptMap[it.request_id]);
+  if (hasMissingDept) {
+    try {
+      const { data: allReqs } = await supabase.rpc('admin_get_all_requests');
+      if (Array.isArray(allReqs) && allReqs.length > 0) {
+        for (const r of allReqs) {
+          const dept = r.department_name || r.store_name;
+          if (dept) {
+            if (r.request_id) deptMap[r.request_id] = dept;
+            if (r.employee_no) deptMap[`emp_${r.employee_no}`] = dept;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    const stillMissingEmpNos = items
+      .filter((it: any) => !it.department_name && !deptMap[it.request_id])
+      .map((it) => it.requester_employee_no)
+      .filter((no): no is string => Boolean(no && !deptMap[`emp_${no}`]));
+
+    if (stillMissingEmpNos.length > 0) {
+      try {
+        const { data: empAssignments } = await supabase
+          .from('employee_assignments')
+          .select('employee_id, department_id, departments(name), stores(name), employees!inner(employee_no)')
+          .in('employees.employee_no', stillMissingEmpNos)
+          .eq('is_primary', true);
+
+        if (Array.isArray(empAssignments)) {
+          for (const ea of empAssignments as any[]) {
+            const empNo = ea.employees?.employee_no;
+            const dept = ea.departments?.name || ea.stores?.name;
+            if (empNo && dept) {
+              deptMap[`emp_${empNo}`] = dept;
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   const enhancedItems = await Promise.all(
     items.map(async (item) => {
-      if (item.request_type_code === 'leave') return item;
+      const departmentName =
+        (item as any).department_name ||
+        deptMap[item.request_id] ||
+        (item.requester_employee_no ? deptMap[`emp_${item.requester_employee_no}`] : null) ||
+        null;
+
+      if (item.request_type_code === 'leave') {
+        return {
+          ...item,
+          department_name: departmentName,
+        };
+      }
 
       let timeSchedule = item.time_schedule;
       let dayOff = item.day_off;
@@ -181,6 +247,7 @@ export async function loadPendingApprovals() {
 
       return {
         ...item,
+        department_name: departmentName,
         approval_summary: approvalSummary || item.approval_summary || [],
         time_schedule: timeSchedule ?? item.time_schedule ?? null,
         day_off: dayOff ?? item.day_off ?? null,
@@ -279,6 +346,7 @@ export async function loadApprovedApprovals(
             requester_name: raw.employee_name || 'Employee',
             requester_employee_no: raw.employee_no || null,
             requester_photo_url: raw.employee_photo || null,
+            department_name: raw.department_name || raw.store_name || null,
             date_from: raw.date_from || null,
             date_to: raw.date_to || null,
             time_from: raw.time_from || null,
@@ -394,6 +462,7 @@ export async function loadApprovedApprovals(
               requester_name: userProfile?.full_name || 'Employee',
               requester_employee_no: userProfile?.employee_no || null,
               requester_photo_url: userProfile?.photo_url || null,
+              department_name: (req as any).department_name || null,
               date_from: timeDetails?.date_from || null,
               date_to: timeDetails?.date_to || null,
               time_from: timeDetails?.time_from || null,

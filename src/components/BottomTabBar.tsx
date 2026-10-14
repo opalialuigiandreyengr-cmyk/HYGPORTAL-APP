@@ -71,7 +71,7 @@ export function BottomTabBar({
   const isTablet = windowWidth >= 600;
 
   const horizontalMargin = isTablet ? 0 : isSmallScreen ? 10 : 14;
-  const maxBarWidth = 480;
+  const maxBarWidth = 460;
   const barWidth = isTablet
     ? maxBarWidth
     : Math.min(windowWidth - horizontalMargin * 2, maxBarWidth);
@@ -102,8 +102,8 @@ export function BottomTabBar({
 
     const iconColor = active ? '#FACC15' : '#f1f5f9';
     const textColor = active ? '#FACC15' : '#cbd5e1';
-    const iconSize = isSmallScreen ? 18 : 20;
-    const labelFontSize = isSmallScreen ? 9.5 : 10.5;
+    const iconSize = isSmallScreen ? 17 : 18;
+    const labelFontSize = isSmallScreen ? 9 : 10;
 
     return (
       <Pressable
@@ -148,8 +148,8 @@ export function BottomTabBar({
     );
   };
 
-  const centerButtonSize = isSmallScreen ? 42 : 46;
-  const botIconSize = isSmallScreen ? 22 : 24;
+  const centerButtonSize = isSmallScreen ? 38 : 42;
+  const botIconSize = isSmallScreen ? 20 : 22;
 
   return (
     <View style={styles.wrap} pointerEvents="box-none">
@@ -170,7 +170,7 @@ export function BottomTabBar({
         <View
           style={[
             styles.centerSlot,
-            { width: isSmallScreen ? 48 : 54 },
+            { width: isSmallScreen ? 44 : 48 },
           ]}
         >
           <Pressable
@@ -190,7 +190,7 @@ export function BottomTabBar({
           >
             <Bot
               size={botIconSize}
-              color="#071426"
+              color={colors.brand.ink}
               strokeWidth={2.6}
             />
           </Pressable>
@@ -226,10 +226,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     height: FLOATING_TAB_BAR_HEIGHT,
-    backgroundColor: '#09121f',
-    borderRadius: 34,
+    backgroundColor: colors.brand.ink,
+    borderRadius: 28,
     paddingHorizontal: 6,
-    paddingVertical: 5,
+    paddingVertical: 4,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.08)',
     shadowColor: '#000000',
@@ -268,17 +268,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     width: '100%',
-    maxWidth: 78,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 22,
+    maxWidth: 72,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 18,
     borderWidth: 0.75,
     borderColor: 'transparent',
   },
   tabContentCapsuleSmall: {
     paddingHorizontal: 4,
-    paddingVertical: 3,
-    maxWidth: 68,
+    paddingVertical: 2,
+    maxWidth: 64,
   },
   tabContentCapsuleActive: {
     borderColor: 'rgba(250, 204, 21, 0.38)',
@@ -289,31 +289,31 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   iconSlot: {
-    width: 26,
-    height: 22,
+    width: 24,
+    height: 20,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
   },
   badge: {
     position: 'absolute',
-    top: -4,
-    right: -8,
-    minWidth: 16,
-    height: 16,
-    borderRadius: 8,
+    top: -3,
+    right: -7,
+    minWidth: 15,
+    height: 15,
+    borderRadius: 7.5,
     paddingHorizontal: 3,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#ef4444',
     borderWidth: 1.5,
-    borderColor: '#09121f',
+    borderColor: colors.brand.ink,
     zIndex: 5,
   },
   badgeText: {
     color: '#ffffff',
-    fontSize: 8.5,
-    lineHeight: 11,
+    fontSize: 8,
+    lineHeight: 10,
     fontWeight: fontWeights.heavy,
   },
   centerSlot: {
@@ -326,11 +326,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#FACC15',
-    shadowColor: '#FACC15',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
-    elevation: 6,
     ...(Platform.OS === 'web'
       ? ({
           cursor: 'pointer',
@@ -349,8 +344,8 @@ const styles = StyleSheet.create({
     opacity: 0.92,
   },
   label: {
-    marginTop: 2,
-    lineHeight: 13,
+    marginTop: 1,
+    lineHeight: 12,
     fontWeight: fontWeights.semibold,
     textAlign: 'center',
   },

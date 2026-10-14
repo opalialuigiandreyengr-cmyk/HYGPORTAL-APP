@@ -43,6 +43,7 @@ import { ensureMyHygPointGifts } from '../services/notificationCenter';
 import { isAppOnline, useNetworkStatus } from '../services/network';
 import { enqueueOfflineItem } from '../services/offlineQueue';
 import { setCacheJSON } from '../lib/localCache';
+import { saveAvatarToCache } from '../services/avatarCache';
 
 type Props = {
   email: string;
@@ -340,6 +341,10 @@ export function ProfileTabScreen({ email, username, userId, isLoading, result, o
         mimeType: asset.mimeType,
         uri: asset.uri,
       });
+
+      if (asset.uri) {
+        await saveAvatarToCache(photoUrl, asset.uri);
+      }
 
       setLocalProfile((current) => current ? { ...current, photoUrl } : current);
       onToast?.({

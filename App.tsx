@@ -84,6 +84,7 @@ import {
   unreadCount,
 } from './src/services/notificationCenter';
 import { loadEmployeeProfile } from './src/services/profile';
+import { getCachedAvatarUri, primeAvatarCache } from './src/services/avatarCache';
 import { resolveLoginEmail } from './src/services/registerAccount';
 import { type MyRequest } from './src/services/requests';
 import {
@@ -760,12 +761,18 @@ export default function App() {
       const cached = await getCacheJSON<ProfileLoadResult>(cacheKey);
       if (cached) {
         setProfileResult(cached);
+        if (cached.status === 'linked' && cached.profile?.photoUrl) {
+          void primeAvatarCache(cached.profile.photoUrl);
+        }
       }
       try {
         const result = await loadEmployeeProfile(user.id);
         if (result && result.status !== 'error') {
           setProfileResult(result);
           await setCacheJSON(cacheKey, result);
+          if (result.status === 'linked' && result.profile?.photoUrl) {
+            void getCachedAvatarUri(result.profile.photoUrl);
+          }
         }
       } catch (err) {
         console.log('[Profile] Offline / network error loading profile, preserving cache:', err);
@@ -1366,6 +1373,7 @@ export default function App() {
           onEditRequest={openEditRequest}
           refreshTrigger={requestsRefreshKey}
           pointsBalance={dashboardSummary.hyg_points_balance}
+          onSignOut={signOut}
         />
       );
     } else if (activeTab === 'approvals' && canUseApprovals) {
@@ -1385,6 +1393,7 @@ export default function App() {
           autoOpenFirst={autoOpenApprovalModal}
           onClearTargetRequest={clearTargetRequest}
           pointsBalance={dashboardSummary.hyg_points_balance}
+          onSignOut={signOut}
         />
       );
     } else if (activeTab === 'notifications') {

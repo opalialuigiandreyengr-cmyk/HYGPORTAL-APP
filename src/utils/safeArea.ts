@@ -10,7 +10,7 @@ export const ANDROID_3BUTTON_NAV_HEIGHT = 48;
 /**
  * Height of the floating bottom tab bar container itself.
  */
-export const FLOATING_TAB_BAR_HEIGHT = 64;
+export const FLOATING_TAB_BAR_HEIGHT = 56;
 
 /**
  * Calculates a safe bottom inset.

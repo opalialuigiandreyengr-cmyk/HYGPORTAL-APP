@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   AlertCircle,
+  Building2,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -74,6 +75,7 @@ type Props = {
   autoOpenFirst?: boolean;
   onClearTargetRequest?: () => void;
   pointsBalance?: number;
+  onSignOut?: () => void | Promise<void>;
 };
 
 export function ApprovalsScreen({
@@ -91,6 +93,7 @@ export function ApprovalsScreen({
   autoOpenFirst,
   onClearTargetRequest,
   pointsBalance = 0,
+  onSignOut,
 }: Props) {
   const [mainTab, setMainTab] = useState<'pending' | 'approved'>('pending');
   const [items, setItems] = useState<PendingApproval[]>([]);
@@ -98,6 +101,7 @@ export function ApprovalsScreen({
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
   const [activeCategory, setActiveCategory] = useState<CategoryFilter>('all');
+  const [selectedDepartment, setSelectedDepartment] = useState<string>('all');
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
   const [selectedApproval, setSelectedApproval] = useState<{ item: PendingApproval; sequence: number } | null>(null);
@@ -190,10 +194,73 @@ export function ApprovalsScreen({
     }
   }, [items, approvedItems, targetRequestId, autoOpenFirst, mainTab, onClearTargetRequest]);
 
+  const isMultiDeptRole = useMemo(() => {
+    const pos = (profile?.positionName || '').toLowerCase();
+    const dept = (profile?.departmentName || '').toLowerCase();
+    const level = profile?.authorityLevel ?? 0;
+    return (
+      level >= 4 ||
+      pos.includes('director') ||
+      pos.includes('general manager') ||
+      pos.includes('gm') ||
+      pos.includes('executive') ||
+      pos.includes('operations') ||
+      pos.includes('admin') ||
+      pos.includes('president') ||
+      pos.includes('vp') ||
+      dept.includes('executive') ||
+      dept.includes('management') ||
+      dept.includes('operations')
+    );
+  }, [profile]);
+
+  const availableDepartments = useMemo(() => {
+    const list = mainTab === 'pending' ? items : approvedItems;
+    const depts = new Set<string>();
+    let hasUnassigned = false;
+    list.forEach((item) => {
+      if (isVisibleApproval(item)) {
+        const d = item.department_name?.trim();
+        if (d) {
+          depts.add(d);
+        } else {
+          hasUnassigned = true;
+        }
+      }
+    });
+    const sorted = Array.from(depts).sort((a, b) => a.localeCompare(b));
+    if (hasUnassigned && sorted.length > 0) {
+      sorted.push('Other');
+    }
+    return sorted;
+  }, [items, approvedItems, mainTab]);
+
+  const departmentCounts = useMemo(() => {
+    const list = mainTab === 'pending' ? items : approvedItems;
+    const counts: Record<string, number> = {};
+    let total = 0;
+
+    list.forEach((item) => {
+      if (!isVisibleApproval(item)) return;
+      if (activeCategory !== 'all' && approvalCategory(item) !== activeCategory) return;
+      total += 1;
+      const d = item.department_name?.trim() || 'Other';
+      counts[d] = (counts[d] || 0) + 1;
+    });
+
+    return { counts, total };
+  }, [items, approvedItems, mainTab, activeCategory]);
+
+  const showDeptFilter = isMultiDeptRole || availableDepartments.length > 1;
+
   const categoryCounts = useMemo(() => {
     return items.reduce(
       (totals, item) => {
         if (isVisibleApproval(item)) {
+          if (selectedDepartment !== 'all') {
+            const itemDept = (item.department_name?.trim() || 'Other').toLowerCase();
+            if (itemDept !== selectedDepartment.toLowerCase()) return totals;
+          }
           totals.all += 1;
           totals[approvalCategory(item)] += 1;
         }
@@ -201,12 +268,16 @@ export function ApprovalsScreen({
       },
       { all: 0, esarf: 0, leave: 0 },
     );
-  }, [items]);
+  }, [items, selectedDepartment]);
 
   const approvedCategoryCounts = useMemo(() => {
     return approvedItems.reduce(
       (totals, item) => {
         if (isVisibleApproval(item)) {
+          if (selectedDepartment !== 'all') {
+            const itemDept = (item.department_name?.trim() || 'Other').toLowerCase();
+            if (itemDept !== selectedDepartment.toLowerCase()) return totals;
+          }
           totals.all += 1;
           totals[approvalCategory(item)] += 1;
         }
@@ -214,17 +285,22 @@ export function ApprovalsScreen({
       },
       { all: 0, esarf: 0, leave: 0 },
     );
-  }, [approvedItems]);
+  }, [approvedItems, selectedDepartment]);
 
   const activeCategoryCounts = mainTab === 'pending' ? categoryCounts : approvedCategoryCounts;
 
   const filteredItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
+    const normalizedDept = selectedDepartment.trim().toLowerCase();
 
     return items
       .filter((item) => {
         if (!isVisibleApproval(item)) return false;
         if (activeCategory !== 'all' && approvalCategory(item) !== activeCategory) return false;
+        if (selectedDepartment !== 'all') {
+          const itemDept = (item.department_name?.trim() || 'Other').toLowerCase();
+          if (itemDept !== normalizedDept) return false;
+        }
         if (!normalizedQuery) return true;
 
         const haystack = [
@@ -234,6 +310,7 @@ export function ApprovalsScreen({
           item.request_type_code,
           item.requester_name,
           item.requester_employee_no,
+          item.department_name,
           item.reason,
         ]
           .filter(Boolean)
@@ -246,15 +323,20 @@ export function ApprovalsScreen({
         const timeB = b.submitted_at ? new Date(b.submitted_at).getTime() : 0;
         return timeB - timeA;
       });
-  }, [activeCategory, items, query]);
+  }, [activeCategory, items, query, selectedDepartment]);
 
   const filteredApprovedItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
+    const normalizedDept = selectedDepartment.trim().toLowerCase();
 
     return approvedItems
       .filter((item) => {
         if (!isVisibleApproval(item)) return false;
         if (activeCategory !== 'all' && approvalCategory(item) !== activeCategory) return false;
+        if (selectedDepartment !== 'all') {
+          const itemDept = (item.department_name?.trim() || 'Other').toLowerCase();
+          if (itemDept !== normalizedDept) return false;
+        }
         if (!normalizedQuery) return true;
 
         const haystack = [
@@ -264,6 +346,7 @@ export function ApprovalsScreen({
           item.request_type_code,
           item.requester_name,
           item.requester_employee_no,
+          item.department_name,
           item.reason,
         ]
           .filter(Boolean)
@@ -276,7 +359,7 @@ export function ApprovalsScreen({
         const timeB = b.approved_at || b.submitted_at ? new Date(b.approved_at || b.submitted_at).getTime() : 0;
         return timeB - timeA;
       });
-  }, [activeCategory, approvedItems, query]);
+  }, [activeCategory, approvedItems, query, selectedDepartment]);
 
   const currentFilteredItems = mainTab === 'pending' ? filteredItems : filteredApprovedItems;
   const pageCount = Math.max(1, Math.ceil(currentFilteredItems.length / pageSize));
@@ -289,7 +372,11 @@ export function ApprovalsScreen({
 
   useEffect(() => {
     setPage(1);
-  }, [activeCategory, query, mainTab]);
+  }, [activeCategory, query, mainTab, selectedDepartment]);
+
+  useEffect(() => {
+    setSelectedDepartment('all');
+  }, [mainTab]);
 
   async function approve(
     item: PendingApproval,
@@ -428,7 +515,21 @@ export function ApprovalsScreen({
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onHelpTutorials={onHelpTutorials} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} />
+      <TopBar
+        name={profile?.fullName}
+        username={profile?.username}
+        photoUrl={profile?.photoUrl}
+        pointsBalance={pointsBalance}
+        notificationCount={notificationCount}
+        onMessages={onAssistant}
+        onNotifications={onNotifications}
+        onHelpTutorials={onHelpTutorials}
+        onOpenProfile={onOpenProfile}
+        onOpenSettings={onOpenSettings}
+        onOpenMyTeam={onOpenMyTeam}
+        onOpenRewards={onOpenRewards}
+        onSignOut={onSignOut}
+      />
 
       <ScrollView
         contentContainerStyle={[styles.scroll, { paddingBottom: getScreenBottomPadding(insets.bottom, true, 28) }]}
@@ -488,16 +589,108 @@ export function ApprovalsScreen({
                 style={styles.searchInput}
                 returnKeyType="search"
               />
+              {query.length > 0 ? (
+                <Pressable onPress={() => setQuery('')} hitSlop={8} style={styles.searchClearBtn}>
+                  <X size={15} color={colors.muted} strokeWidth={2.4} />
+                </Pressable>
+              ) : null}
             </View>
-            <Pressable disabled={isLoading} style={styles.filterButton} onPress={refresh}>
-              {isLoading ? (
-                <RefreshCcw size={15} color={colors.text} strokeWidth={2.6} />
-              ) : (
-                <Funnel size={15} color={colors.text} fill={colors.text} strokeWidth={2.2} />
-              )}
-              <Text style={styles.filterButtonText}>{isLoading ? 'Sync' : 'Filter'}</Text>
-            </Pressable>
           </View>
+
+          {showDeptFilter ? (
+            <View style={styles.deptFilterSection}>
+              <View style={styles.deptFilterHeader}>
+                <View style={styles.deptFilterTitleGroup}>
+                  <Building2 size={13} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.deptFilterLabel}>Department</Text>
+                </View>
+                {selectedDepartment !== 'all' ? (
+                  <Pressable
+                    style={styles.deptResetButton}
+                    onPress={() => setSelectedDepartment('all')}
+                    hitSlop={6}
+                  >
+                    <Text style={styles.deptResetText}>Clear filter</Text>
+                  </Pressable>
+                ) : (
+                  <Text style={styles.deptFilterMeta}>
+                    {availableDepartments.length} {availableDepartments.length === 1 ? 'dept' : 'depts'}
+                  </Text>
+                )}
+              </View>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.deptChipsScroll}
+              >
+                <Pressable
+                  style={[
+                    styles.deptChip,
+                    selectedDepartment === 'all' ? styles.deptChipActive : null,
+                  ]}
+                  onPress={() => setSelectedDepartment('all')}
+                >
+                  <Text
+                    style={[
+                      styles.deptChipText,
+                      selectedDepartment === 'all' ? styles.deptChipTextActive : null,
+                    ]}
+                  >
+                    All
+                  </Text>
+                  <View
+                    style={[
+                      styles.deptCountBadge,
+                      selectedDepartment === 'all' ? styles.deptCountBadgeActive : null,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.deptCountText,
+                        selectedDepartment === 'all' ? styles.deptCountTextActive : null,
+                      ]}
+                    >
+                      {departmentCounts.total}
+                    </Text>
+                  </View>
+                </Pressable>
+
+                {availableDepartments.map((deptName) => {
+                  const isSelected = selectedDepartment.toLowerCase() === deptName.toLowerCase();
+                  const count = departmentCounts.counts[deptName] || 0;
+                  return (
+                    <Pressable
+                      key={deptName}
+                      style={[styles.deptChip, isSelected ? styles.deptChipActive : null]}
+                      onPress={() => setSelectedDepartment(isSelected ? 'all' : deptName)}
+                    >
+                      <Text
+                        style={[styles.deptChipText, isSelected ? styles.deptChipTextActive : null]}
+                        numberOfLines={1}
+                      >
+                        {deptName}
+                      </Text>
+                      <View
+                        style={[
+                          styles.deptCountBadge,
+                          isSelected ? styles.deptCountBadgeActive : null,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.deptCountText,
+                            isSelected ? styles.deptCountTextActive : null,
+                          ]}
+                        >
+                          {count}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          ) : null}
 
           <View style={styles.categoryRow}>
             {categoryTabs.map((tab) => {
@@ -525,6 +718,32 @@ export function ApprovalsScreen({
         </View>
 
         {status ? <Text style={styles.status}>{status}</Text> : null}
+
+        {currentFilteredItems.length === 0 && !isLoading && !status ? (
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyTitle}>No requests found</Text>
+            <Text style={styles.emptySubtitle}>
+              {selectedDepartment !== 'all'
+                ? `No ${mainTab === 'pending' ? 'pending approvals' : 'approved requests'} in "${selectedDepartment}".`
+                : query
+                ? `No requests match "${query}".`
+                : mainTab === 'pending'
+                ? 'No pending approvals.'
+                : 'No approved requests found.'}
+            </Text>
+            {selectedDepartment !== 'all' || query ? (
+              <Pressable
+                style={styles.emptyResetBtn}
+                onPress={() => {
+                  setSelectedDepartment('all');
+                  setQuery('');
+                }}
+              >
+                <Text style={styles.emptyResetBtnText}>Reset Filters</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
 
         {mainTab === 'pending'
           ? (paginatedItems as PendingApproval[]).map((item, index) => {
@@ -609,7 +828,7 @@ function ApprovalCard({
   onView: () => void;
 }) {
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
-  const department = profile?.departmentName || profile?.storeName || 'Department';
+  const department = item.department_name || profile?.departmentName || profile?.storeName || 'Department';
   const isEsarf = item.request_type_code !== 'leave' && item.request_type_code !== 'discount' && item.request_type_code !== 'charge';
   const requestDate = isEsarf ? (item.submitted_at || item.date_from) : item.request_type_code === 'leave' ? item.start_date : item.date_from;
 
@@ -678,7 +897,7 @@ function ApprovedCard({
   onView: () => void;
 }) {
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
-  const department = profile?.departmentName || profile?.storeName || 'Department';
+  const department = item.department_name || profile?.departmentName || profile?.storeName || 'Department';
   const isEsarf = item.request_type_code !== 'leave' && item.request_type_code !== 'discount' && item.request_type_code !== 'charge';
   const requestDate = isEsarf ? (item.submitted_at || item.date_from) : item.request_type_code === 'leave' ? item.start_date : item.date_from;
 
@@ -827,7 +1046,7 @@ function ApprovalDetailsSheet({
   }
 
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
-  const department = profile?.departmentName || profile?.storeName || 'Department';
+  const department = item.department_name || profile?.departmentName || profile?.storeName || 'Department';
   const timelineRows: TimelineStep[] = [
     {
       title: 'Submitted',
@@ -1161,7 +1380,7 @@ function ApprovedDetailsSheet({
   if (!approval || !item) return null;
 
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
-  const department = profile?.departmentName || profile?.storeName || 'Department';
+  const department = item.department_name || profile?.departmentName || profile?.storeName || 'Department';
   const timelineRows: TimelineStep[] = [
     {
       title: 'Submitted',
@@ -1637,6 +1856,137 @@ const styles = StyleSheet.create({
     fontSize: Platform.OS === 'web' ? 16 : 15,
     color: colors.text,
     paddingVertical: 0,
+  },
+  searchClearBtn: {
+    padding: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deptFilterSection: {
+    marginBottom: spacing.sm,
+  },
+  deptFilterHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 2,
+    marginBottom: 6,
+  },
+  deptFilterTitleGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  deptFilterLabel: {
+    fontSize: 12,
+    fontWeight: fontWeights.bold,
+    color: colors.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  deptFilterMeta: {
+    fontSize: 11,
+    fontWeight: fontWeights.medium,
+    color: colors.muted,
+  },
+  deptResetButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: '#eff6ff',
+  },
+  deptResetText: {
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+    color: colors.primary,
+  },
+  deptChipsScroll: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingVertical: 2,
+    paddingHorizontal: 1,
+  },
+  deptChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 30,
+    paddingHorizontal: 10,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  deptChipActive: {
+    borderColor: colors.primary,
+    backgroundColor: '#eff6ff',
+  },
+  deptChipText: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: fontWeights.semibold,
+    color: colors.text,
+  },
+  deptChipTextActive: {
+    color: colors.primary,
+    fontWeight: fontWeights.bold,
+  },
+  deptCountBadge: {
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: colors.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  deptCountBadgeActive: {
+    backgroundColor: colors.primary,
+  },
+  deptCountText: {
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: fontWeights.heavy,
+    color: colors.muted,
+  },
+  deptCountTextActive: {
+    color: colors.surface,
+  },
+  emptyContainer: {
+    paddingVertical: 32,
+    paddingHorizontal: spacing.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginVertical: spacing.sm,
+  },
+  emptyTitle: {
+    fontSize: 15,
+    fontWeight: fontWeights.bold,
+    color: colors.text,
+    marginBottom: 4,
+  },
+  emptySubtitle: {
+    fontSize: 13,
+    color: colors.muted,
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  emptyResetBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: radius.sm,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  emptyResetBtnText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: colors.primary,
   },
   filterButton: {
     minHeight: 38,

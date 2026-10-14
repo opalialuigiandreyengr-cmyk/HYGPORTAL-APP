@@ -90,7 +90,7 @@ export function registerPwaInstallSupport() {
       input,
       textarea,
       select {
-        touch-action: manipulation;
+        touch-action: auto !important;
       }
     `;
     document.head.appendChild(style);

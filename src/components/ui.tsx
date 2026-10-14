@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { type ReactNode, useRef } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -34,8 +34,8 @@ export function AppScreen({
           paddingBottom: Math.max(insets.bottom, spacing.md) + spacing.md,
         },
       ]}
-      keyboardShouldPersistTaps="handled"
-      keyboardDismissMode="on-drag"
+      keyboardShouldPersistTaps={Platform.OS === 'web' ? 'always' : 'handled'}
+      keyboardDismissMode={Platform.OS === 'web' ? 'none' : 'on-drag'}
       showsVerticalScrollIndicator={false}
     >
       {children}
@@ -49,6 +49,7 @@ export function AppScreen({
           behavior={Platform.OS === 'ios' ? 'padding' : Platform.OS === 'web' ? undefined : 'height'}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 12 : 0}
           style={styles.keyboardView}
+          enabled={Platform.OS !== 'web'}
         >
           {content}
         </KeyboardAvoidingView>
@@ -104,14 +105,26 @@ export function IconTextField({
   inputProps: TextInputProps;
   error?: string;
 }) {
+  const inputRef = useRef<TextInput>(null);
+
   return (
     <>
       <Text style={styles.inputLabel}>{label}</Text>
-      <View style={[styles.iconInputShell, error ? styles.inputInvalid : null, error ? styles.inputWithError : null]}>
-        {icon}
-        <TextInput placeholderTextColor="#94a3b8" {...inputProps} style={[styles.iconInput, inputProps.style]} />
+      <Pressable
+        style={[styles.iconInputShell, error ? styles.inputInvalid : null, error ? styles.inputWithError : null]}
+        onPress={() => inputRef.current?.focus()}
+      >
+        <View pointerEvents="none" style={styles.iconSlot}>
+          {icon}
+        </View>
+        <TextInput
+          ref={inputRef}
+          placeholderTextColor="#94a3b8"
+          {...inputProps}
+          style={[styles.iconInput, inputProps.style]}
+        />
         {rightIcon}
-      </View>
+      </Pressable>
       {error ? <Text style={styles.fieldError}>{error}</Text> : null}
     </>
   );
@@ -197,13 +210,20 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.bold,
     marginBottom: spacing.sm,
   },
+  iconSlot: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   iconInput: {
     flex: 1,
+    height: '100%',
+    minHeight: 44,
     color: colors.text,
     fontSize: Platform.OS === 'web' ? 16 : 15,
     paddingVertical: 0,
     paddingLeft: spacing.sm,
     paddingRight: spacing.xs,
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : null),
   },
   divider: {
     height: 1,

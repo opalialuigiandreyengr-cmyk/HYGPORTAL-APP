@@ -9,6 +9,7 @@ import { colors, fontWeights } from '../theme';
 import { Avatar } from './Avatar';
 import { useNetworkStatus, isOfflineSupported } from '../services/network';
 import { getPendingOfflineCount, syncAllOfflineItems } from '../services/offlineQueue';
+import { supabase } from '../lib/supabase';
 
 const hygHorizontalLogo = require('../../assets/hyghorizontal.png');
 const hygCoinsImage = require('../../assets/hygcoins.png');
@@ -72,6 +73,13 @@ export function TopBar({
   const notificationLabel = visibleNotificationCount > 99 ? '99+' : String(visibleNotificationCount);
   const containerSafeTop = Platform.OS === 'web' ? insets.top : Math.max(insets.top, 10);
   const openProfile = onOpenProfile ?? onAvatar;
+  const handleSignOut = onSignOut ?? (async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // ignore
+    }
+  });
 
   // Network connectivity and offline queue
   const network = useNetworkStatus();
@@ -552,18 +560,16 @@ export function TopBar({
                 <ChevronRight size={17} color={colors.semantic.success} strokeWidth={3} />
               </View>
             </Pressable>
-            {onSignOut ? (
-              <View style={styles.sidebarFooter}>
-                <SidebarRow
-                  icon={<LogOut size={20} color="#dc2626" strokeWidth={2.6} />}
-                  label="Sign Out"
-                  value="Exit your account"
-                  onPress={() => openSidebarAction(onSignOut)}
-                  compact
-                  danger
-                />
-              </View>
-            ) : null}
+            <View style={styles.sidebarFooter}>
+              <SidebarRow
+                icon={<LogOut size={20} color="#dc2626" strokeWidth={2.6} />}
+                label="Sign Out"
+                value="Exit your account"
+                onPress={() => openSidebarAction(handleSignOut)}
+                compact
+                danger
+              />
+            </View>
             <View style={[styles.sidebarBrandFooter, { paddingBottom: getSafeBottomInset(insets.bottom, 14) }]}>
               <View style={styles.sidebarBrandIcon}>
                 <ShieldCheck size={25} color={colors.primary} strokeWidth={2.5} />

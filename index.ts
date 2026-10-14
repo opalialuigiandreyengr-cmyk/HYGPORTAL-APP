@@ -44,7 +44,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
       input,
       textarea,
       select {
-        touch-action: manipulation;
+        touch-action: auto !important;
       }
     `;
     document.head.appendChild(style);
@@ -58,31 +58,42 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     document.body.style.backgroundColor = '#071426';
   }
 
-  // 4. Ensure focused input is scrolled smoothly above on-screen keyboard on mobile web/PWA,
+  // 4. Ensure focused input is scrolled smoothly above on-screen keyboard on mobile web/PWA (iOS Safari only),
   // and reset window scroll position when keyboard closes so no bottom white gap remains.
-  if (typeof window !== 'undefined') {
-    window.addEventListener('focusin', (e) => {
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {
-        setTimeout(() => {
-          try {
-            target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-          } catch {
-            // ignore fallback
-          }
-        }, 300);
-      }
-    });
-
-    window.addEventListener('focusout', () => {
-      setTimeout(() => {
-        try {
-          window.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
-        } catch {
-          window.scrollTo(0, 0);
+  // NOTE: On Android Chrome, native interactive-widget=resizes-content already handles keyboard
+  // layout automatically. Firing programmatic scrollIntoView or scrollTo(0,0) on Android Chrome cancels
+  // the virtual keyboard activation and dismisses the keyboard.
+  if (typeof window !== 'undefined' && typeof navigator !== 'undefined') {
+    const isAndroid = /android/i.test(navigator.userAgent);
+    if (!isAndroid) {
+      window.addEventListener('focusin', (e) => {
+        const target = e.target as HTMLElement | null;
+        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {
+          setTimeout(() => {
+            try {
+              target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            } catch {
+              // ignore fallback
+            }
+          }, 300);
         }
-      }, 100);
-    });
+      });
+
+      window.addEventListener('focusout', () => {
+        setTimeout(() => {
+          const active = document.activeElement;
+          const isAnotherInput =
+            active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT');
+          if (!isAnotherInput) {
+            try {
+              window.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
+            } catch {
+              window.scrollTo(0, 0);
+            }
+          }
+        }, 100);
+      });
+    }
   }
 }
 

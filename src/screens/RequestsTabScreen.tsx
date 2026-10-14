@@ -60,9 +60,24 @@ type Props = {
   onEditRequest?: (request: MyRequest) => void;
   refreshTrigger?: number;
   pointsBalance?: number;
+  onSignOut?: () => void | Promise<void>;
 };
 
-export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssistant, onNotifications, onHelpTutorials, onOpenProfile, onOpenSettings, onOpenMyTeam, onOpenRewards, onEditRequest, refreshTrigger, pointsBalance = 0 }: Props) {
+export function RequestsTabScreen({
+  profileResult,
+  notificationCount = 0,
+  onAssistant,
+  onNotifications,
+  onHelpTutorials,
+  onOpenProfile,
+  onOpenSettings,
+  onOpenMyTeam,
+  onOpenRewards,
+  onEditRequest,
+  refreshTrigger,
+  pointsBalance = 0,
+  onSignOut,
+}: Props) {
   const [items, setItems] = useState<MyRequest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
@@ -452,7 +467,21 @@ export function RequestsTabScreen({ profileResult, notificationCount = 0, onAssi
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <TopBar name={profile?.fullName} username={profile?.username} photoUrl={profile?.photoUrl} pointsBalance={pointsBalance} notificationCount={notificationCount} onMessages={onAssistant} onNotifications={onNotifications} onHelpTutorials={onHelpTutorials} onOpenProfile={onOpenProfile} onOpenSettings={onOpenSettings} onOpenMyTeam={onOpenMyTeam} onOpenRewards={onOpenRewards} />
+      <TopBar
+        name={profile?.fullName}
+        username={profile?.username}
+        photoUrl={profile?.photoUrl}
+        pointsBalance={pointsBalance}
+        notificationCount={notificationCount}
+        onMessages={onAssistant}
+        onNotifications={onNotifications}
+        onHelpTutorials={onHelpTutorials}
+        onOpenProfile={onOpenProfile}
+        onOpenSettings={onOpenSettings}
+        onOpenMyTeam={onOpenMyTeam}
+        onOpenRewards={onOpenRewards}
+        onSignOut={onSignOut}
+      />
       <ScrollView
         contentContainerStyle={[styles.scroll, { paddingBottom: getScreenBottomPadding(insets.bottom, true, 28) }]}
         showsVerticalScrollIndicator={false}

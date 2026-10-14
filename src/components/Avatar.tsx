@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 
 import { colors, fontWeights } from '../theme';
+import { getCachedAvatarUri, getSyncCachedAvatarUri } from '../services/avatarCache';
 
 type Props = {
   name?: string | null;
@@ -20,11 +22,39 @@ export function Avatar({
   textColor = colors.brand.white,
 }: Props) {
   const initials = getNameInitials(name);
+  const [cachedUri, setCachedUri] = useState<string | null>(() => getSyncCachedAvatarUri(photoUrl));
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+    const syncUri = getSyncCachedAvatarUri(photoUrl);
+    setCachedUri(syncUri);
+
+    if (!photoUrl) return;
+
+    let isMounted = true;
+    getCachedAvatarUri(photoUrl).then((resolved) => {
+      if (isMounted && resolved) {
+        setCachedUri(resolved);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [photoUrl]);
+
+  const activeUri = cachedUri || photoUrl;
+  const canDisplayImage = Boolean(activeUri && !hasError);
 
   return (
     <View style={[styles.avatar, { width: size, height: size, borderRadius }]}>
-      {photoUrl ? (
-        <Image source={{ uri: photoUrl }} style={styles.image} />
+      {canDisplayImage ? (
+        <Image
+          source={{ uri: activeUri! }}
+          style={styles.image}
+          onError={() => setHasError(true)}
+        />
       ) : (
         <Text style={[styles.text, { fontSize: textSize, color: textColor }]}>{initials}</Text>
       )}

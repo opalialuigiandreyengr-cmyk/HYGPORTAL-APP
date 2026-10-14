@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import { createElement, useState, type CSSProperties } from 'react';
+import { createElement, useRef, useState, type CSSProperties } from 'react';
 import { ActivityIndicator, Image, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
@@ -372,18 +372,24 @@ function FormTextField({
   style,
   ...inputProps
 }: TextInputProps & { label: string; icon?: React.ReactNode; rightIcon?: React.ReactNode; error?: string }) {
+  const inputRef = useRef<TextInput>(null);
+
   return (
     <>
       <Text style={styles.inputLabel}>{label}</Text>
-      <View style={[styles.inputShell, error ? styles.inputInvalid : null, error ? styles.inputWithError : null]}>
-        {icon}
+      <Pressable
+        style={[styles.inputShell, error ? styles.inputInvalid : null, error ? styles.inputWithError : null]}
+        onPress={() => inputRef.current?.focus()}
+      >
+        {icon ? <View pointerEvents="none">{icon}</View> : null}
         <TextInput
+          ref={inputRef}
           placeholderTextColor="#94a3b8"
           {...inputProps}
           style={[styles.input, icon ? styles.inputWithIcon : null, style]}
         />
         {rightIcon}
-      </View>
+      </Pressable>
       {error ? <Text style={styles.fieldError}>{error}</Text> : null}
     </>
   );
@@ -594,9 +600,12 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
+    height: '100%',
+    minHeight: 44,
     color: colors.text,
     fontSize: Platform.OS === 'web' ? 16 : 15,
     paddingVertical: 0,
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : null),
   },
   inputWithIcon: {
     paddingLeft: spacing.sm,
