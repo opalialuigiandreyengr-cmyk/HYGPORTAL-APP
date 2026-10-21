@@ -74,12 +74,25 @@ export function PhotoProofPickerModal({
     let active = true;
     setIsLoadingList(true);
 
-    loadPhotoProofs({
+    const userFilter = {
       employeeId: userInfo?.resolvedEmpId || undefined,
       employeeName: userInfo?.resolvedName || undefined,
       userEmail: userInfo?.resolvedEmail || undefined,
       authUserId: userInfo?.resolvedAuthId || undefined,
-    })
+    };
+
+    // Fast path: load local cached proofs immediately
+    loadPhotoProofs(userFilter, false)
+      .then((cachedItems) => {
+        if (active && cachedItems.length > 0) {
+          setPhotoProofsList(cachedItems);
+          setIsLoadingList(false);
+        }
+      })
+      .catch(() => {});
+
+    // Network path: fetch latest synced proofs from Supabase
+    loadPhotoProofs(userFilter, true)
       .then((items) => {
         if (active) {
           setPhotoProofsList(items);
@@ -216,6 +229,7 @@ export function PhotoProofPickerModal({
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.backdrop}>
+        <Pressable style={styles.backdropDismiss} onPress={onClose} />
         <View style={styles.card}>
           <View style={styles.header}>
             <View style={{ flex: 1, paddingRight: 8 }}>
@@ -365,12 +379,17 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(15, 23, 42, 0.55)',
     justifyContent: 'flex-end',
   },
+  backdropDismiss: {
+    flex: 1,
+  },
   card: {
     backgroundColor: '#ffffff',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: '85%',
+    height: '82%',
+    maxHeight: '90%',
     flexDirection: 'column',
+    overflow: 'hidden',
   },
   header: {
     flexDirection: 'row',
@@ -578,6 +597,7 @@ const styles = StyleSheet.create({
     color: '#ffffff',
   },
   uploadLoadingContainer: {
+    flex: 1,
     paddingVertical: 48,
     alignItems: 'center',
     justifyContent: 'center',

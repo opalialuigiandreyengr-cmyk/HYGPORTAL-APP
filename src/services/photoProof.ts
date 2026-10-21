@@ -330,13 +330,24 @@ export function isProofOwnedByUser(
     itemName !== 'employee'
   ) {
     if (targetName === itemName) return true;
+    if (targetName.includes(itemName) || itemName.includes(targetName)) return true;
 
-    // Word set match: e.g. "Juan Dela Cruz" vs "Cruz, Juan Dela"
-    const targetWords = targetName.split(/[\s,]+/).filter((w) => w.length > 2);
-    const itemWords = itemName.split(/[\s,]+/).filter((w) => w.length > 2);
+    // Word set match with punctuation stripped: e.g. "Juan Dela Cruz" vs "Cruz, Juan Dela", "Luigi Opalia" vs "Luigi A. Luyo Opalia"
+    const normalizeWords = (str: string) =>
+      str
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length >= 2);
+
+    const targetWords = normalizeWords(targetName);
+    const itemWords = normalizeWords(itemName);
     if (targetWords.length > 0 && itemWords.length > 0) {
       const matchCount = targetWords.filter((w) => itemWords.includes(w)).length;
-      if (matchCount >= Math.min(targetWords.length, itemWords.length) && matchCount >= 2) {
+      if (
+        matchCount >= 2 ||
+        (Math.min(targetWords.length, itemWords.length) === 1 && matchCount >= 1)
+      ) {
         return true;
       }
     }
