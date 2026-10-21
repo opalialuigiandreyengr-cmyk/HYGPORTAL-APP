@@ -238,7 +238,7 @@ export function DateRangePickerModal({
       if (startDateStr) {
         return `${formatReadable(startDateStr)} (Single Day)`;
       }
-      return 'Select date (Single day for Use Offset)';
+      return 'Select date (Single day for Use Offset Balance)';
     }
     if (startDateStr && endDateStr) {
       return `${formatReadable(startDateStr)} – ${formatReadable(endDateStr)}`;

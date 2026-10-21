@@ -1,9 +1,45 @@
 import { ensureFreshSession, supabase } from '../lib/supabase';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
+import { invalidateRequestsCache } from './requests';
+import { invalidateBalanceHistoryCache } from './balanceHistory';
+import { isScheduledOtAwaitingProof } from '../utils/scheduledOt';
+
+const APPROVALS_CACHE_TTL_MS = 60_000;
+let lastPendingApprovalsFetchAt = 0;
+let lastApprovedApprovalsFetchAt = 0;
+let inFlightPendingApprovalsPromise: Promise<PendingApproval[]> | null = null;
+let inFlightApprovedApprovalsPromise: Promise<ApprovedApproval[]> | null = null;
+
+export function invalidateApprovalsCache() {
+  lastPendingApprovalsFetchAt = 0;
+  lastApprovedApprovalsFetchAt = 0;
+}
+
+export async function loadCachedPendingApprovals(userId?: string): Promise<PendingApproval[]> {
+  const currentUserId = userId || (await supabase.auth.getSession()).data.session?.user?.id;
+  const cacheKey = currentUserId ? `pending_approvals_v2_${currentUserId}` : 'pending_approvals_v2';
+  const cached = (await getCacheJSON<PendingApproval[]>(cacheKey)) ?? [];
+  return cached.map((it: any) => ({
+    ...it,
+    step_id: it.step_id || it.pending_step_id,
+    pending_step_id: it.pending_step_id || it.step_id,
+  }));
+}
+
+export async function loadCachedApprovedApprovals(userId?: string): Promise<ApprovedApproval[]> {
+  const currentUserId = userId || (await supabase.auth.getSession()).data.session?.user?.id;
+  const cacheKey = currentUserId ? `approved_approvals_v2_${currentUserId}` : 'approved_approvals_v2';
+  return (await getCacheJSON<ApprovedApproval[]>(cacheKey)) ?? [];
+}
+
+import { loadPositionAuthorities } from './positions';
 
 export type PendingApprovalStep = {
   step_order: number;
   required_level: number;
+  position_level?: number | null;
+  approver_level?: number | null;
+  level?: number | null;
   status: string;
   acted_at: string | null;
   remarks?: string | null;
@@ -14,6 +50,7 @@ export type PendingApprovalStep = {
 
 export type PendingApproval = {
   step_id: string;
+  pending_step_id?: string;
   request_id: string;
   step_order: number;
   request_type_code: string;
@@ -41,6 +78,8 @@ export type PendingApproval = {
   transaction_type?: string | null;
   submitted_at: string;
   approval_summary: PendingApprovalStep[];
+  status?: string | null;
+  request_status?: string | null;
 };
 
 function formatTimeDisplay(timeStr: string | null): string {
@@ -69,33 +108,62 @@ function getWeekdayFromDateStr(dateStr: string | null): string {
   return 'Sun';
 }
 
-export async function loadPendingApprovals() {
+export async function loadPendingApprovals(forceRefresh = false): Promise<PendingApproval[]> {
   await ensureFreshSession().catch(() => {});
   const { data: sessionData } = await supabase.auth.getSession();
   const userId = sessionData.session?.user?.id;
   const cacheKey = userId ? `pending_approvals_v2_${userId}` : 'pending_approvals_v2';
 
-  const { data, error } = await supabase.rpc('get_my_pending_approvals');
-
-  if (error) {
-    const cached = await getCacheJSON<PendingApproval[]>(cacheKey);
-    if (cached) {
-      return cached;
-    }
-    throw error;
-  }
-
-  const items = (data ?? []) as PendingApproval[];
-
-  // Guard: if server returns empty list but we have cached approvals, verify user session before overwriting
   const cached = await getCacheJSON<PendingApproval[]>(cacheKey);
-  if (items.length === 0 && cached && cached.length > 0) {
-    const { data: checkSession } = await supabase.auth.getSession();
-    if (!checkSession.session?.user) {
-      // Unauthenticated or session in transition: retain cached approvals
-      return cached;
-    }
+
+  // Fast path: If cache is fresh and not forced, return cached items immediately (0 network calls)
+  if (!forceRefresh && cached && cached.length > 0 && Date.now() - lastPendingApprovalsFetchAt < APPROVALS_CACHE_TTL_MS) {
+    return cached;
   }
+
+  // Deduplicate concurrent requests
+  if (inFlightPendingApprovalsPromise) {
+    return inFlightPendingApprovalsPromise;
+  }
+
+  const fetchPromise = (async (): Promise<PendingApproval[]> => {
+    try {
+      loadPositionAuthorities().catch(() => {});
+      const { data, error } = await supabase.rpc('get_my_pending_approvals');
+
+      if (error) {
+        if (cached && cached.length > 0) {
+          return cached;
+        }
+        throw error;
+      }
+
+      let items = ((data ?? []) as any[]).map((raw) => ({
+        ...raw,
+        step_id: raw.step_id || raw.pending_step_id,
+        pending_step_id: raw.pending_step_id || raw.step_id,
+      })) as PendingApproval[];
+
+      // Exclude pre-approved scheduled OT requests awaiting photo proof from approvers' queue
+      items = items.filter((it) => {
+        const rawStatus = (it.status || '').toLowerCase();
+        if (rawStatus.includes('pre_approved') || rawStatus.includes('pre-approved')) {
+          return false;
+        }
+        if (isScheduledOtAwaitingProof(it)) {
+          return false;
+        }
+        return true;
+      });
+
+      // Guard: if server returns empty list but we have cached approvals, verify user session before overwriting
+      if (items.length === 0 && cached && cached.length > 0) {
+        const { data: checkSession } = await supabase.auth.getSession();
+        if (!checkSession.session?.user) {
+          // Unauthenticated or session in transition: retain cached approvals
+          return cached;
+        }
+      }
 
   // Resolve departments for all pending items
   const deptMap: Record<string, string> = {};
@@ -247,6 +315,8 @@ export async function loadPendingApprovals() {
 
       return {
         ...item,
+        step_id: item.step_id || (item as any).pending_step_id,
+        pending_step_id: (item as any).pending_step_id || item.step_id,
         department_name: departmentName,
         approval_summary: approvalSummary || item.approval_summary || [],
         time_schedule: timeSchedule ?? item.time_schedule ?? null,
@@ -257,11 +327,28 @@ export async function loadPendingApprovals() {
     }),
   );
 
-  await setCacheJSON(cacheKey, enhancedItems);
-  return enhancedItems;
+      lastPendingApprovalsFetchAt = Date.now();
+      await setCacheJSON(cacheKey, enhancedItems);
+      return enhancedItems;
+    } catch (err) {
+      if (cached && cached.length > 0) {
+        return cached;
+      }
+      throw err;
+    } finally {
+      inFlightPendingApprovalsPromise = null;
+    }
+  })();
+
+  inFlightPendingApprovalsPromise = fetchPromise;
+  return fetchPromise;
 }
 
 export async function decideApprovalStep(stepId: string, decision: 'approved' | 'rejected', remarks?: string) {
+  if (!stepId) {
+    throw new Error('Approval step ID was not found.');
+  }
+
   const { data, error } = await supabase.rpc('decide_approval_step', {
     p_step_id: stepId,
     p_decision: decision,
@@ -269,8 +356,15 @@ export async function decideApprovalStep(stepId: string, decision: 'approved' | 
   });
 
   if (error) {
-    throw error;
+    const err = new Error(error.message || 'Unable to update approval.');
+    (err as any).details = error.details;
+    (err as any).code = error.code;
+    throw err;
   }
+
+  invalidateApprovalsCache();
+  invalidateRequestsCache();
+  invalidateBalanceHistoryCache();
 
   return data as string;
 }
@@ -284,11 +378,31 @@ export type ApprovedApproval = PendingApproval & {
 export async function loadApprovedApprovals(
   currentEmployeeNo?: string | null,
   currentFullName?: string | null,
+  forceRefresh = false,
 ): Promise<ApprovedApproval[]> {
-  let items: ApprovedApproval[] = [];
+  await ensureFreshSession().catch(() => {});
+  const { data: sessionData } = await supabase.auth.getSession();
+  const userId = sessionData.session?.user?.id;
+  const cacheKey = userId ? `approved_approvals_v2_${userId}` : 'approved_approvals_v2';
 
-  const normEmployeeNo = currentEmployeeNo?.trim().toLowerCase();
-  const normFullName = currentFullName?.trim().toLowerCase();
+  const cached = await getCacheJSON<ApprovedApproval[]>(cacheKey);
+
+  // Fast path: If cache is fresh and not forced, return cached items immediately (0 network calls)
+  if (!forceRefresh && cached && cached.length > 0 && Date.now() - lastApprovedApprovalsFetchAt < APPROVALS_CACHE_TTL_MS) {
+    return cached;
+  }
+
+  // Deduplicate concurrent requests
+  if (inFlightApprovedApprovalsPromise) {
+    return inFlightApprovedApprovalsPromise;
+  }
+
+  const fetchPromise = (async (): Promise<ApprovedApproval[]> => {
+    try {
+      let items: ApprovedApproval[] = [];
+
+      const normEmployeeNo = currentEmployeeNo?.trim().toLowerCase();
+      const normFullName = currentFullName?.trim().toLowerCase();
 
   // Try RPC admin_get_all_requests first (supported by Supabase)
   try {
@@ -371,6 +485,9 @@ export async function loadApprovedApprovals(
             approval_summary: (raw.approval_summary || []).map((step: any) => ({
               step_order: step.step_order || 1,
               required_level: step.required_level || 1,
+              position_level: step.position_level ?? step.approver_level ?? step.level ?? null,
+              approver_level: step.approver_level ?? step.position_level ?? step.level ?? null,
+              level: step.level ?? step.approver_level ?? step.position_level ?? null,
               status: step.status || 'approved',
               acted_at: step.acted_at || null,
               skipped_reason: step.skipped_reason || null,
@@ -493,7 +610,34 @@ export async function loadApprovedApprovals(
     }
   }
 
-  return items;
+      if (items.length > 0) {
+        lastApprovedApprovalsFetchAt = Date.now();
+        await setCacheJSON(cacheKey, items);
+      } else if (cached && cached.length > 0) {
+        const { data: checkSession } = await supabase.auth.getSession();
+        if (!checkSession.session?.user) {
+          return cached;
+        }
+        lastApprovedApprovalsFetchAt = Date.now();
+        await setCacheJSON(cacheKey, items);
+      } else {
+        lastApprovedApprovalsFetchAt = Date.now();
+        await setCacheJSON(cacheKey, items);
+      }
+
+      return items;
+    } catch (err) {
+      if (cached && cached.length > 0) {
+        return cached;
+      }
+      return [];
+    } finally {
+      inFlightApprovedApprovalsPromise = null;
+    }
+  })();
+
+  inFlightApprovedApprovalsPromise = fetchPromise;
+  return fetchPromise;
 }
 
 export type UpdateApprovedRequestParams = {
@@ -613,6 +757,10 @@ export async function updateApprovedRequest(params: UpdateApprovedRequestParams)
   if (!updated && lastError) {
     throw new Error(lastError);
   }
+
+  invalidateApprovalsCache();
+  invalidateRequestsCache();
+  invalidateBalanceHistoryCache();
 }
 
 

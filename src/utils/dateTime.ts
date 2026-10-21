@@ -1,3 +1,5 @@
+import { parseDayOffList } from './requestCalculations';
+
 export function dateStringToDate(value: string) {
   const [year, month, day] = value.split('-').map(Number);
   if (!year || !month || !day) {
@@ -32,7 +34,7 @@ export function formatTimeInput(date: Date) {
   return `${hour}:${minute}:${second}`;
 }
 
-export function formatTimeDisplay(value: string) {
+export function formatTimeDisplay(value: string, includeSeconds: boolean = false) {
   const parts = value.split(':').map(Number);
   const rawHour = parts[0];
   const rawMinute = parts[1];
@@ -43,14 +45,18 @@ export function formatTimeDisplay(value: string) {
   const period = rawHour >= 12 ? 'PM' : 'AM';
   const hour = rawHour % 12 || 12;
   const minStr = String(rawMinute).padStart(2, '0');
-  if (rawSecond !== undefined && !Number.isNaN(rawSecond)) {
+  if (includeSeconds && rawSecond !== undefined && !Number.isNaN(rawSecond)) {
     const secStr = String(rawSecond).padStart(2, '0');
     return `${hour}:${minStr}:${secStr} ${period}`;
   }
   return `${hour}:${minStr} ${period}`;
 }
 
-export function calculateLeaveDays(dateFrom: string, dateTo: string) {
+export function calculateLeaveDays(
+  dateFrom: string,
+  dateTo: string,
+  dayOff?: string | null,
+): number {
   const start = dateStringToDate(dateFrom);
   const end = dateStringToDate(dateTo);
   const startTime = start.getTime();
@@ -59,7 +65,34 @@ export function calculateLeaveDays(dateFrom: string, dateTo: string) {
     return 0;
   }
 
-  return Math.round(((endTime - startTime) / 86400000 + 1) * 100) / 100;
+  const dayOffList = dayOff ? parseDayOffList(dayOff) : [];
+  if (dayOffList.length === 0) {
+    return Math.round(((endTime - startTime) / 86400000 + 1) * 100) / 100;
+  }
+
+  const [y1, m1, d1] = dateFrom.split('-').map(Number);
+  const [y2, m2, d2] = dateTo.split('-').map(Number);
+  if (!y1 || !m1 || !d1 || !y2 || !m2 || !d2) {
+    return Math.round(((endTime - startTime) / 86400000 + 1) * 100) / 100;
+  }
+
+  const startUtc = Date.UTC(y1, m1 - 1, d1);
+  const endUtc = Date.UTC(y2, m2 - 1, d2);
+
+  let workingDaysCount = 0;
+  const cur = new Date(startUtc);
+  const endD = new Date(endUtc);
+
+  while (cur <= endD) {
+    const dayOfWeekIndex = cur.getUTCDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+    const dayCode = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dayOfWeekIndex];
+    if (!dayOffList.includes(dayCode)) {
+      workingDaysCount++;
+    }
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+
+  return workingDaysCount;
 }
 
 /**

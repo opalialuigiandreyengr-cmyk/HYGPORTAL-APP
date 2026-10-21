@@ -34,6 +34,7 @@ import {
   type ApprovedApproval,
   type PendingApproval,
 } from '../services/approvals';
+import { resolveApproverLevel } from '../services/positions';
 import { startApproverViewingSession } from '../services/requestViewerLock';
 import { supabase } from '../lib/supabase';
 import {
@@ -109,15 +110,18 @@ export function ApprovalsScreen({
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
   const insets = useSafeAreaInsets();
 
-  async function refresh() {
-    setIsLoading(true);
-    setStatus(mainTab === 'pending' ? 'Loading approvals...' : 'Loading approved requests...');
+  async function refresh(forceRefresh = false) {
+    const hasData = (mainTab === 'pending' ? items : approvedItems).length > 0;
+    if (!forceRefresh && !isPullRefreshing && !hasData) {
+      setIsLoading(true);
+      setStatus(mainTab === 'pending' ? 'Loading approvals...' : 'Loading approved requests...');
+    }
     try {
-      const approvals = await loadPendingApprovals().catch((err) => {
+      const approvals = await loadPendingApprovals(forceRefresh).catch((err) => {
         console.warn('Error loading pending approvals:', err);
         return [] as PendingApproval[];
       });
-      const approvedList = await loadApprovedApprovals(profile?.employeeNo, profile?.fullName).catch((err) => {
+      const approvedList = await loadApprovedApprovals(profile?.employeeNo, profile?.fullName, forceRefresh).catch((err) => {
         console.warn('Error loading approved approvals:', err);
         return [] as ApprovedApproval[];
       });
@@ -130,8 +134,8 @@ export function ApprovalsScreen({
       } else {
         setStatus(approvedList.length ? '' : 'No approved requests found.');
       }
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Unable to load approvals.');
+    } catch (error: any) {
+      setStatus(error?.message || (error instanceof Error ? error.message : 'Unable to load approvals.'));
     } finally {
       setIsLoading(false);
     }
@@ -142,12 +146,11 @@ export function ApprovalsScreen({
   const handlePullRefresh = async () => {
     setIsPullRefreshing(true);
     try {
-      await refresh();
+      await refresh(true);
     } finally {
       setIsPullRefreshing(false);
     }
   };
-
 
   useEffect(() => {
     refresh();
@@ -157,7 +160,10 @@ export function ApprovalsScreen({
     if (items.length > 0 && (targetRequestId || autoOpenFirst) && mainTab === 'pending') {
       if (targetRequestId) {
         const matchIdx = items.findIndex(
-          (i) => i.request_id === targetRequestId || i.step_id === targetRequestId,
+          (i) =>
+            i.request_id === targetRequestId ||
+            i.step_id === targetRequestId ||
+            (i as any).pending_step_id === targetRequestId,
         );
         if (matchIdx >= 0) {
           setSelectedApproval({ item: items[matchIdx], sequence: matchIdx + 1 });
@@ -174,7 +180,10 @@ export function ApprovalsScreen({
 
     if (approvedItems.length > 0 && targetRequestId) {
       const approvedIdx = approvedItems.findIndex(
-        (i) => i.request_id === targetRequestId || i.step_id === targetRequestId,
+        (i) =>
+          i.request_id === targetRequestId ||
+          i.step_id === targetRequestId ||
+          (i as any).pending_step_id === targetRequestId,
       );
       if (approvedIdx >= 0) {
         setMainTab('approved');
@@ -446,8 +455,12 @@ export function ApprovalsScreen({
       }
 
       // 3. Decide approval step (RPC 'decide_approval_step')
-      await decideApprovalStep(item.step_id, 'approved', 'Approved from mobile.');
-      await refresh();
+      const stepId = item.step_id || (item as any).pending_step_id;
+      if (!stepId) {
+        throw new Error('Approval step ID was not found.');
+      }
+      await decideApprovalStep(stepId, 'approved', 'Approved from mobile.');
+      await refresh(true);
 
       const adjustedMsg = hasHoursAdjustment
         ? ` with ${newTotalHours.toFixed(2)} hrs (adjusted)`
@@ -457,8 +470,14 @@ export function ApprovalsScreen({
         title: 'Request approved',
         message: `${formatApprovalType(item)} was approved successfully${adjustedMsg}.`,
       });
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Unable to update approval.');
+    } catch (error: any) {
+      const msg = error?.message || (error instanceof Error ? error.message : 'Unable to update approval.');
+      setStatus(msg);
+      onToast?.({
+        tone: 'error',
+        title: 'Approval failed',
+        message: msg,
+      });
     }
   }
 
@@ -502,14 +521,29 @@ export function ApprovalsScreen({
 
   async function performReject(item: PendingApproval, reason: string) {
     setStatus('Rejecting request...');
-    await decideApprovalStep(item.step_id, 'rejected', reason);
-    setSelectedApproval(null);
-    await refresh();
-    onToast?.({
-      tone: 'success',
-      title: 'Request rejected',
-      message: `${formatApprovalType(item)} was rejected.`,
-    });
+    try {
+      const stepId = item.step_id || (item as any).pending_step_id;
+      if (!stepId) {
+        throw new Error('Approval step ID was not found.');
+      }
+      await decideApprovalStep(stepId, 'rejected', reason);
+      setSelectedApproval(null);
+      await refresh(true);
+      onToast?.({
+        tone: 'success',
+        title: 'Request rejected',
+        message: `${formatApprovalType(item)} was rejected.`,
+      });
+    } catch (error: any) {
+      const msg = error?.message || (error instanceof Error ? error.message : 'Unable to reject request.');
+      setStatus(msg);
+      onToast?.({
+        tone: 'error',
+        title: 'Rejection failed',
+        message: msg,
+      });
+      throw error;
+    }
   }
 
   return (
@@ -750,7 +784,7 @@ export function ApprovalsScreen({
             const sequence = (currentPage - 1) * pageSize + index + 1;
             return (
               <ApprovalCard
-                key={item.step_id}
+                key={item.step_id || (item as any).pending_step_id || item.request_id}
                 item={item}
                 profile={profile}
                 sequence={sequence}
@@ -1038,8 +1072,8 @@ function ApprovalDetailsSheet({
     setRejectError('');
     try {
       await onPerformReject(item, reason);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : 'Unable to reject request.';
+    } catch (error: any) {
+      const msg = error?.message || (error instanceof Error ? error.message : 'Unable to reject request.');
       setRejectError(msg);
       setIsSubmittingReject(false);
     }
@@ -1647,7 +1681,8 @@ function approvalRoleLabel(step: PendingApproval['approval_summary'][number]) {
   const skippedReason = normalizeDisplayValue(step.skipped_reason);
   if (skippedReason) return skippedReason;
 
-  return `Level ${step.required_level} Approver`;
+  const levelNum = resolveApproverLevel(step);
+  return `Level ${levelNum} Approver`;
 }
 
 function fallbackApprovalRoleLabel(level: number) {
@@ -1674,16 +1709,19 @@ function timelineTone(status: string) {
 
 function approvalTimeline(item: PendingApproval | ApprovedApproval) {
   const fallback = [1, 2];
-  const summary = (item.approval_summary ?? []).slice(0, fallback.length);
+  const summary = (item.approval_summary && item.approval_summary.length > 0)
+    ? item.approval_summary
+    : [];
   const rows: { label: string; status: string; actedAt: string | null }[] = summary.length
     ? summary.map((step) => {
         const isAutoApproved =
           step.approver_name === 'HYG Portal System' ||
           step.remarks?.toLowerCase().includes('auto-approved') ||
           item.reason?.toLowerCase().includes('auto-approved');
+        const levelNum = resolveApproverLevel(step);
         const statusText = isAutoApproved
           ? 'Auto-Approved'
-          : `L${step.required_level} • ${approvalStepStatus(step.status)}`;
+          : `L${levelNum} • ${approvalStepStatus(step.status)}`;
         return {
           label: approvalRoleLabel(step),
           status: statusText,

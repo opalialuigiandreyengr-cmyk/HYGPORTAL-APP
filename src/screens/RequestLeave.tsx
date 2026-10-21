@@ -45,7 +45,7 @@ import { updateMyPendingRequest, type MyRequest } from '../services/requests';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { isAppOnline, useNetworkStatus } from '../services/network';
-import { enqueueOfflineItem } from '../services/offlineQueue';
+import { enqueueOfflineItem, removeOfflineItem, removeRequestFromLocalCache } from '../services/offlineQueue';
 import { getDisabledLeaveTypes, getLeaveBreakdown } from '../utils/requestCalculations';
 import {
   checkBirthdayLeaveAppliedForYear,
@@ -75,6 +75,7 @@ type RequestLeaveProps = {
   photoUrl?: string | null;
   birthDate?: string | null;
   dateHired?: string | null;
+  dayOff?: string | null;
   leaveCreditRemaining?: number;
   initialDraft?: Extract<AssistantDraft, { intent: 'draft_leave_request' }> | null;
   editingRequest?: MyRequest | null;
@@ -95,6 +96,7 @@ const RequestLeave = ({
   photoUrl,
   birthDate,
   dateHired,
+  dayOff,
   leaveCreditRemaining = 0,
   initialDraft,
   editingRequest,
@@ -108,11 +110,45 @@ const RequestLeave = ({
 }: RequestLeaveProps) => {
   const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const [effectiveBirthDate, setEffectiveBirthDate] = useState<string | null>(birthDate || null);
+  const [effectiveDayOff, setEffectiveDayOff] = useState<string | null>(
+    dayOff || editingRequest?.day_off || null,
+  );
   const [hasAppliedBirthdayLeaveThisYear, setHasAppliedBirthdayLeaveThisYear] =
     useState<boolean>(false);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const network = useNetworkStatus();
   const isOnline = network.isOnline;
+
+  useEffect(() => {
+    if (dayOff) {
+      setEffectiveDayOff(dayOff);
+    }
+  }, [dayOff]);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function resolveDayOff() {
+      if (effectiveDayOff) return;
+      try {
+        if (employeeId) {
+          const { data } = await supabase
+            .from('employee_profile_details')
+            .select('day_off')
+            .eq('employee_id', employeeId)
+            .maybeSingle<{ day_off: string | null }>();
+          if (isMounted && data?.day_off) {
+            setEffectiveDayOff(data.day_off);
+          }
+        }
+      } catch {
+        // ignore errors
+      }
+    }
+    resolveDayOff();
+    return () => {
+      isMounted = false;
+    };
+  }, [employeeId, effectiveDayOff]);
 
   const handlePullRefresh = async () => {
     if (!onRefresh) return;
@@ -311,6 +347,31 @@ const RequestLeave = ({
     }
   }, [editingRequest, leaveCreditRemaining]);
 
+  // When effectiveDayOff is resolved, update any entries that already have dateFrom & dateTo set
+  useEffect(() => {
+    if (!effectiveDayOff) return;
+    setEntries((prev) => {
+      let changed = false;
+      const next = prev.map((entry) => {
+        if (!entry.dateFrom || !entry.dateTo) return entry;
+        const totalDays = calculateLeaveDays(entry.dateFrom, entry.dateTo, effectiveDayOff);
+        if (entry.leaveType === 'With Pay') {
+          if (entry.paidDays !== String(totalDays) || entry.unpaidDays !== '0') {
+            changed = true;
+            return { ...entry, paidDays: String(totalDays), unpaidDays: '0' };
+          }
+        } else if (entry.leaveType === 'Without Pay') {
+          if (entry.paidDays !== '0' || entry.unpaidDays !== String(totalDays)) {
+            changed = true;
+            return { ...entry, paidDays: '0', unpaidDays: String(totalDays) };
+          }
+        }
+        return entry;
+      });
+      return changed ? next : prev;
+    });
+  }, [effectiveDayOff]);
+
   const [activeDateChoiceIndex, setActiveDateChoiceIndex] = useState<number | null>(null);
   const [activeSelect, setActiveSelect] = useState<{
     index: number;
@@ -333,7 +394,7 @@ const RequestLeave = ({
   // Calculates credits deducted from the employee's annual leave balance for an entry
   // Birthday Leave grants 1 day With Pay for free (0 credits deducted from balance) for employees with >= 1 year of service
   function getEntryCreditsDeducted(entry: LeaveEntry): number {
-    const totalDays = calculateLeaveDays(entry.dateFrom, entry.dateTo);
+    const totalDays = calculateLeaveDays(entry.dateFrom, entry.dateTo, effectiveDayOff);
     const bd = getLeaveBreakdown(entry.leaveType, totalDays, entry.paidDays, entry.unpaidDays);
     if (entry.leaveCategory === 'Birthday Leave') {
       if (!hasCompletedOneYear) {
@@ -346,13 +407,13 @@ const RequestLeave = ({
 
   // Aggregate calculations across all entries
   const totalPaidDaysAllEntries = entries.reduce((sum, e) => {
-    const totalDays = calculateLeaveDays(e.dateFrom, e.dateTo);
+    const totalDays = calculateLeaveDays(e.dateFrom, e.dateTo, effectiveDayOff);
     const bd = getLeaveBreakdown(e.leaveType, totalDays, e.paidDays, e.unpaidDays);
     return sum + bd.paidDays;
   }, 0);
 
   const totalUnpaidDaysAllEntries = entries.reduce((sum, e) => {
-    const totalDays = calculateLeaveDays(e.dateFrom, e.dateTo);
+    const totalDays = calculateLeaveDays(e.dateFrom, e.dateTo, effectiveDayOff);
     const bd = getLeaveBreakdown(e.leaveType, totalDays, e.paidDays, e.unpaidDays);
     return sum + bd.unpaidDays;
   }, 0);
@@ -494,7 +555,7 @@ const RequestLeave = ({
     }
 
     if (field === 'leave_type') {
-      const totalDays = calculateLeaveDays(entry.dateFrom, entry.dateTo);
+      const totalDays = calculateLeaveDays(entry.dateFrom, entry.dateTo, effectiveDayOff);
       const otherCreditsDeducted = entries.reduce((sum, e, i) => {
         if (i === index) return sum;
         return sum + getEntryCreditsDeducted(e);
@@ -675,7 +736,14 @@ const RequestLeave = ({
       return;
     }
 
-    const totalDays = calculateLeaveDays(startYMD, endYMD);
+    const totalDays = calculateLeaveDays(startYMD, endYMD, effectiveDayOff);
+    if (totalDays === 0) {
+      platformAlert(
+        'Scheduled Day Off',
+        `The selected date range falls entirely on your scheduled day off (${effectiveDayOff || 'Day Off'}). Leave requests can only be filed for regular working days.`,
+      );
+      return;
+    }
     const otherCreditsDeducted = entries.reduce((sum, e, i) => {
       if (i === index) return sum;
       return sum + getEntryCreditsDeducted(e);
@@ -775,7 +843,7 @@ const RequestLeave = ({
     const nextErrors: Record<string, string | undefined> = {};
 
     entries.forEach((entry, idx) => {
-      const totalDays = calculateLeaveDays(entry.dateFrom, entry.dateTo);
+      const totalDays = calculateLeaveDays(entry.dateFrom, entry.dateTo, effectiveDayOff);
       const breakdown = getLeaveBreakdown(entry.leaveType, totalDays, entry.paidDays, entry.unpaidDays);
 
       if (!entry.dateFrom) nextErrors[`entry_${idx}_dateFrom`] = 'Required';
@@ -787,7 +855,11 @@ const RequestLeave = ({
       ) {
         nextErrors[`entry_${idx}_dateTo`] = 'Date To cannot be earlier than Date From';
       }
-      if (totalDays <= 0) nextErrors[`entry_${idx}_leaveDays`] = 'Required';
+      if (entry.dateFrom && entry.dateTo && totalDays <= 0) {
+        nextErrors[`entry_${idx}_leaveDays`] = 'Selected dates fall on your scheduled day off.';
+      } else if (totalDays <= 0) {
+        nextErrors[`entry_${idx}_leaveDays`] = 'Required';
+      }
       if (!leaveTypeOptions.includes(entry.leaveType)) nextErrors[`entry_${idx}_leaveType`] = 'Required';
       if (!leaveCategoryOptions.includes(entry.leaveCategory)) {
         nextErrors[`entry_${idx}_leaveCategory`] = 'Required';
@@ -824,6 +896,9 @@ const RequestLeave = ({
       setIsSubmitting(true);
       setSubmitStatus('Saving leave request offline on this device...');
 
+      const isEdit = Boolean(editingRequest);
+      const targetReqId = editingRequest?.request_id || (editingRequest as any)?.id;
+
       const payloadEntries: Array<{
         leaveType: string;
         leaveCategory: string;
@@ -838,9 +913,11 @@ const RequestLeave = ({
 
       for (let i = 0; i < entries.length; i++) {
         const ent = entries[i];
-        const tDays = calculateLeaveDays(ent.dateFrom, ent.dateTo);
+        const tDays = calculateLeaveDays(ent.dateFrom, ent.dateTo, effectiveDayOff);
         const bd = getLeaveBreakdown(ent.leaveType, tDays, ent.paidDays, ent.unpaidDays);
-        const offlineReqId = `offline_leave_${Date.now()}_${i}`;
+        const offlineReqId = isEdit && targetReqId
+          ? targetReqId
+          : `offline_leave_${Date.now()}_${i}`;
 
         payloadEntries.push({
           leaveType: ent.leaveType.trim(),
@@ -857,8 +934,8 @@ const RequestLeave = ({
           request_type_code: 'leave',
           request_type_name: 'Leave',
           status: 'Pending Sync (Offline)',
-          submitted_at: new Date().toISOString(),
-          final_approved_at: null,
+          submitted_at: editingRequest?.submitted_at || new Date().toISOString(),
+          final_approved_at: editingRequest?.final_approved_at ?? null,
           rejected_at: null,
           rejected_reason: null,
           date_from: ent.dateFrom,
@@ -874,7 +951,7 @@ const RequestLeave = ({
           paid_days: bd.paidDays,
           unpaid_days: bd.unpaidDays,
           reason: ent.reason.trim(),
-          approval_summary: [
+          approval_summary: editingRequest?.approval_summary || [
             {
               step_order: 1,
               required_level: 1,
@@ -889,8 +966,13 @@ const RequestLeave = ({
         });
       }
 
+      const isOfflineTarget = Boolean(isEdit && targetReqId && targetReqId.startsWith('offline_'));
+      const queueItemId = isEdit && targetReqId
+        ? (isOfflineTarget ? targetReqId : (targetReqId.startsWith('offline_edit_') ? targetReqId : `offline_edit_${targetReqId}`))
+        : `offline_leave_${Date.now()}`;
+
       await enqueueOfflineItem({
-        id: `offline_leave_${Date.now()}`,
+        id: queueItemId,
         type: 'leave',
         createdAt: new Date().toISOString(),
         payload: {
@@ -901,16 +983,20 @@ const RequestLeave = ({
             userEmail,
             hasCompletedOneYear,
           },
+          isEdit: isEdit && !isOfflineTarget,
+          targetRequestId: isEdit && !isOfflineTarget ? targetReqId : undefined,
         },
         displayItems,
         syncAttempts: 0,
       });
 
-      setSubmitStatus('Leave request saved locally on device.');
+      setSubmitStatus(isEdit ? 'Leave request update saved locally on device.' : 'Leave request saved locally on device.');
       onToast?.({
         tone: 'success',
-        title: 'Saved Offline 📱',
-        message: 'Your leave request was saved safely on this device. It will automatically sync to the database once connected.',
+        title: isEdit ? 'Update Saved Offline 📱' : 'Saved Offline 📱',
+        message: isEdit
+          ? 'Your updated leave request was saved safely on this device. It will automatically sync to the database once connected.'
+          : 'Your leave request was saved safely on this device. It will automatically sync to the database once connected.',
       });
       await onSubmitted?.();
     } catch (saveErr) {
@@ -946,99 +1032,104 @@ const RequestLeave = ({
           throw new Error('Request ID is missing.');
         }
 
-        const lockInfo = await withTimeout(
-          checkApproverActiveViewing(targetReqId),
-          10000,
-          'Checking approver status timed out. Please try again.',
-        );
-        if (lockInfo.isLocked) {
-          const msg = `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Editing is temporarily disabled while they are viewing it to prevent data conflicts.`;
-          setActiveLockInfo(lockInfo);
-          setSubmitStatus(msg);
-          setIsSubmitting(false);
+        if (targetReqId.startsWith('offline_')) {
+          await removeOfflineItem(targetReqId).catch(() => {});
+          await removeRequestFromLocalCache(targetReqId).catch(() => {});
+        } else {
+          const lockInfo = await withTimeout(
+            checkApproverActiveViewing(targetReqId),
+            10000,
+            'Checking approver status timed out. Please try again.',
+          );
+          if (lockInfo.isLocked) {
+            const msg = `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Editing is temporarily disabled while they are viewing it to prevent data conflicts.`;
+            setActiveLockInfo(lockInfo);
+            setSubmitStatus(msg);
+            setIsSubmitting(false);
+            return;
+          }
+
+          const firstEntry = entries[0];
+          const firstTotalDays = calculateLeaveDays(firstEntry.dateFrom, firstEntry.dateTo, effectiveDayOff);
+          const firstBreakdown = getLeaveBreakdown(
+            firstEntry.leaveType,
+            firstTotalDays,
+            firstEntry.paidDays,
+            firstEntry.unpaidDays,
+          );
+
+          await withTimeout(
+            updateMyPendingRequest({
+              requestId: targetReqId,
+              leaveType: firstEntry.leaveType.trim(),
+              leaveCategory: firstEntry.leaveCategory.trim(),
+              startDate: firstEntry.dateFrom,
+              endDate: firstEntry.dateTo,
+              totalDays: firstTotalDays,
+              paidDays: firstBreakdown.paidDays,
+              unpaidDays: firstBreakdown.unpaidDays,
+              reason: firstEntry.reason.trim(),
+            }),
+            25000,
+            'Updating leave request timed out. Please check your network connection.',
+          );
+
+          // If user added additional entries while editing, submit them as new requests
+          if (entries.length > 1) {
+            for (let i = 1; i < entries.length; i++) {
+              if (submittedIndices.current.has(i)) continue;
+              setSubmitStatus(`Submitting request ${i + 1} of ${entries.length}...`);
+              await new Promise((r) => setTimeout(r, 400));
+              const ent = entries[i];
+              const tDays = calculateLeaveDays(ent.dateFrom, ent.dateTo, effectiveDayOff);
+              const bd = getLeaveBreakdown(ent.leaveType, tDays, ent.paidDays, ent.unpaidDays);
+
+              const res = await withTimeout<{ data: any; error: any }>(
+                Promise.resolve(
+                  supabase.rpc('submit_leave_request', {
+                    p_leave_type: ent.leaveType.trim(),
+                    p_leave_category: ent.leaveCategory.trim(),
+                    p_start_date: ent.dateFrom,
+                    p_end_date: ent.dateTo,
+                    p_paid_days: bd.paidDays,
+                    p_unpaid_days: bd.unpaidDays,
+                    p_reason: ent.reason.trim(),
+                  }),
+                ),
+                25000,
+                `Submission for request #${i + 1} timed out. Please check your network connection and try again.`,
+              );
+
+              if (res?.error) {
+                const isSingleDayBday = ent.leaveCategory === 'Birthday Leave' && tDays === 1;
+                if (
+                  isSingleDayBday &&
+                  res.error.message?.toLowerCase().includes('insufficient paid leave')
+                ) {
+                  console.warn(
+                    'Birthday leave RPC credit check bypassed for auto-approved grant:',
+                    res.error.message,
+                  );
+                } else {
+                  throw new Error(res.error.message);
+                }
+              }
+              submittedIndices.current.add(i);
+            }
+          }
+
+          setSubmitStatus('Leave request updated successfully.');
+          onToast?.({
+            tone: 'success',
+            title: 'Leave updated',
+            message:
+              entries.length > 1
+                ? 'Your leave request was updated and new requests submitted.'
+                : 'Your leave request was updated successfully.',
+          });
+          await onSubmitted?.();
           return;
         }
-
-        const firstEntry = entries[0];
-        const firstTotalDays = calculateLeaveDays(firstEntry.dateFrom, firstEntry.dateTo);
-        const firstBreakdown = getLeaveBreakdown(
-          firstEntry.leaveType,
-          firstTotalDays,
-          firstEntry.paidDays,
-          firstEntry.unpaidDays,
-        );
-
-        await withTimeout(
-          updateMyPendingRequest({
-            requestId: targetReqId,
-            leaveType: firstEntry.leaveType.trim(),
-            leaveCategory: firstEntry.leaveCategory.trim(),
-            startDate: firstEntry.dateFrom,
-            endDate: firstEntry.dateTo,
-            totalDays: firstTotalDays,
-            paidDays: firstBreakdown.paidDays,
-            unpaidDays: firstBreakdown.unpaidDays,
-            reason: firstEntry.reason.trim(),
-          }),
-          25000,
-          'Updating leave request timed out. Please check your network connection.',
-        );
-
-        // If user added additional entries while editing, submit them as new requests
-        if (entries.length > 1) {
-          for (let i = 1; i < entries.length; i++) {
-            if (submittedIndices.current.has(i)) continue;
-            setSubmitStatus(`Submitting request ${i + 1} of ${entries.length}...`);
-            await new Promise((r) => setTimeout(r, 400));
-            const ent = entries[i];
-            const tDays = calculateLeaveDays(ent.dateFrom, ent.dateTo);
-            const bd = getLeaveBreakdown(ent.leaveType, tDays, ent.paidDays, ent.unpaidDays);
-
-            const res = await withTimeout<{ data: any; error: any }>(
-              Promise.resolve(
-                supabase.rpc('submit_leave_request', {
-                  p_leave_type: ent.leaveType.trim(),
-                  p_leave_category: ent.leaveCategory.trim(),
-                  p_start_date: ent.dateFrom,
-                  p_end_date: ent.dateTo,
-                  p_paid_days: bd.paidDays,
-                  p_unpaid_days: bd.unpaidDays,
-                  p_reason: ent.reason.trim(),
-                }),
-              ),
-              25000,
-              `Submission for request #${i + 1} timed out. Please check your network connection and try again.`,
-            );
-
-            if (res?.error) {
-              const isSingleDayBday = ent.leaveCategory === 'Birthday Leave' && tDays === 1;
-              if (
-                isSingleDayBday &&
-                res.error.message?.toLowerCase().includes('insufficient paid leave')
-              ) {
-                console.warn(
-                  'Birthday leave RPC credit check bypassed for auto-approved grant:',
-                  res.error.message,
-                );
-              } else {
-                throw new Error(res.error.message);
-              }
-            }
-            submittedIndices.current.add(i);
-          }
-        }
-
-        setSubmitStatus('Leave request updated successfully.');
-        onToast?.({
-          tone: 'success',
-          title: 'Leave updated',
-          message:
-            entries.length > 1
-              ? 'Your leave request was updated and new requests submitted.'
-              : 'Your leave request was updated successfully.',
-        });
-        await onSubmitted?.();
-        return;
       }
 
       // New submission: loop through all entries
@@ -1056,7 +1147,7 @@ const RequestLeave = ({
         }
 
         const ent = entries[i];
-        const tDays = calculateLeaveDays(ent.dateFrom, ent.dateTo);
+        const tDays = calculateLeaveDays(ent.dateFrom, ent.dateTo, effectiveDayOff);
         const bd = getLeaveBreakdown(ent.leaveType, tDays, ent.paidDays, ent.unpaidDays);
         const isSingleDayBirthday = ent.leaveCategory === 'Birthday Leave' && tDays === 1 && hasCompletedOneYear;
 
@@ -1232,7 +1323,7 @@ const RequestLeave = ({
     const isSingleDayBirthday =
       entries.length === 1 &&
       firstEntry.leaveCategory === 'Birthday Leave' &&
-      calculateLeaveDays(firstEntry.dateFrom, firstEntry.dateTo) === 1 &&
+      calculateLeaveDays(firstEntry.dateFrom, firstEntry.dateTo, effectiveDayOff) === 1 &&
       hasCompletedOneYear;
 
     let confirmMsg: string;
@@ -1252,6 +1343,7 @@ const RequestLeave = ({
       confirmMsg = `Are you sure you want to submit this request for ${calculateLeaveDays(
         firstEntry.dateFrom,
         firstEntry.dateTo,
+        effectiveDayOff,
       )} day(s) of ${firstEntry.leaveType || 'leave'}?`;
     }
 
@@ -1269,7 +1361,7 @@ const RequestLeave = ({
   // Calculate disabled leave types for active select sheet
   const activeEntry = activeSelect !== null ? entries[activeSelect.index] : null;
   const activeEntryDays = activeEntry
-    ? calculateLeaveDays(activeEntry.dateFrom, activeEntry.dateTo)
+    ? calculateLeaveDays(activeEntry.dateFrom, activeEntry.dateTo, effectiveDayOff)
     : 0;
   const otherCreditsDeducted = entries.reduce((sum, e, i) => {
     if (activeSelect && i === activeSelect.index) return sum;
@@ -1400,7 +1492,7 @@ const RequestLeave = ({
           {entries.map((entry, index) => {
             const actualIndex = index;
             const badgeNumber = actualIndex + 1;
-            const totalDays = calculateLeaveDays(entry.dateFrom, entry.dateTo);
+            const totalDays = calculateLeaveDays(entry.dateFrom, entry.dateTo, effectiveDayOff);
             const daysDisplayText =
               !entry.dateFrom || !entry.dateTo || totalDays <= 0 ? 'NaN' : totalDays.toFixed(2);
             const dateDisplayText = formatEsarfDateRange(entry.dateFrom, entry.dateTo);

@@ -58,6 +58,7 @@ export function calculateRequestHours({
   timeSchedule,
   dayOff,
   isFullHours = false,
+  isOvertime = false,
 }: {
   requestType: RequestTypeCode;
   dateFrom: string;
@@ -67,6 +68,7 @@ export function calculateRequestHours({
   timeSchedule: string;
   dayOff: string;
   isFullHours?: boolean;
+  isOvertime?: boolean;
 }) {
   const workStart = parseTimeToMinutes(timeFrom);
   const workEnd = parseTimeToMinutes(timeTo);
@@ -79,16 +81,19 @@ export function calculateRequestHours({
     return 0;
   }
 
+  const roundFn = isOvertime ? roundOvertimeHours : roundHours;
+
   if (requestType === 'use_offset' || isFullHours || isDateDayOff(dateFrom, dayOff)) {
-    return roundHours(workedMinutes);
+    return roundFn(workedMinutes);
   }
 
   const scheduleRange = parseScheduleRange(timeSchedule) || parseScheduleRange(DEFAULT_OFFICIAL_SCHEDULE);
   if (!scheduleRange) {
-    return roundHours(workedMinutes);
+    return roundFn(workedMinutes);
   }
 
-  return roundHours(computeOvertimeMinutes(scheduleRange, workStart, workEnd));
+  const overtimeMinutes = computeOvertimeMinutes(scheduleRange, workStart, workEnd);
+  return roundFn(overtimeMinutes);
 }
 
 export function getHoursHint(
@@ -337,11 +342,52 @@ function getDayCodeFromDate(dateValue: string) {
   return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
 }
 
-function roundHours(minutes: number) {
+export function roundHours(minutes: number) {
   if (Number.isNaN(minutes) || !Number.isFinite(minutes)) {
     return 0;
   }
   return Math.round((minutes / 60) * 100) / 100;
+}
+
+/**
+ * Rounds overtime minutes based on excess minute rules:
+ * - Excess minutes under 30 minutes are not counted (0.0 hrs).
+ * - Excess minutes 30 minutes and above are counted as 0.5 hrs (half hour).
+ * For example:
+ * 4 hrs 25 mins (265 mins) -> 4.0 hrs
+ * 4 hrs 35 mins (275 mins) -> 4.5 hrs
+ */
+export function roundOvertimeHours(minutes: number): number {
+  if (Number.isNaN(minutes) || !Number.isFinite(minutes) || minutes <= 0) {
+    return 0;
+  }
+  return Math.floor(minutes / 30) * 0.5;
+}
+
+/**
+ * Checks if a transaction string represents only FIO (Failure to Punch In/Out),
+ * only OB (Official Business), or a combination of both (without OT, Offset, UT, etc.).
+ */
+export function isFioOrObOnly(transactionStr?: string | null): boolean {
+  if (!transactionStr || !transactionStr.trim()) return false;
+  const raw = transactionStr.toLowerCase();
+  const parts = raw.split(/[,/&+]+|\band\b/).map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0) return false;
+
+  const validTokens: ('fio' | 'ob')[] = [];
+  for (const part of parts) {
+    const isFio = part === 'fio' || part.includes('failure to punch') || part.includes('failure to in') || part.includes('punch') || part.includes('(fio)');
+    const isOb = part === 'ob' || part.includes('official business') || part.includes('(ob)');
+    if (isFio) {
+      validTokens.push('fio');
+    } else if (isOb) {
+      validTokens.push('ob');
+    } else {
+      return false;
+    }
+  }
+
+  return validTokens.length > 0;
 }
 
 export const MIN_OFFSETABLE_HOURS = 4;
@@ -392,6 +438,7 @@ export function computeOffsetOvertimeHours({
     timeTo,
     timeSchedule: timeSchedule && timeSchedule !== 'No Schedule' ? timeSchedule : DEFAULT_OFFICIAL_SCHEDULE,
     dayOff: dayOff && dayOff !== 'No Day Off' ? dayOff : '',
+    isOvertime: true,
   });
 
   return hours > 0 ? hours : null;
@@ -408,13 +455,13 @@ export function getUseOffsetValidationWarning(hours: number): string | null {
     return 'Time From and Time To must result in a valid duration.';
   }
   if (hours < HALF_DAY_OFFSET_HOURS) {
-    return `The minimum Use Offset duration is ${HALF_DAY_OFFSET_HOURS.toFixed(2)} hrs (half day). This request currently has ${hours.toFixed(2)} hrs.`;
+    return `The minimum Use Offset Balance duration is ${HALF_DAY_OFFSET_HOURS.toFixed(2)} hrs (half day). This request currently has ${hours.toFixed(2)} hrs.`;
   }
   if (hours > WHOLE_DAY_OFFSET_HOURS) {
-    return `Use Offset cannot exceed ${WHOLE_DAY_OFFSET_HOURS.toFixed(2)} hrs (whole day / total working hours). This request currently has ${hours.toFixed(2)} hrs.`;
+    return `Use Offset Balance cannot exceed ${WHOLE_DAY_OFFSET_HOURS.toFixed(2)} hrs (whole day / total working hours). This request currently has ${hours.toFixed(2)} hrs.`;
   }
   if (!isValidUseOffsetHours(hours)) {
-    return `Use Offset must be set to ${HALF_DAY_OFFSET_HOURS.toFixed(2)} hrs (half day) or ${WHOLE_DAY_OFFSET_HOURS.toFixed(2)} hrs (whole day). This request currently has ${hours.toFixed(2)} hrs.`;
+    return `Use Offset Balance must be set to ${HALF_DAY_OFFSET_HOURS.toFixed(2)} hrs (half day) or ${WHOLE_DAY_OFFSET_HOURS.toFixed(2)} hrs (whole day). This request currently has ${hours.toFixed(2)} hrs.`;
   }
   return null;
 }

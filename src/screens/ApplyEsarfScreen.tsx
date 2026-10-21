@@ -65,9 +65,9 @@ import { updateMyPendingRequest, type MyRequest } from '../services/requests';
 import { removeCacheItem } from '../lib/localCache';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { isAppOnline, useNetworkStatus } from '../services/network';
-import { enqueueOfflineItem } from '../services/offlineQueue';
+import { enqueueOfflineItem, removeOfflineItem, removeRequestFromLocalCache } from '../services/offlineQueue';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
-import { formatEsarfDateRange, parseEsarfEntries, getDirectProofImageUrl, getExternalProofWebUrl } from '../components/EsarfDetailsView';
+import { formatEsarfDateRange, parseEsarfEntries, getDirectProofImageUrl, getExternalProofWebUrl, parseProofsFromReasonText } from '../components/EsarfDetailsView';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getSafeBottomInset } from '../utils/safeArea';
@@ -79,10 +79,12 @@ import {
   calculateRequestHours,
   getUseOffsetValidationWarning,
   HALF_DAY_OFFSET_HOURS,
+  isFioOrObOnly,
   isValidUseOffsetHours,
   MIN_OFFSETABLE_HOURS,
   parse12HourToken,
   parseDayOffList,
+  roundOvertimeHours,
   WHOLE_DAY_OFFSET_HOURS,
 } from '../utils/requestCalculations';
 import {
@@ -97,6 +99,7 @@ import {
   parseEsarfDateRangeStringToYMD,
   timeStringToDate,
 } from '../utils/dateTime';
+import { isScheduledOtEntry } from '../utils/scheduledOt';
 
 export type EsarfAttachment = {
   uri: string;
@@ -133,24 +136,19 @@ export function getEntryProofs(entry?: EsarfEntry | null): EsarfAttachment[] {
 
 export function parseProofsFromRawReason(rawReason: string, defaultDate?: string): EsarfAttachment[] {
   if (!rawReason) return [];
-  const proofMatches = [...rawReason.matchAll(/\[Proof:\s*([^\]]+)\]/gi)];
-  const proofTimeMatches = [...rawReason.matchAll(/\[ProofTime:\s*([^\]]+)\]/gi)];
-  const proofLocMatches = [...rawReason.matchAll(/\[ProofLoc:\s*([^\]]+)\]/gi)];
-  const proofIdMatches = [...rawReason.matchAll(/\[ProofId:\s*([^\]]+)\]/gi)];
-
-  return proofMatches.map((m, idx) => {
-    const url = m[1].trim();
-    const time = proofTimeMatches[idx]?.[1]?.trim();
-    const loc = proofLocMatches[idx]?.[1]?.trim();
-    const id = proofIdMatches[idx]?.[1]?.trim();
+  const parsed = parseProofsFromReasonText(rawReason);
+  return parsed.map((p, idx) => {
+    const isGallery = p.proofSource === 'gallery';
     return {
-      uri: getDirectProofImageUrl(url),
-      source: 'photo_proof' as const,
-      driveWebViewLink: getExternalProofWebUrl(url),
-      name: time ? `${defaultDate ? `${defaultDate} • ` : ''}${time}` : `Attached Proof ${idx + 1}`,
-      timestamp: time,
-      locationText: loc,
-      photoProofId: id,
+      uri: getDirectProofImageUrl(p.proofUrl),
+      source: p.proofSource || (isGallery ? 'gallery' : 'photo_proof'),
+      driveWebViewLink: getExternalProofWebUrl(p.proofUrl),
+      name: isGallery
+        ? `Gallery Photo ${idx + 1}`
+        : (p.proofTime ? `${defaultDate ? `${defaultDate} • ` : ''}${p.proofTime}` : `Attached Proof ${idx + 1}`),
+      timestamp: p.proofTime,
+      locationText: p.proofLocation,
+      photoProofId: p.proofId,
     };
   });
 }
@@ -196,13 +194,13 @@ type ValidationKey =
 type SectionKey = 'request' | 'transactions' | 'datetime';
 
 const transactionOptions = [
-  { key: 'ut', label: 'Undertime (UT)', shortLabel: 'UT', requestType: 'overtime' },
-  { key: 'ot', label: 'Overtime (OT)', shortLabel: 'OT', requestType: 'overtime' },
-  { key: 'fio', label: 'Failure to Punch In/Out (FIO)', shortLabel: 'FIO', requestType: 'overtime' },
-  { key: 'ob', label: 'Official Business (OB)', shortLabel: 'OB', requestType: 'overtime' },
-  { key: 'offset', label: 'Offset', shortLabel: 'Offset', requestType: 'offset_earn' },
-  { key: 'use_offset', label: 'Use Offset', shortLabel: 'Use Offset', requestType: 'use_offset' },
-] satisfies { key: string; label: string; shortLabel: string; requestType: RequestTypeCode }[];
+  { key: 'ut', label: 'Undertime (UT)', shortLabel: 'UT', backendLabel: 'UT', requestType: 'overtime' },
+  { key: 'ot', label: 'Overtime (OT)', shortLabel: 'OT', backendLabel: 'OT', requestType: 'overtime' },
+  { key: 'fio', label: 'Failure to Punch In/Out (FIO)', shortLabel: 'FIO', backendLabel: 'FIO', requestType: 'overtime' },
+  { key: 'ob', label: 'Official Business (OB)', shortLabel: 'OB', backendLabel: 'OB', requestType: 'overtime' },
+  { key: 'offset', label: 'OT for Offset', shortLabel: 'OT for Offset', backendLabel: 'Offset', requestType: 'offset_earn' },
+  { key: 'use_offset', label: 'Use Offset Balance', shortLabel: 'Use Offset Balance', backendLabel: 'Use Offset', requestType: 'use_offset' },
+] satisfies { key: string; label: string; shortLabel: string; backendLabel: string; requestType: RequestTypeCode }[];
 
 const INLINE_TIME_OPTIONS = [
   '06:00', '06:30', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30',
@@ -220,6 +218,8 @@ export {
   calculateCreditedOffsetHours,
   isValidUseOffsetHours,
   getUseOffsetValidationWarning,
+  roundOvertimeHours,
+  isFioOrObOnly,
 } from '../utils/requestCalculations';
 
 const exclusiveTransactionGroups = [
@@ -429,7 +429,7 @@ export function ApplyEsarfScreen({
             setEmployeeType(detail.employee_type);
           }
         }
-      } catch (_) {}
+      } catch (_) { }
     }
     if (!dateHired || !employeeType) {
       resolveEmployeeDetails();
@@ -460,26 +460,36 @@ export function ApplyEsarfScreen({
           const dFrom = parsedDates?.dateFrom || editingRequest.date_from || '';
           const dTo = isEntryUseOffset ? dFrom : (parsedDates?.dateTo || editingRequest.date_to || dFrom);
           const entryProofs: EsarfAttachment[] = (p.proofs && p.proofs.length > 0)
-            ? p.proofs.map((prf, pIdx) => ({
+            ? p.proofs.map((prf, pIdx) => {
+              const isGal = prf.proofSource === 'gallery' || (!prf.proofTime && !prf.proofLocation);
+              return {
                 uri: getDirectProofImageUrl(prf.proofUrl),
-                source: 'photo_proof' as const,
+                source: (isGal ? 'gallery' : (prf.proofSource || 'photo_proof')) as 'photo_proof' | 'gallery' | 'camera',
                 driveWebViewLink: getExternalProofWebUrl(prf.proofUrl),
-                name: prf.proofTime ? `${p.dateStr || dFrom} • ${prf.proofTime}` : `Attached Proof ${pIdx + 1}`,
-                timestamp: prf.proofTime,
-                locationText: prf.proofLocation,
-                photoProofId: prf.proofId,
-              }))
+                name: isGal
+                  ? `Gallery Photo ${pIdx + 1}`
+                  : (prf.proofTime ? `${p.dateStr || dFrom} • ${prf.proofTime}` : `Attached Proof ${pIdx + 1}`),
+                timestamp: isGal ? undefined : prf.proofTime,
+                locationText: isGal ? undefined : prf.proofLocation,
+                photoProofId: isGal ? undefined : prf.proofId,
+              };
+            })
             : (p.proofUrl
-                ? [{
-                    uri: getDirectProofImageUrl(p.proofUrl),
-                    source: 'photo_proof' as const,
-                    driveWebViewLink: getExternalProofWebUrl(p.proofUrl),
-                    name: p.proofTime ? `${p.dateStr || dFrom} • ${p.proofTime}` : 'Attached Proof',
-                    timestamp: p.proofTime,
-                    locationText: p.proofLocation,
-                    photoProofId: p.proofId,
-                  }]
-                : []);
+              ? [(() => {
+                const isGal = p.proofSource === 'gallery' || (!p.proofTime && !p.proofLocation);
+                return {
+                  uri: getDirectProofImageUrl(p.proofUrl),
+                  source: (isGal ? 'gallery' : (p.proofSource || 'photo_proof')) as 'photo_proof' | 'gallery' | 'camera',
+                  driveWebViewLink: getExternalProofWebUrl(p.proofUrl),
+                  name: isGal
+                    ? 'Gallery Photo'
+                    : (p.proofTime ? `${p.dateStr || dFrom} • ${p.proofTime}` : 'Attached Proof'),
+                  timestamp: isGal ? undefined : p.proofTime,
+                  locationText: isGal ? undefined : p.proofLocation,
+                  photoProofId: isGal ? undefined : p.proofId,
+                };
+              })()]
+              : []);
           return {
             id: String(idx + 1),
             transaction: key,
@@ -668,9 +678,7 @@ export function ApplyEsarfScreen({
         newAttachments.push({
           uri: savedProofItem.photoUri,
           source: 'gallery',
-          name: `${savedProofItem.dateFormatted} • ${savedProofItem.timeDigits} ${savedProofItem.timePeriod}`,
-          timestamp: savedProofItem.timestamp,
-          locationText: savedProofItem.locationText,
+          name: asset.fileName || `Gallery Photo ${i + 1}`,
           driveWebViewLink: savedProofItem.driveWebViewLink || null,
           photoProofId: savedProofItem.id,
         });
@@ -751,12 +759,15 @@ export function ApplyEsarfScreen({
       return;
     }
 
+    const isGallery = proofItem.source === 'gallery' || (!proofItem.timeDigits && !proofItem.locationText);
     const newAttachment: EsarfAttachment = {
       uri: proofItem.photoUri,
-      source: 'photo_proof',
-      name: `${proofItem.dateFormatted} • ${proofItem.timeDigits} ${proofItem.timePeriod}`,
-      timestamp: proofItem.timestamp,
-      locationText: proofItem.locationText,
+      source: isGallery ? 'gallery' : 'photo_proof',
+      name: isGallery
+        ? (proofItem.dateFormatted ? `Gallery Photo • ${proofItem.dateFormatted}` : 'Gallery Photo')
+        : `${proofItem.dateFormatted} • ${proofItem.timeDigits} ${proofItem.timePeriod}`,
+      timestamp: isGallery ? undefined : proofItem.timestamp,
+      locationText: isGallery ? undefined : proofItem.locationText,
       driveWebViewLink: proofItem.driveWebViewLink,
       photoProofId: proofItem.id,
     };
@@ -882,25 +893,25 @@ export function ApplyEsarfScreen({
             const dTo = isEntryUseOffset ? dFrom : (parsedDates?.dateTo || editingRequest.date_to || dFrom);
             const entryProofs: EsarfAttachment[] = (p.proofs && p.proofs.length > 0)
               ? p.proofs.map((prf, pIdx) => ({
-                  uri: getDirectProofImageUrl(prf.proofUrl),
-                  source: 'photo_proof' as const,
-                  driveWebViewLink: getExternalProofWebUrl(prf.proofUrl),
-                  name: prf.proofTime ? `${p.dateStr || dFrom} • ${prf.proofTime}` : `Attached Proof ${pIdx + 1}`,
-                  timestamp: prf.proofTime,
-                  locationText: prf.proofLocation,
-                  photoProofId: prf.proofId,
-                }))
+                uri: getDirectProofImageUrl(prf.proofUrl),
+                source: 'photo_proof' as const,
+                driveWebViewLink: getExternalProofWebUrl(prf.proofUrl),
+                name: prf.proofTime ? `${p.dateStr || dFrom} • ${prf.proofTime}` : `Attached Proof ${pIdx + 1}`,
+                timestamp: prf.proofTime,
+                locationText: prf.proofLocation,
+                photoProofId: prf.proofId,
+              }))
               : (p.proofUrl
-                  ? [{
-                      uri: getDirectProofImageUrl(p.proofUrl),
-                      source: 'photo_proof' as const,
-                      driveWebViewLink: getExternalProofWebUrl(p.proofUrl),
-                      name: p.proofTime ? `${p.dateStr || dFrom} • ${p.proofTime}` : 'Attached Proof',
-                      timestamp: p.proofTime,
-                      locationText: p.proofLocation,
-                      photoProofId: p.proofId,
-                    }]
-                  : []);
+                ? [{
+                  uri: getDirectProofImageUrl(p.proofUrl),
+                  source: 'photo_proof' as const,
+                  driveWebViewLink: getExternalProofWebUrl(p.proofUrl),
+                  name: p.proofTime ? `${p.dateStr || dFrom} • ${p.proofTime}` : 'Attached Proof',
+                  timestamp: p.proofTime,
+                  locationText: p.proofLocation,
+                  photoProofId: p.proofId,
+                }]
+                : []);
             return {
               id: String(idx + 1),
               transaction: transKey,
@@ -1114,6 +1125,7 @@ export function ApplyEsarfScreen({
       timeSchedule: schedule === NO_SCHEDULE_LABEL ? '' : schedule,
       dayOff: dayOff === NO_DAY_OFF_LABEL ? '' : dayOff,
       isFullHours,
+      isOvertime: isOt,
     });
   }
 
@@ -1131,6 +1143,7 @@ export function ApplyEsarfScreen({
       timeSchedule: schedule === NO_SCHEDULE_LABEL ? '' : schedule,
       dayOff: dayOff === NO_DAY_OFF_LABEL ? '' : dayOff,
       isFullHours: false,
+      isOvertime: true,
     });
   }
 
@@ -1479,7 +1492,7 @@ export function ApplyEsarfScreen({
           errors[`entry_${i}_dateTo`] = `Request #${num}: Date To cannot be earlier than Date From.`;
         } else if (transKeys.includes('use_offset')) {
           if (diff > 0) {
-            errors[`entry_${i}_dateTo`] = `Request #${num}: Each Use Offset entry applies to a single day (4.00 hrs or 8.00 hrs). To apply for consecutive dates, tap "+ Add Another Request".`;
+            errors[`entry_${i}_dateTo`] = `Request #${num}: Each Use Offset Balance entry applies to a single day (4.00 hrs or 8.00 hrs). To apply for consecutive dates, tap "+ Add Another Request".`;
           }
         } else if (diff > 1) {
           errors[`entry_${i}_dateTo`] = `Request #${num}: ESARF date range can only be for a single day or two consecutive days (e.g., overnight overtime).`;
@@ -1488,7 +1501,7 @@ export function ApplyEsarfScreen({
         const hasUseOffset = transKeys.includes('use_offset');
         const todayStr = formatDateInput(new Date());
         if ((entry.dateFrom > todayStr || entry.dateTo > todayStr) && !hasOt && !hasUseOffset) {
-          errors[`entry_${i}_dateFrom`] = `Request #${num}: Future dates are only permitted for Overtime (OT) or Use Offset requests.`;
+          errors[`entry_${i}_dateFrom`] = `Request #${num}: Future dates are only permitted for Overtime (OT) or Use Offset Balance requests.`;
         }
       }
       if (!entry.timeFrom) errors[`entry_${i}_timeFrom`] = `Request #${num}: Time From is required.`;
@@ -1512,13 +1525,14 @@ export function ApplyEsarfScreen({
       }
       if (transKeys.includes('offset')) {
         if (entry.timeFrom && entry.timeTo && hours < MIN_OFFSETABLE_HOURS) {
-          errors[`entry_${i}_offsetHours`] = `Request #${num}: The minimum offsetable hours for a regular employee is ${MIN_OFFSETABLE_HOURS.toFixed(2)} hrs (half day). This request currently has ${hours.toFixed(2)} hrs. Please select Overtime (OT) or adjust your hours.`;
+          errors[`entry_${i}_offsetHours`] = `Request #${num}: The minimum OT for Offset hours for a regular employee is ${MIN_OFFSETABLE_HOURS.toFixed(2)} hrs (half day). This request currently has ${hours.toFixed(2)} hrs. Please select Overtime (OT) or adjust your hours.`;
         }
       }
       if (!entry.reason.trim()) errors[`entry_${i}_reason`] = `Request #${num}: Reason is required.`;
 
       // Photo proof requirement for FIO transaction only (1 required, 2 optional)
-      const needsProof = isProofRequiredForTransactions(entry.transaction);
+      const isScheduledOt = isScheduledOtEntry(entry);
+      const needsProof = !isScheduledOt && isProofRequiredForTransactions(entry.transaction);
       const entryProofs = getEntryProofs(entry);
       if (needsProof && entryProofs.length === 0) {
         errors[`entry_${i}_proof`] = `Request #${num}: At least 1 photo proof is required for Failure to Punch In/Out (FIO).`;
@@ -1530,7 +1544,7 @@ export function ApplyEsarfScreen({
       const hasRegular = entries.some((e) => !parseEntryTransactions(e.transaction).includes('use_offset'));
       const hasUseOffset = entries.some((e) => parseEntryTransactions(e.transaction).includes('use_offset'));
       if (hasRegular && hasUseOffset) {
-        errors.editing_mixed = 'When editing an existing request, you cannot mix Use Offset with other transaction types.';
+        errors.editing_mixed = 'When editing an existing request, you cannot mix Use Offset Balance with other transaction types.';
       }
     }
 
@@ -1538,7 +1552,7 @@ export function ApplyEsarfScreen({
       .filter((e) => parseEntryTransactions(e.transaction).includes('use_offset'))
       .reduce((sum, e) => sum + getEntryTotalHours(e), 0);
     if (totalUseOffsetHours > effectiveOffsetBalance) {
-      errors.total_use_offset = `Total Use Offset duration (${totalUseOffsetHours.toFixed(2)} hrs) exceeds your available offset balance (${effectiveOffsetBalance.toFixed(2)} hrs).`;
+      errors.total_use_offset = `Total Use Offset Balance duration (${totalUseOffsetHours.toFixed(2)} hrs) exceeds your available offset balance (${effectiveOffsetBalance.toFixed(2)} hrs).`;
     }
 
     return errors;
@@ -1555,6 +1569,12 @@ export function ApplyEsarfScreen({
         const entryProofs = getEntryProofs(e);
         for (let pIdx = 0; pIdx < entryProofs.length; pIdx++) {
           const proof = entryProofs[pIdx];
+          const isGalleryProof = proof.source === 'gallery' || (!proof.timestamp && !proof.locationText);
+          if (isGalleryProof) {
+            proof.source = 'gallery';
+            proof.timestamp = undefined;
+            proof.locationText = undefined;
+          }
           if (!proof.photoProofId) {
             try {
               const now = new Date(proof.timestamp || Date.now());
@@ -1563,17 +1583,18 @@ export function ApplyEsarfScreen({
               const proofItem: PhotoProofItem = {
                 id: `proof_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
                 photoUri: proof.uri,
-                timestamp: proof.timestamp || now.toISOString(),
-                timeDigits: tsFormatted.timeDigits,
-                timePeriod: tsFormatted.timePeriod,
-                dateFormatted: tsFormatted.dateFormatted,
-                dayFormatted: tsFormatted.dayFormatted,
-                locationText: proof.locationText || userInfo.resolvedStore || 'Tacloban City, 6500',
+                source: isGalleryProof ? 'gallery' : (proof.source || 'photo_proof'),
+                timestamp: isGalleryProof ? now.toISOString() : (proof.timestamp || now.toISOString()),
+                timeDigits: isGalleryProof ? '' : tsFormatted.timeDigits,
+                timePeriod: isGalleryProof ? '' : tsFormatted.timePeriod,
+                dateFormatted: isGalleryProof ? '' : tsFormatted.dateFormatted,
+                dayFormatted: isGalleryProof ? '' : tsFormatted.dayFormatted,
+                locationText: isGalleryProof ? '' : (proof.locationText || userInfo.resolvedStore || 'Tacloban City, 6500'),
                 employeeId: userInfo.resolvedEmpId || null,
                 employeeName: userInfo.resolvedName,
                 userEmail: userInfo.resolvedEmail || null,
                 storeName: userInfo.resolvedStore,
-                isWatermarked: false,
+                isWatermarked: isGalleryProof ? true : false,
                 syncedToCloud: false,
               };
               await savePhotoProof(proofItem);
@@ -1587,16 +1608,19 @@ export function ApplyEsarfScreen({
         e.proofs = entryProofs;
       }
 
+      const isEdit = Boolean(editingRequest);
+      const targetReqId = editingRequest?.request_id || (editingRequest as any)?.id;
+
       const regularEntries = entries.filter(
         (e) => !parseEntryTransactions(e.transaction).includes('use_offset'),
       );
       const useOffsetEntries = entries.filter(
         (e) => parseEntryTransactions(e.transaction).includes('use_offset'),
       );
-      const targetGroups = groupsToSave || [
+      const targetGroups = groupsToSave || (isEdit && targetReqId ? [entries] : [
         ...(regularEntries.length > 0 ? [regularEntries] : []),
         ...(useOffsetEntries.length > 0 ? [useOffsetEntries] : []),
-      ];
+      ]);
 
       for (let g = 0; g < targetGroups.length; g++) {
         const groupEntries = targetGroups[g];
@@ -1614,11 +1638,14 @@ export function ApplyEsarfScreen({
         const transactionTypesPerEntry = groupEntries.map((e) => {
           const keys = parseEntryTransactions(e.transaction);
           const opts = transactionOptions.filter((t) => keys.includes(t.key));
-          return opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
+          return opts.map((t) => t.backendLabel || t.shortLabel || t.label).join('/') || e.transaction;
         });
         const combinedTransactionType = Array.from(new Set(transactionTypesPerEntry)).join(', ');
 
         const totalHoursSum = groupEntries.reduce((sum, e) => {
+          if (isFioOrObOnly(e.transaction)) {
+            return sum;
+          }
           const keys = parseEntryTransactions(e.transaction);
           const hrs = getEntryTotalHours(e);
           if (keys.includes('offset')) {
@@ -1648,9 +1675,14 @@ export function ApplyEsarfScreen({
             const link = proof.driveWebViewLink || (proof.uri?.startsWith('http') ? proof.uri : proof.uri);
             if (!link) continue;
             tags += ` [Proof: ${link}]`;
-            if (proof.timestamp) tags += ` [ProofTime: ${proof.timestamp}]`;
-            if (proof.locationText) tags += ` [ProofLoc: ${proof.locationText.replace(/[\[\]]/g, '').trim()}]`;
-            if (proof.photoProofId) tags += ` [ProofId: ${proof.photoProofId}]`;
+            const isGallery = proof.source === 'gallery' || (!proof.timestamp && !proof.locationText);
+            if (isGallery) {
+              tags += ` [ProofSource: gallery]`;
+            } else {
+              if (proof.timestamp) tags += ` [ProofTime: ${proof.timestamp}]`;
+              if (proof.locationText) tags += ` [ProofLoc: ${proof.locationText.replace(/[\[\]]/g, '').trim()}]`;
+              if (proof.photoProofId) tags += ` [ProofId: ${proof.photoProofId}]`;
+            }
           }
           return tags;
         };
@@ -1667,6 +1699,7 @@ export function ApplyEsarfScreen({
             .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
+            .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
             .trim();
         };
 
@@ -1684,7 +1717,7 @@ export function ApplyEsarfScreen({
             .map((e, idx) => {
               const keys = parseEntryTransactions(e.transaction);
               const opts = transactionOptions.filter((t) => keys.includes(t.key));
-              const transLabel = opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
+              const transLabel = opts.map((t) => t.backendLabel || t.shortLabel || t.label).join('/') || e.transaction;
               const dateStr = formatEsarfDateRange(e.dateFrom, e.dateTo);
               const timeFromStr = e.timeFrom ? formatTimeDisplay(e.timeFrom) : '';
               const timeToStr = e.timeTo ? formatTimeDisplay(e.timeTo) : '';
@@ -1694,19 +1727,29 @@ export function ApplyEsarfScreen({
               const cleanReason = cleanReasonText(e.reason);
               const proofTag = formatProofTags(getEntryProofs(e));
               const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
-              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr} (${creditedHrs.toFixed(2)} hrs): ${cleanReason}${actualTag}${proofTag}`;
+              const isFioOrOb = isFioOrObOnly(e.transaction);
+              const hrsDisplay = isFioOrOb ? '' : ` (${creditedHrs.toFixed(2)} hrs)`;
+              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${actualTag}${proofTag}`;
             })
             .join('\n');
         }
 
-        const offlineReqId = `offline_esarf_${Date.now()}_${g}`;
+        const isOfflineTarget = Boolean(isEdit && targetReqId && targetReqId.startsWith('offline_'));
+        const offlineReqId = isEdit && targetReqId
+          ? (isOfflineTarget ? targetReqId : (targetReqId.startsWith('offline_update_') ? targetReqId : `offline_update_${targetReqId}`))
+          : `offline_esarf_${Date.now()}_${g}`;
+
+        const isScheduledOffline = groupEntries.some((e) => isScheduledOtEntry(e));
+        const offlineInitialStatus = isScheduledOffline ? 'Pre-Approved (Offline)' : 'Pending Sync (Offline)';
+        const displayReqId = isEdit && targetReqId ? targetReqId : offlineReqId;
+
         const displayItem: MyRequest = {
-          request_id: offlineReqId,
+          request_id: displayReqId,
           request_type_code: primaryRequestType,
           request_type_name: 'ESARF',
-          status: 'Pending Sync (Offline)',
-          submitted_at: new Date().toISOString(),
-          final_approved_at: null,
+          status: editingRequest?.status || offlineInitialStatus,
+          submitted_at: editingRequest?.submitted_at || new Date().toISOString(),
+          final_approved_at: editingRequest?.final_approved_at ?? null,
           rejected_at: null,
           rejected_reason: null,
           date_from: overallDateFrom,
@@ -1726,7 +1769,7 @@ export function ApplyEsarfScreen({
           paid_days: null,
           unpaid_days: null,
           reason: combinedReason,
-          approval_summary: [
+          approval_summary: editingRequest?.approval_summary || [
             {
               step_order: 1,
               required_level: 1,
@@ -1756,25 +1799,33 @@ export function ApplyEsarfScreen({
             dayOff,
             payrollClass,
             combinedTransactionType,
-            attachedProofs: groupEntries.flatMap((e) => getEntryProofs(e)).map((p) => ({
-              photoProofId: p.photoProofId,
-              uri: p.uri,
-              localFileUri: (p as any).localFileUri || p.uri,
-              timestamp: p.timestamp,
-              locationText: p.locationText,
-              driveWebViewLink: p.driveWebViewLink,
-            })),
+            attachedProofs: groupEntries.flatMap((e) => getEntryProofs(e)).map((p) => {
+              const isGallery = p.source === 'gallery' || (!p.timestamp && !p.locationText);
+              return {
+                photoProofId: p.photoProofId,
+                uri: p.uri,
+                localFileUri: (p as any).localFileUri || p.uri,
+                timestamp: isGallery ? undefined : p.timestamp,
+                locationText: isGallery ? undefined : p.locationText,
+                driveWebViewLink: p.driveWebViewLink,
+                source: (isGallery ? 'gallery' : (p.source || 'photo_proof')) as 'gallery' | 'photo_proof' | 'camera',
+              };
+            }),
+            isEdit: isEdit && !isOfflineTarget,
+            targetRequestId: isEdit && !isOfflineTarget ? targetReqId : undefined,
           },
           displayItem,
           syncAttempts: 0,
         });
       }
 
-      setSubmitStatus('ESARF saved locally on this device.');
+      setSubmitStatus(isEdit ? 'ESARF update saved locally on this device.' : 'ESARF saved locally on this device.');
       onToast?.({
         tone: 'success',
-        title: 'Saved Offline 📱',
-        message: 'Your ESARF request and photos are saved safely on this device. They will automatically sync to the database once connected.',
+        title: isEdit ? 'Update Saved Offline 📱' : 'Saved Offline 📱',
+        message: isEdit
+          ? 'Your updated ESARF request and photos are saved safely on this device. They will automatically sync to the database once connected.'
+          : 'Your ESARF request and photos are saved safely on this device. They will automatically sync to the database once connected.',
       });
       await onSubmitted?.();
     } catch (saveErr) {
@@ -1829,23 +1880,25 @@ export function ApplyEsarfScreen({
                 ? `Syncing photo proof ${pIdx + 1} for Request #${i + 1} to Google Drive & database...`
                 : `Syncing photo proof for Request #${i + 1} to Google Drive & database...`,
             );
+            const isGalleryProof = proof.source === 'gallery';
             const now = new Date(proof.timestamp || Date.now());
             const tsFormatted = formatProofTimestamp(now);
             const userInfo = await resolveCurrentUserInfo();
             const proofItemToUpload: PhotoProofItem = {
               id: proof.photoProofId || `proof_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
               photoUri: proof.uri,
-              timestamp: proof.timestamp || now.toISOString(),
-              timeDigits: tsFormatted.timeDigits,
-              timePeriod: tsFormatted.timePeriod,
-              dateFormatted: tsFormatted.dateFormatted,
-              dayFormatted: tsFormatted.dayFormatted,
-              locationText: proof.locationText || userInfo.resolvedStore || 'Tacloban City, 6500',
+              source: isGalleryProof ? 'gallery' : (proof.source || 'photo_proof'),
+              timestamp: isGalleryProof ? now.toISOString() : (proof.timestamp || now.toISOString()),
+              timeDigits: isGalleryProof ? '' : tsFormatted.timeDigits,
+              timePeriod: isGalleryProof ? '' : tsFormatted.timePeriod,
+              dateFormatted: isGalleryProof ? '' : tsFormatted.dateFormatted,
+              dayFormatted: isGalleryProof ? '' : tsFormatted.dayFormatted,
+              locationText: isGalleryProof ? '' : (proof.locationText || userInfo.resolvedStore || 'Tacloban City, 6500'),
               employeeId: userInfo.resolvedEmpId || null,
               employeeName: userInfo.resolvedName,
               userEmail: userInfo.resolvedEmail || null,
               storeName: userInfo.resolvedStore,
-              isWatermarked: false,
+              isWatermarked: isGalleryProof ? true : false,
             };
 
             await savePhotoProof(proofItemToUpload);
@@ -1869,148 +1922,166 @@ export function ApplyEsarfScreen({
           throw new Error('Request ID is missing.');
         }
 
-        const lockInfo = await withTimeout(
-          checkApproverActiveViewing(targetReqId),
-          10000,
-          'Checking approver status timed out. Please try again.',
-        );
-        if (lockInfo.isLocked) {
-          const msg = `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Editing is temporarily disabled while they are viewing it to prevent data conflicts.`;
-          setActiveLockInfo(lockInfo);
-          setSubmitStatus(msg);
-          setIsSubmitting(false);
+        if (targetReqId.startsWith('offline_')) {
+          // If editing an offline-created request while online, clean up old offline queue item & local placeholder,
+          // then fall through to submit directly to database
+          await removeOfflineItem(targetReqId).catch(() => { });
+          await removeRequestFromLocalCache(targetReqId).catch(() => { });
+        } else {
+          const lockInfo = await withTimeout(
+            checkApproverActiveViewing(targetReqId),
+            10000,
+            'Checking approver status timed out. Please try again.',
+          );
+          if (lockInfo.isLocked) {
+            const msg = `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Editing is temporarily disabled while they are viewing it to prevent data conflicts.`;
+            setActiveLockInfo(lockInfo);
+            setSubmitStatus(msg);
+            setIsSubmitting(false);
+            return;
+          }
+
+          const allTransKeys = entries.flatMap((e) => parseEntryTransactions(e.transaction));
+          const isUseOffset = allTransKeys.includes('use_offset');
+          const isOffsetEarn = allTransKeys.includes('offset');
+
+          let primaryRequestType: RequestTypeCode = 'overtime';
+          if (isUseOffset) {
+            primaryRequestType = 'use_offset';
+          } else if (isOffsetEarn) {
+            primaryRequestType = 'offset_earn';
+          }
+
+          const transactionTypesPerEntry = entries.map((e) => {
+            const keys = parseEntryTransactions(e.transaction);
+            const opts = transactionOptions.filter((t) => keys.includes(t.key));
+            return opts.map((t) => t.backendLabel || t.shortLabel || t.label).join('/') || e.transaction;
+          });
+          const combinedTransactionType = Array.from(new Set(transactionTypesPerEntry)).join(', ');
+          const totalHoursSum = entries.reduce((sum, e) => {
+            if (isFioOrObOnly(e.transaction)) {
+              return sum;
+            }
+            const keys = parseEntryTransactions(e.transaction);
+            const hrs = getEntryTotalHours(e);
+            if (keys.includes('offset')) {
+              return sum + calculateCreditedOffsetHours(hrs);
+            }
+            return sum + hrs;
+          }, 0);
+
+          const allDatesFrom = entries.map((e) => e.dateFrom).filter(Boolean);
+          const allDatesTo = entries.map((e) => e.dateTo || e.dateFrom).filter(Boolean);
+          const sortedFrom = [...allDatesFrom].sort();
+          const sortedTo = [...allDatesTo].sort();
+
+          const firstEntry = entries[0];
+          const lastEntry = entries[entries.length - 1];
+          const overallDateFrom = sortedFrom[0] || firstEntry.dateFrom;
+          const overallDateTo = sortedTo[sortedTo.length - 1] || lastEntry.dateTo || lastEntry.dateFrom || firstEntry.dateFrom;
+          const overallTimeFrom = firstEntry.timeFrom;
+          const overallTimeTo = lastEntry.timeTo || firstEntry.timeTo;
+
+          const cleanReasonText = (text: string) => {
+            if (!text) return '';
+            let cleaned = text.trim();
+            const match = cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)\s*.*?\([^)]*\):\s*([\s\S]*)$/i)
+              || cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)[^:]*:\s*([\s\S]*)$/i);
+            if (match) cleaned = match[1].trim();
+            return cleaned
+              .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
+              .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+              .trim();
+          };
+
+          const formatProofTags = (proofInput?: EsarfAttachment[] | EsarfAttachment | null) => {
+            if (!proofInput) return '';
+            const proofsList = Array.isArray(proofInput) ? proofInput : [proofInput];
+            let tags = '';
+            for (const proof of proofsList) {
+              if (!proof) continue;
+              const link = proof.driveWebViewLink || (proof.uri?.startsWith('http') ? proof.uri : '');
+              if (!link) continue;
+              tags += ` [Proof: ${link}]`;
+              const isGallery = proof.source === 'gallery' || (!proof.timestamp && !proof.locationText);
+              if (isGallery) {
+                tags += ` [ProofSource: gallery]`;
+              } else {
+                if (proof.timestamp) tags += ` [ProofTime: ${proof.timestamp}]`;
+                if (proof.locationText) {
+                  const cleanLoc = proof.locationText.replace(/[\[\]]/g, '').trim();
+                  if (cleanLoc) tags += ` [ProofLoc: ${cleanLoc}]`;
+                }
+                if (proof.photoProofId) tags += ` [ProofId: ${proof.photoProofId}]`;
+              }
+            }
+            return tags;
+          };
+
+          let combinedReason: string;
+          if (entries.length === 1) {
+            const firstEntry = entries[0];
+            const keys = parseEntryTransactions(firstEntry.transaction);
+            const isOffset = keys.includes('offset');
+            const hrs = getEntryTotalHours(firstEntry);
+            const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
+            const proofTag = formatProofTags(getEntryProofs(firstEntry));
+            combinedReason = `${cleanReasonText(firstEntry.reason)}${actualTag}${proofTag}`.trim();
+          } else {
+            combinedReason = entries
+              .map((e, idx) => {
+                const keys = parseEntryTransactions(e.transaction);
+                const opts = transactionOptions.filter((t) => keys.includes(t.key));
+                const transLabel = opts.map((t) => t.backendLabel || t.shortLabel || t.label).join('/') || e.transaction;
+                const dateStr = formatEsarfDateRange(e.dateFrom, e.dateTo);
+                const timeFromStr = e.timeFrom ? formatTimeDisplay(e.timeFrom) : '';
+                const timeToStr = e.timeTo ? formatTimeDisplay(e.timeTo) : '';
+                const hrs = getEntryTotalHours(e);
+                const isOffset = keys.includes('offset');
+                const creditedHrs = isOffset ? calculateCreditedOffsetHours(hrs) : hrs;
+                const cleanReason = cleanReasonText(e.reason);
+                const proofTag = formatProofTags(getEntryProofs(e));
+                const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
+                const isFioOrOb = isFioOrObOnly(e.transaction);
+                const hrsDisplay = isFioOrOb ? '' : ` (${creditedHrs.toFixed(2)} hrs)`;
+                return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${actualTag}${proofTag}`;
+              })
+              .join('\n');
+          }
+
+          await withTimeout(
+            updateMyPendingRequest({
+              requestId: targetReqId,
+              requestTypeCode: primaryRequestType,
+              dateFrom: overallDateFrom,
+              dateTo: overallDateTo,
+              timeFrom: overallTimeFrom,
+              timeTo: overallTimeTo,
+              totalHours: totalHoursSum,
+              timeSchedule: schedule,
+              dayOff: dayOff,
+              payrollClass: payrollClass,
+              transactionType: combinedTransactionType,
+              reason: combinedReason,
+            }),
+            25000,
+            'Updating ESARF request timed out. Please check your network connection.',
+          );
+
+          setSubmitStatus(`Updated ESARF request with ${entries.length} entry(ies).`);
+          onToast?.({
+            tone: 'success',
+            title: 'ESARF updated',
+            message: `ESARF request with ${entries.length} entry(ies) has been updated.`,
+          });
+          await removeCacheItem('my_requests_v1').catch(() => { });
+          await onSubmitted?.();
           return;
         }
-
-        const allTransKeys = entries.flatMap((e) => parseEntryTransactions(e.transaction));
-        const isUseOffset = allTransKeys.includes('use_offset');
-        const isOffsetEarn = allTransKeys.includes('offset');
-
-        let primaryRequestType: RequestTypeCode = 'overtime';
-        if (isUseOffset) {
-          primaryRequestType = 'use_offset';
-        } else if (isOffsetEarn) {
-          primaryRequestType = 'offset_earn';
-        }
-
-        const transactionTypesPerEntry = entries.map((e) => {
-          const keys = parseEntryTransactions(e.transaction);
-          const opts = transactionOptions.filter((t) => keys.includes(t.key));
-          return opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
-        });
-        const combinedTransactionType = Array.from(new Set(transactionTypesPerEntry)).join(', ');
-        const totalHoursSum = entries.reduce((sum, e) => {
-          const keys = parseEntryTransactions(e.transaction);
-          const hrs = getEntryTotalHours(e);
-          if (keys.includes('offset')) {
-            return sum + calculateCreditedOffsetHours(hrs);
-          }
-          return sum + hrs;
-        }, 0);
-
-        const allDatesFrom = entries.map((e) => e.dateFrom).filter(Boolean);
-        const allDatesTo = entries.map((e) => e.dateTo || e.dateFrom).filter(Boolean);
-        const sortedFrom = [...allDatesFrom].sort();
-        const sortedTo = [...allDatesTo].sort();
-
-        const firstEntry = entries[0];
-        const lastEntry = entries[entries.length - 1];
-        const overallDateFrom = sortedFrom[0] || firstEntry.dateFrom;
-        const overallDateTo = sortedTo[sortedTo.length - 1] || lastEntry.dateTo || lastEntry.dateFrom || firstEntry.dateFrom;
-        const overallTimeFrom = firstEntry.timeFrom;
-        const overallTimeTo = lastEntry.timeTo || firstEntry.timeTo;
-
-        const cleanReasonText = (text: string) => {
-          if (!text) return '';
-          let cleaned = text.trim();
-          const match = cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)\s*.*?\([^)]*\):\s*([\s\S]*)$/i)
-            || cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)[^:]*:\s*([\s\S]*)$/i);
-          if (match) cleaned = match[1].trim();
-          return cleaned
-            .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
-            .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
-            .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
-            .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
-            .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
-            .trim();
-        };
-
-        const formatProofTags = (proofInput?: EsarfAttachment[] | EsarfAttachment | null) => {
-          if (!proofInput) return '';
-          const proofsList = Array.isArray(proofInput) ? proofInput : [proofInput];
-          let tags = '';
-          for (const proof of proofsList) {
-            if (!proof) continue;
-            const link = proof.driveWebViewLink || (proof.uri?.startsWith('http') ? proof.uri : '');
-            if (!link) continue;
-            tags += ` [Proof: ${link}]`;
-            if (proof.timestamp) tags += ` [ProofTime: ${proof.timestamp}]`;
-            if (proof.locationText) {
-              const cleanLoc = proof.locationText.replace(/[\[\]]/g, '').trim();
-              if (cleanLoc) tags += ` [ProofLoc: ${cleanLoc}]`;
-            }
-            if (proof.photoProofId) tags += ` [ProofId: ${proof.photoProofId}]`;
-          }
-          return tags;
-        };
-
-        let combinedReason: string;
-        if (entries.length === 1) {
-          const firstEntry = entries[0];
-          const keys = parseEntryTransactions(firstEntry.transaction);
-          const isOffset = keys.includes('offset');
-          const hrs = getEntryTotalHours(firstEntry);
-          const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
-          const proofTag = formatProofTags(getEntryProofs(firstEntry));
-          combinedReason = `${cleanReasonText(firstEntry.reason)}${actualTag}${proofTag}`.trim();
-        } else {
-          combinedReason = entries
-            .map((e, idx) => {
-              const keys = parseEntryTransactions(e.transaction);
-              const opts = transactionOptions.filter((t) => keys.includes(t.key));
-              const transLabel = opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
-              const dateStr = formatEsarfDateRange(e.dateFrom, e.dateTo);
-              const timeFromStr = e.timeFrom ? formatTimeDisplay(e.timeFrom) : '';
-              const timeToStr = e.timeTo ? formatTimeDisplay(e.timeTo) : '';
-              const hrs = getEntryTotalHours(e);
-              const isOffset = keys.includes('offset');
-              const creditedHrs = isOffset ? calculateCreditedOffsetHours(hrs) : hrs;
-              const cleanReason = cleanReasonText(e.reason);
-              const proofTag = formatProofTags(getEntryProofs(e));
-              const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
-              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr} (${creditedHrs.toFixed(2)} hrs): ${cleanReason}${actualTag}${proofTag}`;
-            })
-            .join('\n');
-        }
-
-        await withTimeout(
-          updateMyPendingRequest({
-            requestId: targetReqId,
-            requestTypeCode: primaryRequestType,
-            dateFrom: overallDateFrom,
-            dateTo: overallDateTo,
-            timeFrom: overallTimeFrom,
-            timeTo: overallTimeTo,
-            totalHours: totalHoursSum,
-            timeSchedule: schedule,
-            dayOff: dayOff,
-            payrollClass: payrollClass,
-            transactionType: combinedTransactionType,
-            reason: combinedReason,
-          }),
-          25000,
-          'Updating ESARF request timed out. Please check your network connection.',
-        );
-
-        setSubmitStatus(`Updated ESARF request with ${entries.length} entry(ies).`);
-        onToast?.({
-          tone: 'success',
-          title: 'ESARF updated',
-          message: `ESARF request with ${entries.length} entry(ies) has been updated.`,
-        });
-        await removeCacheItem('my_requests_v1').catch(() => { });
-        await onSubmitted?.();
-        return;
       }
 
       // New submission: partition entries into regular (Group A) and Use Offset (Group B)
@@ -2059,11 +2130,14 @@ export function ApplyEsarfScreen({
         const transactionTypesPerEntry = groupEntries.map((e) => {
           const keys = parseEntryTransactions(e.transaction);
           const opts = transactionOptions.filter((t) => keys.includes(t.key));
-          return opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
+          return opts.map((t) => t.backendLabel || t.shortLabel || t.label).join('/') || e.transaction;
         });
         const combinedTransactionType = Array.from(new Set(transactionTypesPerEntry)).join(', ');
 
         const totalHoursSum = groupEntries.reduce((sum, e) => {
+          if (isFioOrObOnly(e.transaction)) {
+            return sum;
+          }
           const keys = parseEntryTransactions(e.transaction);
           const hrs = getEntryTotalHours(e);
           if (keys.includes('offset')) {
@@ -2096,6 +2170,7 @@ export function ApplyEsarfScreen({
             .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
+            .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
             .trim();
         };
 
@@ -2108,12 +2183,17 @@ export function ApplyEsarfScreen({
             const link = proof.driveWebViewLink || (proof.uri?.startsWith('http') ? proof.uri : '');
             if (!link) continue;
             tags += ` [Proof: ${link}]`;
-            if (proof.timestamp) tags += ` [ProofTime: ${proof.timestamp}]`;
-            if (proof.locationText) {
-              const cleanLoc = proof.locationText.replace(/[\[\]]/g, '').trim();
-              if (cleanLoc) tags += ` [ProofLoc: ${cleanLoc}]`;
+            const isGallery = proof.source === 'gallery' || (!proof.timestamp && !proof.locationText);
+            if (isGallery) {
+              tags += ` [ProofSource: gallery]`;
+            } else {
+              if (proof.timestamp) tags += ` [ProofTime: ${proof.timestamp}]`;
+              if (proof.locationText) {
+                const cleanLoc = proof.locationText.replace(/[\[\]]/g, '').trim();
+                if (cleanLoc) tags += ` [ProofLoc: ${cleanLoc}]`;
+              }
+              if (proof.photoProofId) tags += ` [ProofId: ${proof.photoProofId}]`;
             }
-            if (proof.photoProofId) tags += ` [ProofId: ${proof.photoProofId}]`;
           }
           return tags;
         };
@@ -2132,7 +2212,7 @@ export function ApplyEsarfScreen({
             .map((e, idx) => {
               const keys = parseEntryTransactions(e.transaction);
               const opts = transactionOptions.filter((t) => keys.includes(t.key));
-              const transLabel = opts.map((t) => t.shortLabel || t.label).join('/') || e.transaction;
+              const transLabel = opts.map((t) => t.backendLabel || t.shortLabel || t.label).join('/') || e.transaction;
               const dateStr = formatEsarfDateRange(e.dateFrom, e.dateTo);
               const timeFromStr = e.timeFrom ? formatTimeDisplay(e.timeFrom) : '';
               const timeToStr = e.timeTo ? formatTimeDisplay(e.timeTo) : '';
@@ -2142,7 +2222,9 @@ export function ApplyEsarfScreen({
               const cleanReason = cleanReasonText(e.reason);
               const proofTag = formatProofTags(getEntryProofs(e));
               const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
-              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr} (${creditedHrs.toFixed(2)} hrs): ${cleanReason}${actualTag}${proofTag}`;
+              const isFioOrOb = isFioOrObOnly(e.transaction);
+              const hrsDisplay = isFioOrOb ? '' : ` (${creditedHrs.toFixed(2)} hrs)`;
+              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${actualTag}${proofTag}`;
             })
             .join('\n');
         }
@@ -2224,15 +2306,21 @@ export function ApplyEsarfScreen({
       }
       const offsetDeductedNote = offsetNotesList.length > 0 ? ` (${offsetNotesList.join(', ')})` : '';
 
-      const successMessage = groupsToSubmit.length > 1
-        ? `Submitted ${groupsToSubmit.length} separate ESARF requests (${regularEntries.length} regular entry(ies) and ${useOffsetEntries.length} Use Offset entry(ies)${offsetDeductedNote}).`
-        : `Submitted ESARF request with ${entries.length} entry(ies)${offsetDeductedNote}.`;
+      const isAnyScheduled = entries.some((e) => isScheduledOtEntry(e));
+      const successTitle = isAnyScheduled ? 'Scheduled OT Pre-Approved ⏱️' : 'ESARF submitted';
+      const successMessage = isAnyScheduled
+        ? `Submitted scheduled overtime request. It is Pre-Approved! Remember to attach photo proof on your scheduled date from your Requests tab.`
+        : (groupsToSubmit.length > 1
+          ? `Submitted ${groupsToSubmit.length} separate ESARF requests (${regularEntries.length} regular entry(ies) and ${useOffsetEntries.length} Use Offset Balance entry(ies)${offsetDeductedNote}).`
+          : `Submitted ESARF request with ${entries.length} entry(ies)${offsetDeductedNote}.`);
 
       setSubmitStatus(successMessage);
       onToast?.({
         tone: 'success',
-        title: 'ESARF submitted',
-        message: `${successMessage} Sent for approval.`,
+        title: successTitle,
+        message: isAnyScheduled
+          ? 'Your request is pre-approved! Remember to attach photo proof on your scheduled date from the Requests tab.'
+          : `${successMessage} Sent for approval.`,
       });
       await onSubmitted?.();
     } catch (error) {
@@ -2297,8 +2385,8 @@ export function ApplyEsarfScreen({
     const confirmTitle = isOffline
       ? 'Save ESARF Offline'
       : isEdit
-      ? 'Confirm ESARF Update'
-      : 'Confirm ESARF Submission';
+        ? 'Confirm ESARF Update'
+        : 'Confirm ESARF Submission';
     const hasRegular = entries.some((e) => !parseEntryTransactions(e.transaction).includes('use_offset'));
     const hasUseOffset = entries.some((e) => parseEntryTransactions(e.transaction).includes('use_offset'));
     const isSplit = !isEdit && hasRegular && hasUseOffset;
@@ -2326,7 +2414,7 @@ export function ApplyEsarfScreen({
     const confirmMsg = (isEdit
       ? `Are you sure you want to update this ESARF request?${offsetNote}`
       : isSplit
-        ? `Your request contains both regular ESARF entries and Use Offset. These will be automatically split and submitted as 2 separate requests for approval.${offsetNote}`
+        ? `Your request contains both regular ESARF entries and Use Offset Balance. These will be automatically split and submitted as 2 separate requests for approval.${offsetNote}`
         : `Are you sure you want to submit this ESARF request with ${entries.length} entry(ies)?${offsetNote}`) + offlineNote;
 
     platformAlert(confirmTitle, confirmMsg, [
@@ -2563,6 +2651,7 @@ export function ApplyEsarfScreen({
               const entryOtHours = getEntryOffsetOvertimeHours(entry);
               const creditedOffsetHours = calculateCreditedOffsetHours(entryOtHours);
               const offsetInfo = useOffsetBreakdowns[actualIndex];
+              const hideTotalHours = isFioOrObOnly(entry.transaction);
 
               return (
                 <View
@@ -2659,48 +2748,50 @@ export function ApplyEsarfScreen({
 
                   {/* Row 2: Total No of Hours / Offset Balance, Time From, Time To */}
                   <View style={styles.underlineRow}>
-                    <View style={styles.underlineField}>
-                      <View
-                        style={[
-                          styles.underlineBox,
-                          (isUseOffset && ((offsetBalance ?? 0) <= 0 || offsetInfo?.isExceeded || offsetInfo?.hasZeroBalance || (entry.timeFrom && entry.timeTo && !isValidUseOffsetHours(hours)))) ||
-                            (isOffsetEarn && entry.timeFrom && entry.timeTo && hours < MIN_OFFSETABLE_HOURS)
-                            ? styles.inputError
-                            : null,
-                        ]}
-                      >
-                        <Text
+                    {!hideTotalHours ? (
+                      <View style={styles.underlineField}>
+                        <View
                           style={[
-                            styles.underlineText,
+                            styles.underlineBox,
                             (isUseOffset && ((offsetBalance ?? 0) <= 0 || offsetInfo?.isExceeded || offsetInfo?.hasZeroBalance || (entry.timeFrom && entry.timeTo && !isValidUseOffsetHours(hours)))) ||
                               (isOffsetEarn && entry.timeFrom && entry.timeTo && hours < MIN_OFFSETABLE_HOURS)
-                              ? { color: '#dc2626', fontWeight: '800' }
+                              ? styles.inputError
+                              : null,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.underlineText,
+                              (isUseOffset && ((offsetBalance ?? 0) <= 0 || offsetInfo?.isExceeded || offsetInfo?.hasZeroBalance || (entry.timeFrom && entry.timeTo && !isValidUseOffsetHours(hours)))) ||
+                                (isOffsetEarn && entry.timeFrom && entry.timeTo && hours < MIN_OFFSETABLE_HOURS)
+                                ? { color: '#dc2626', fontWeight: '800' }
+                                : null,
+                            ]}
+                          >
+                            {isUseOffset
+                              ? (offsetInfo?.priorBalance ?? (offsetBalance ?? 0)).toFixed(2)
+                              : isOffsetEarn && entry.timeFrom && entry.timeTo && hours >= MIN_OFFSETABLE_HOURS
+                                ? calculateCreditedOffsetHours(hours).toFixed(2)
+                                : (hours ?? 0).toFixed(2)}
+                          </Text>
+                        </View>
+                        <Text
+                          style={[
+                            styles.underlineLabel,
+                            (isUseOffset && ((offsetBalance ?? 0) <= 0 || offsetInfo?.isExceeded || offsetInfo?.hasZeroBalance || (entry.timeFrom && entry.timeTo && !isValidUseOffsetHours(hours)))) ||
+                              (isOffsetEarn && entry.timeFrom && entry.timeTo && hours < MIN_OFFSETABLE_HOURS)
+                              ? { color: '#dc2626' }
                               : null,
                           ]}
                         >
                           {isUseOffset
-                            ? (offsetInfo?.priorBalance ?? (offsetBalance ?? 0)).toFixed(2)
+                            ? 'Offset Balance'
                             : isOffsetEarn && entry.timeFrom && entry.timeTo && hours >= MIN_OFFSETABLE_HOURS
-                              ? calculateCreditedOffsetHours(hours).toFixed(2)
-                              : (hours ?? 0).toFixed(2)}
+                              ? 'Credited Hours'
+                              : 'Total No of Hours'}
                         </Text>
                       </View>
-                      <Text
-                        style={[
-                          styles.underlineLabel,
-                          (isUseOffset && ((offsetBalance ?? 0) <= 0 || offsetInfo?.isExceeded || offsetInfo?.hasZeroBalance || (entry.timeFrom && entry.timeTo && !isValidUseOffsetHours(hours)))) ||
-                            (isOffsetEarn && entry.timeFrom && entry.timeTo && hours < MIN_OFFSETABLE_HOURS)
-                            ? { color: '#dc2626' }
-                            : null,
-                        ]}
-                      >
-                        {isUseOffset
-                          ? 'Offset Balance'
-                          : isOffsetEarn && entry.timeFrom && entry.timeTo && hours >= MIN_OFFSETABLE_HOURS
-                            ? 'Credited Hours'
-                            : 'Total No of Hours'}
-                      </Text>
-                    </View>
+                    ) : null}
 
                     <View style={styles.underlineField}>
                       <Pressable
@@ -2842,10 +2933,10 @@ export function ApplyEsarfScreen({
                         <View style={styles.offsetWarningCard}>
                           <View style={styles.offsetWarningCardHeader}>
                             <AlertTriangle size={14} color="#dc2626" strokeWidth={2.4} />
-                            <Text style={styles.offsetWarningCardTitle}>Minimum Use Offset Not Met</Text>
+                            <Text style={styles.offsetWarningCardTitle}>Minimum Use Offset Balance Not Met</Text>
                           </View>
                           <Text style={styles.offsetWarningCardText}>
-                            The minimum Use Offset duration is 4.00 hrs (half day). This request currently has {hours.toFixed(2)} hrs.
+                            The minimum Use Offset Balance duration is 4.00 hrs (half day). This request currently has {hours.toFixed(2)} hrs.
                           </Text>
                         </View>
                       ) : entry.timeFrom && entry.timeTo && hours > 8 ? (
@@ -2855,17 +2946,17 @@ export function ApplyEsarfScreen({
                             <Text style={styles.offsetWarningCardTitle}>Exceeds Total Working Hours</Text>
                           </View>
                           <Text style={styles.offsetWarningCardText}>
-                            Use Offset duration cannot exceed 8.00 hrs (whole day / total working hours). This request currently has {hours.toFixed(2)} hrs.
+                            Use Offset Balance duration cannot exceed 8.00 hrs (whole day / total working hours). This request currently has {hours.toFixed(2)} hrs.
                           </Text>
                         </View>
                       ) : entry.timeFrom && entry.timeTo && !isValidUseOffsetHours(hours) ? (
                         <View style={styles.offsetWarningCard}>
                           <View style={styles.offsetWarningCardHeader}>
                             <AlertTriangle size={14} color="#dc2626" strokeWidth={2.4} />
-                            <Text style={styles.offsetWarningCardTitle}>Invalid Use Offset Duration</Text>
+                            <Text style={styles.offsetWarningCardTitle}>Invalid Use Offset Balance Duration</Text>
                           </View>
                           <Text style={styles.offsetWarningCardText}>
-                            Use Offset must be set to 4.00 hrs (half day) or 8.00 hrs (whole day). This request currently has {hours.toFixed(2)} hrs.
+                            Use Offset Balance must be set to 4.00 hrs (half day) or 8.00 hrs (whole day). This request currently has {hours.toFixed(2)} hrs.
                           </Text>
                         </View>
                       ) : entry.timeFrom && entry.timeTo && offsetInfo?.isExceeded ? (
@@ -2900,10 +2991,10 @@ export function ApplyEsarfScreen({
                         <View style={styles.offsetWarningCard}>
                           <View style={styles.offsetWarningCardHeader}>
                             <AlertTriangle size={14} color="#dc2626" strokeWidth={2.4} />
-                            <Text style={styles.offsetWarningCardTitle}>Minimum Offset Hours Not Met</Text>
+                            <Text style={styles.offsetWarningCardTitle}>Minimum OT for Offset Hours Not Met</Text>
                           </View>
                           <Text style={styles.offsetWarningCardText}>
-                            The minimum offsetable hours for a regular employee is {MIN_OFFSETABLE_HOURS.toFixed(2)} hours (half day). This request currently has {hours.toFixed(2)} hrs.
+                            The minimum OT for Offset hours for a regular employee is {MIN_OFFSETABLE_HOURS.toFixed(2)} hours (half day). This request currently has {hours.toFixed(2)} hrs.
                           </Text>
                           {!entryTransKeys.includes('ot') && isOtAllowed(payrollClass) ? (
                             <Pressable
@@ -2944,7 +3035,7 @@ export function ApplyEsarfScreen({
                         </Text>
                       ) : null}
                     </View>
-                  ) : entry.timeFrom && entry.timeTo && entryOtHours >= MIN_OFFSETABLE_HOURS && !entryTransKeys.includes('offset') && !entryTransKeys.includes('use_offset') && !entryTransKeys.includes('ut') && isOffsetAllowed(payrollClass) ? (
+                  ) : !hideTotalHours && entry.timeFrom && entry.timeTo && entryOtHours >= MIN_OFFSETABLE_HOURS && !entryTransKeys.includes('offset') && !entryTransKeys.includes('use_offset') && !entryTransKeys.includes('ut') && isOffsetAllowed(payrollClass) ? (
                     <View style={styles.offsetFeedbackWrap}>
                       <View style={styles.offsetEncouragementCard}>
                         <View style={styles.offsetEncouragementCardHeader}>
@@ -3025,6 +3116,24 @@ export function ApplyEsarfScreen({
 
                   {/* Photo Proof / Gallery Attachment Section */}
                   {(() => {
+                    const isScheduledOt = isScheduledOtEntry(entry);
+                    if (isScheduledOt) {
+                      return (
+                        <View style={styles.scheduledOtNoticeCard}>
+                          <View style={styles.scheduledOtNoticeHeader}>
+                            <Clock3 size={16} color="#d97706" strokeWidth={2.4} />
+                            <Text style={styles.scheduledOtNoticeTitle}>Scheduled Overtime • Pre-Approved</Text>
+                          </View>
+                          <View style={styles.scheduledOtNoticeFooter}>
+                            <AlertTriangle size={13} color="#b45309" strokeWidth={2.2} />
+                            <Text style={styles.scheduledOtNoticeFooterText}>
+                              Reminder: You must attach your photo proof on or after <Text style={{ fontWeight: '700' }}>{entry.dateFrom || 'your scheduled date'}</Text> from the Requests tab before it will be forwarded to your approver.
+                            </Text>
+                          </View>
+                        </View>
+                      );
+                    }
+
                     const isAllowed = isProofAllowedForTransactions(entry.transaction);
                     if (!isAllowed) return null;
 
@@ -3123,10 +3232,10 @@ export function ApplyEsarfScreen({
                                   </View>
 
                                   <Text style={styles.proofMetaName} numberOfLines={1}>
-                                    {prf.name || `Attached Proof Photo ${pIdx + 1}`}
+                                    {prf.name || (prf.source === 'gallery' ? `Gallery Photo ${pIdx + 1}` : `Attached Proof Photo ${pIdx + 1}`)}
                                   </Text>
 
-                                  {prf.locationText ? (
+                                  {prf.source !== 'gallery' && prf.locationText ? (
                                     <View style={styles.proofLocationRow}>
                                       <MapPin size={11} color="#64748b" strokeWidth={2} />
                                       <Text style={styles.proofLocationText} numberOfLines={1}>
@@ -3250,8 +3359,8 @@ export function ApplyEsarfScreen({
                 {isSubmitting
                   ? 'Saving...'
                   : !isOnline
-                  ? 'Save Offline (Auto-Sync)'
-                  : 'Submit Request'}
+                    ? 'Save Offline (Auto-Sync)'
+                    : 'Submit Request'}
               </Text>
             </Pressable>
           </View>
@@ -3344,9 +3453,9 @@ export function ApplyEsarfScreen({
                           Request #{activeProofPickerIndex + 1}
                           {currentEntry?.transaction
                             ? ` • ${transactionOptions
-                                .filter((t) => parseEntryTransactions(currentEntry?.transaction).includes(t.key))
-                                .map((t) => t.shortLabel || t.label)
-                                .join(', ')}`
+                              .filter((t) => parseEntryTransactions(currentEntry?.transaction).includes(t.key))
+                              .map((t) => t.shortLabel || t.label)
+                              .join(', ')}`
                             : ''}
                           {requiresProof ? ' • 1 required, 2 optional' : ' • Optional'}
                           {attachedCount > 0 ? ` (${attachedCount}/3 attached)` : ''}
@@ -3454,7 +3563,9 @@ export function ApplyEsarfScreen({
                                     <View style={styles.proofPickerItemInfo}>
                                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                                         <Text style={styles.proofPickerItemTime}>
-                                          {item.dateFormatted} • {item.timeDigits} {item.timePeriod}
+                                          {item.source === 'gallery' || (!item.timeDigits && !item.locationText)
+                                            ? (item.dateFormatted ? `Gallery Photo • ${item.dateFormatted}` : 'Gallery Photo')
+                                            : `${item.dateFormatted} • ${item.timeDigits} ${item.timePeriod}`}
                                         </Text>
                                         {!item.syncedToCloud && !item.driveFileId ? (
                                           <View style={styles.proofPickerOfflineBadge}>
@@ -3463,7 +3574,7 @@ export function ApplyEsarfScreen({
                                           </View>
                                         ) : null}
                                       </View>
-                                      {item.locationText ? (
+                                      {item.source !== 'gallery' && item.locationText ? (
                                         <Text style={styles.proofPickerItemLocation} numberOfLines={2}>
                                           {item.locationText}
                                         </Text>
@@ -3512,9 +3623,9 @@ export function ApplyEsarfScreen({
                   <View style={styles.proofPreviewHeader}>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.proofPreviewTitle} numberOfLines={1}>
-                        {previewProof.name || 'Photo Proof Preview'}
+                        {previewProof.source === 'gallery' ? (previewProof.name || 'Gallery Photo') : (previewProof.name || 'Photo Proof Preview')}
                       </Text>
-                      {previewProof.locationText ? (
+                      {previewProof.source !== 'gallery' && previewProof.locationText ? (
                         <Text style={styles.proofPreviewSubtitle} numberOfLines={1}>
                           {previewProof.locationText}
                         </Text>
@@ -3529,15 +3640,50 @@ export function ApplyEsarfScreen({
                     </Pressable>
                   </View>
 
-                  {Platform.OS === 'web' ? (
-                    React.createElement('img', {
-                      src: getDirectProofImageUrl(previewProof.uri),
-                      referrerPolicy: 'no-referrer',
-                      style: { width: '100%', height: 380, objectFit: 'contain' },
-                    })
-                  ) : (
-                    <Image source={{ uri: getDirectProofImageUrl(previewProof.uri) }} style={styles.proofPreviewImage} resizeMode="contain" />
-                  )}
+                  <View style={{ position: 'relative', width: '100%', height: 380, backgroundColor: '#020617', overflow: 'hidden' }}>
+                    {Platform.OS === 'web' ? (
+                      React.createElement('img', {
+                        src: getDirectProofImageUrl(previewProof.uri),
+                        referrerPolicy: 'no-referrer',
+                        style: { width: '100%', height: 380, objectFit: 'contain' },
+                      })
+                    ) : (
+                      <Image source={{ uri: getDirectProofImageUrl(previewProof.uri) }} style={styles.proofPreviewImage} resizeMode="contain" />
+                    )}
+
+                    {previewProof.source !== 'gallery' && (previewProof.timestamp || previewProof.locationText) ? (() => {
+                      const ts = previewProof.timestamp
+                        ? formatProofTimestamp(new Date(previewProof.timestamp))
+                        : null;
+                      return (
+                        <>
+                          <View style={styles.proofPreviewWatermarkGradient} pointerEvents="none" />
+                          <View style={styles.proofPreviewWatermarkContainer} pointerEvents="none">
+                            {ts ? (
+                              <View style={styles.proofPreviewWatermarkTimeRow}>
+                                <Text style={styles.proofPreviewWatermarkTime}>
+                                  {ts.timeDigits}
+                                  <Text style={styles.proofPreviewWatermarkPeriod}> {ts.timePeriod}</Text>
+                                </Text>
+                                <View style={styles.proofPreviewWatermarkDivider} />
+                                <View style={styles.proofPreviewWatermarkDateCol}>
+                                  <Text style={styles.proofPreviewWatermarkDate}>{ts.dateFormatted}</Text>
+                                  <Text style={styles.proofPreviewWatermarkDay}>{ts.dayFormatted}</Text>
+                                </View>
+                              </View>
+                            ) : null}
+                            {previewProof.locationText ? (
+                              <View style={styles.proofPreviewWatermarkLocationRow}>
+                                <Text style={styles.proofPreviewWatermarkLocation} numberOfLines={3}>
+                                  {previewProof.locationText}
+                                </Text>
+                              </View>
+                            ) : null}
+                          </View>
+                        </>
+                      );
+                    })() : null}
+                  </View>
 
                   <View style={styles.proofPreviewFooter}>
                     {previewProof.driveWebViewLink || previewProof.uri.startsWith('http') ? (
@@ -3853,10 +3999,10 @@ export function ApplyEsarfScreen({
                 entryTransKeys.includes('ot') ||
                 (currentEntry?.transaction
                   ? currentEntry.transaction
-                      .toLowerCase()
-                      .split(/[,/]+/)
-                      .map((s) => s.trim())
-                      .some((k) => k === 'ot' || k.includes('overtime'))
+                    .toLowerCase()
+                    .split(/[,/]+/)
+                    .map((s) => s.trim())
+                    .some((k) => k === 'ot' || k.includes('overtime'))
                   : false);
               const allowFutureDates = isEntryUseOffset || isEntryHasOt;
               return (
@@ -3975,7 +4121,7 @@ export function ApplyEsarfScreen({
 const submissionNotes = [
   {
     title: 'Transaction Types',
-    description: 'Select the appropriate transaction type: Undertime (UT), Overtime (OT), Failure to In/Out (FIO), Official Business (OB), Offset Earn, or Use Offset.',
+    description: 'Select the appropriate transaction type: Undertime (UT), Overtime (OT), Failure to In/Out (FIO), Official Business (OB), OT for Offset, or Use Offset Balance.',
   },
   {
     title: 'Failure to In/Out (FIO)',
@@ -3986,7 +4132,7 @@ const submissionNotes = [
     description: 'Overnight overtime crossing midnight must be recorded under its shift start date or actual working hours. Managerial overtime follows company policy.',
   },
   {
-    title: 'Offset & Use Offset',
+    title: 'OT for Offset & Use Offset Balance',
     description:
       'The minimum offsetable hours is 4.00 hours (half day, 4.00 hrs credited) or 8.00 hours (whole day, 8.00 hrs credited). If duration exceeds 4 hours (e.g. 5, 6, 7 hrs), only 4.00 hrs will be credited. If duration exceeds 8 hours (e.g. 9+ hrs), only 8.00 hrs will be credited. When using offset, ensure your current balance is sufficient to cover the requested duration.',
   },
@@ -3996,7 +4142,7 @@ const submissionNotes = [
   },
   {
     title: 'Automatic Split',
-    description: 'If regular entries and Use Offset entries are combined in one form, the system automatically splits them into separate requests for approval routing.',
+    description: 'If regular entries and Use Offset Balance entries are combined in one form, the system automatically splits them into separate requests for approval routing.',
   },
   {
     title: 'Approval & Lock Protection',
@@ -4068,9 +4214,14 @@ function parseTransactionStringToKeys(rawStr?: string | null, requestTypeCode?: 
 
   for (const part of parts) {
     const lower = part.toLowerCase();
-    if (lower === 'use_offset' || lower === 'use offset' || lower.includes('use offset')) {
+    if (
+      lower === 'use_offset' ||
+      lower === 'use offset' ||
+      lower.includes('use offset') ||
+      lower.includes('use offset balance')
+    ) {
       if (!matchedKeys.includes('use_offset')) matchedKeys.push('use_offset');
-    } else if (lower.includes('offset')) {
+    } else if (lower.includes('ot for offset') || lower.includes('offset')) {
       if (!matchedKeys.includes('offset')) matchedKeys.push('offset');
     } else if (lower.includes('undertime') || lower === 'ut' || lower.includes('(ut)')) {
       if (!matchedKeys.includes('ut')) matchedKeys.push('ut');
@@ -4207,7 +4358,7 @@ function validateForm({
       errors.dateTo = 'Date To cannot be earlier than Date From';
     } else if (transactions.includes('use_offset')) {
       if (diff > 0) {
-        errors.dateTo = 'Each Use Offset entry applies to a single day (4.00 hrs or 8.00 hrs). To apply for consecutive dates, add another request.';
+        errors.dateTo = 'Each Use Offset Balance entry applies to a single day (4.00 hrs or 8.00 hrs). To apply for consecutive dates, add another request.';
       }
     } else if (diff > 1) {
       errors.dateTo = 'Date range can only be for a single day or two consecutive days.';
@@ -4220,11 +4371,11 @@ function validateForm({
     if (warning) {
       errors.totalHours = warning;
     } else if (totalHours > offsetBalance) {
-      errors.totalHours = `Use Offset cannot exceed your ${offsetBalance.toFixed(2)} hour offset balance.`;
+      errors.totalHours = `Use Offset Balance cannot exceed your ${offsetBalance.toFixed(2)} hour offset balance.`;
     }
   }
   if (transactions.includes('offset') && totalHours < MIN_OFFSETABLE_HOURS) {
-    errors.totalHours = `The minimum offsetable hours for a regular employee is ${MIN_OFFSETABLE_HOURS.toFixed(2)} hours (half day, currently ${totalHours.toFixed(2)} hrs).`;
+    errors.totalHours = `The minimum OT for Offset hours for a regular employee is ${MIN_OFFSETABLE_HOURS.toFixed(2)} hours (half day, currently ${totalHours.toFixed(2)} hrs).`;
   }
   if (!reason.trim()) errors.reason = 'Reason is required.';
 
@@ -5931,6 +6082,50 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
+  /* Scheduled OT Notice Section */
+  scheduledOtNoticeCard: {
+    marginTop: 14,
+    marginBottom: 6,
+    padding: 14,
+    backgroundColor: '#fffbeb',
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: '#fcd34d',
+  },
+  scheduledOtNoticeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  scheduledOtNoticeTitle: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
+    flex: 1,
+  },
+  scheduledOtNoticeBody: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: '#78350f',
+    marginBottom: 8,
+  },
+  scheduledOtNoticeFooter: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#fef3c7',
+  },
+  scheduledOtNoticeFooterText: {
+    flex: 1,
+    fontSize: 11.5,
+    lineHeight: 16,
+    color: '#b45309',
+    fontWeight: fontWeights.medium,
+  },
+
   /* Proof Attachment Section */
   proofCardSection: {
     marginTop: 14,
@@ -6432,6 +6627,84 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 380,
     backgroundColor: '#020617',
+  },
+  proofPreviewWatermarkGradient: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 140,
+    backgroundColor: 'rgba(2, 6, 23, 0.72)',
+    zIndex: 3,
+  },
+  proofPreviewWatermarkContainer: {
+    position: 'absolute',
+    bottom: 12,
+    left: 14,
+    right: 14,
+    zIndex: 4,
+  },
+  proofPreviewWatermarkTimeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 2,
+  },
+  proofPreviewWatermarkTime: {
+    fontSize: 32,
+    lineHeight: 36,
+    fontWeight: '300',
+    color: '#ffffff',
+    textShadowColor: 'rgba(0, 0, 0, 0.9)',
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 4,
+  },
+  proofPreviewWatermarkPeriod: {
+    fontSize: 18,
+    lineHeight: 22,
+    fontWeight: fontWeights.heavy,
+    color: '#facc15',
+  },
+  proofPreviewWatermarkDivider: {
+    width: 2,
+    height: 28,
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    marginHorizontal: 6,
+  },
+  proofPreviewWatermarkDateCol: {
+    justifyContent: 'center',
+  },
+  proofPreviewWatermarkDate: {
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: fontWeights.semibold,
+    color: '#ffffff',
+    textShadowColor: 'rgba(0, 0, 0, 0.9)',
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 3,
+  },
+  proofPreviewWatermarkDay: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: fontWeights.medium,
+    color: '#ffffff',
+    textShadowColor: 'rgba(0, 0, 0, 0.9)',
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 3,
+  },
+  proofPreviewWatermarkLocationRow: {
+    marginTop: 4,
+    flexDirection: 'row',
+  },
+  proofPreviewWatermarkLocation: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: fontWeights.medium,
+    color: '#ffffff',
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 4,
   },
   proofPreviewFooter: {
     backgroundColor: '#ffffff',

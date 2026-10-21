@@ -9,7 +9,9 @@ import { isAppOnline } from './network';
 
 export type PhotoProofItem = {
   id: string;
+  localId?: string;
   photoUri: string;
+  source?: 'photo_proof' | 'gallery' | 'camera';
   timestamp: string;
   timeDigits: string; // e.g. "10:35"
   timePeriod: string; // e.g. "AM" | "PM"
@@ -391,24 +393,26 @@ export async function loadPhotoProofs(
       if (!error && data && data.length > 0) {
         const cloudItems: PhotoProofItem[] = data.map((row: any) => {
           const driveImage = row.drive_file_id ? `https://lh3.googleusercontent.com/d/${row.drive_file_id}` : '';
+          const isGallery = row.source === 'gallery' || (!row.time_digits && !row.location_text);
           return {
             id: row.id,
             photoUri: row.photo_url || driveImage || row.drive_web_view_link || '',
+            source: isGallery ? 'gallery' : (row.source || 'photo_proof'),
             timestamp: row.timestamp,
-            timeDigits: row.time_digits,
-            timePeriod: row.time_period,
-            dateFormatted: row.date_formatted,
-            dayFormatted: row.day_formatted,
-            locationText: row.location_text,
-            latitude: row.latitude,
-            longitude: row.longitude,
+            timeDigits: isGallery ? '' : (row.time_digits || ''),
+            timePeriod: isGallery ? '' : (row.time_period || ''),
+            dateFormatted: isGallery ? '' : (row.date_formatted || ''),
+            dayFormatted: isGallery ? '' : (row.day_formatted || ''),
+            locationText: isGallery ? '' : (row.location_text || ''),
+            latitude: isGallery ? undefined : row.latitude,
+            longitude: isGallery ? undefined : row.longitude,
             employeeId: row.employee_id,
             employeeName: row.employee_name,
             storeName: row.store_name,
             driveFileId: row.drive_file_id,
             driveWebViewLink: row.drive_web_view_link,
             syncedToCloud: true,
-            isWatermarked: row.is_watermarked ?? false,
+            isWatermarked: isGallery ? true : (row.is_watermarked ?? false),
           };
         });
 
@@ -553,7 +557,7 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
 
   // 1. Auto-resolve raw coordinates into human-readable street address upon cloud sync
   const hasRawCoordsOnly = !item.locationText || item.locationText.startsWith('Lat:') || item.locationText.includes('Lon:');
-  if (hasRawCoordsOnly && typeof item.latitude === 'number' && typeof item.longitude === 'number') {
+  if (item.source !== 'gallery' && hasRawCoordsOnly && typeof item.latitude === 'number' && typeof item.longitude === 'number') {
     try {
       console.log(`[PhotoProofSync] Auto-resolving offline coordinates (${item.latitude}, ${item.longitude}) to complete street address...`);
       const resolvedAddress = await reverseGeocodeCoordinates(item.latitude, item.longitude);
@@ -690,12 +694,13 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
 
       if (!updateErr && updatedRows && updatedRows.length > 0) {
         const oldId = item.id;
+        item.localId = item.localId || oldId;
         item.id = cloudRecordId!;
         item.syncedToCloud = true;
         const current = await loadPhotoProofs();
         const updated = current.map((p) =>
-          p.id === oldId || p.id === item.id
-            ? { ...p, id: cloudRecordId!, employeeId: isUUID ? resolvedEmployeeId : null, locationText: item.locationText, syncedToCloud: true }
+          p.id === oldId || p.id === item.id || (p.localId && p.localId === oldId)
+            ? { ...p, id: cloudRecordId!, localId: p.localId || oldId, employeeId: isUUID ? resolvedEmployeeId : null, locationText: item.locationText, photoUri: item.photoUri, driveFileId: item.driveFileId, driveWebViewLink: item.driveWebViewLink, syncedToCloud: true }
             : p,
         );
         await setCacheJSON(PHOTO_PROOFS_KEY, updated);
@@ -749,12 +754,13 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
         .eq('id', existingId);
 
       const oldId = item.id;
+      item.localId = item.localId || oldId;
       item.id = existingId;
       item.syncedToCloud = true;
       const current = await loadPhotoProofs();
       const updated = current.map((p) =>
-        p.id === oldId || p.id === item.id
-          ? { ...p, id: existingId, locationText: item.locationText, syncedToCloud: true }
+        p.id === oldId || p.id === item.id || (p.localId && p.localId === oldId)
+          ? { ...p, id: existingId, localId: p.localId || oldId, locationText: item.locationText, photoUri: item.photoUri, driveFileId: item.driveFileId, driveWebViewLink: item.driveWebViewLink, syncedToCloud: true }
           : p,
       );
       await setCacheJSON(PHOTO_PROOFS_KEY, updated);
@@ -811,10 +817,15 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
 
         if (!retry.error && retry.data?.id) {
           const oldId = item.id;
+          item.localId = item.localId || oldId;
           item.id = retry.data.id;
           item.syncedToCloud = true;
           const current = await loadPhotoProofs();
-          const updated = current.map((p) => (p.id === oldId || p.id === item.id ? { ...p, id: retry.data.id, syncedToCloud: true } : p));
+          const updated = current.map((p) =>
+            p.id === oldId || p.id === item.id || (p.localId && p.localId === oldId)
+              ? { ...p, id: retry.data.id, localId: p.localId || oldId, locationText: item.locationText, photoUri: item.photoUri, driveFileId: item.driveFileId, driveWebViewLink: item.driveWebViewLink, syncedToCloud: true }
+              : p
+          );
           await setCacheJSON(PHOTO_PROOFS_KEY, updated);
           return true;
         }
@@ -823,11 +834,16 @@ export async function syncPhotoProofToCloud(item: PhotoProofItem): Promise<boole
 
     if (!insertErr && insertedData?.id) {
       const oldId = item.id;
+      item.localId = item.localId || oldId;
       item.id = insertedData.id;
       item.syncedToCloud = true;
       // Sync local item ID to match cloud row UUID
       const current = await loadPhotoProofs();
-      const updated = current.map((p) => (p.id === oldId || p.id === item.id ? { ...p, id: insertedData.id, employeeId: isUUID ? resolvedEmployeeId : null, syncedToCloud: true } : p));
+      const updated = current.map((p) =>
+        p.id === oldId || p.id === item.id || (p.localId && p.localId === oldId)
+          ? { ...p, id: insertedData.id, localId: p.localId || oldId, employeeId: isUUID ? resolvedEmployeeId : null, locationText: item.locationText, photoUri: item.photoUri, driveFileId: item.driveFileId, driveWebViewLink: item.driveWebViewLink, syncedToCloud: true }
+          : p
+      );
       await setCacheJSON(PHOTO_PROOFS_KEY, updated);
       return true;
     }
@@ -883,42 +899,28 @@ export async function uploadGalleryPhotoProof({
     }
   }
 
-  let resolvedLoc = locationText;
-  let resolvedLat = latitude;
-  let resolvedLon = longitude;
-  if (!resolvedLoc) {
-    try {
-      const info = await getCurrentLocationInfo(storeName);
-      resolvedLoc = info.locationText;
-      resolvedLat = info.latitude;
-      resolvedLon = info.longitude;
-    } catch {
-      resolvedLoc = storeName || 'Tacloban City, 6500';
-    }
-  }
-
   const now = new Date();
-  const tsFormatted = formatProofTimestamp(now);
   const photoUri = base64 ? `data:image/jpeg;base64,${base64}` : uri;
 
   const newItem: PhotoProofItem = {
     id: `proof_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
     photoUri,
+    source: 'gallery',
     timestamp: now.toISOString(),
-    timeDigits: tsFormatted.timeDigits,
-    timePeriod: tsFormatted.timePeriod,
-    dateFormatted: tsFormatted.dateFormatted,
-    dayFormatted: tsFormatted.dayFormatted,
-    locationText: resolvedLoc || 'Tacloban City, 6500',
-    latitude: resolvedLat,
-    longitude: resolvedLon,
+    timeDigits: '',
+    timePeriod: '',
+    dateFormatted: '',
+    dayFormatted: '',
+    locationText: '',
+    latitude: undefined,
+    longitude: undefined,
     employeeId: resolvedEmpId || null,
     employeeName: resolvedName || 'Employee',
     userEmail: resolvedEmail || null,
     storeName: storeName || null,
     imageWidth: width,
     imageHeight: height,
-    isWatermarked: false,
+    isWatermarked: true,
     localFileUri: uri,
   };
 
@@ -980,24 +982,26 @@ export function extractDriveFileId(uri?: string | null): string | null {
 
 function mapRowToPhotoProofItem(row: any): PhotoProofItem {
   const driveImage = row.drive_file_id ? `https://lh3.googleusercontent.com/d/${row.drive_file_id}` : '';
+  const isGallery = row.source === 'gallery' || (!row.time_digits && !row.location_text);
   return {
     id: row.id,
     photoUri: row.photo_url || driveImage || row.drive_web_view_link || '',
+    source: isGallery ? 'gallery' : (row.source || 'photo_proof'),
     timestamp: row.timestamp,
-    timeDigits: row.time_digits || '',
-    timePeriod: row.time_period || '',
-    dateFormatted: row.date_formatted || '',
-    dayFormatted: row.day_formatted || '',
-    locationText: row.location_text || '',
-    latitude: row.latitude,
-    longitude: row.longitude,
+    timeDigits: isGallery ? '' : (row.time_digits || ''),
+    timePeriod: isGallery ? '' : (row.time_period || ''),
+    dateFormatted: isGallery ? '' : (row.date_formatted || ''),
+    dayFormatted: isGallery ? '' : (row.day_formatted || ''),
+    locationText: isGallery ? '' : (row.location_text || ''),
+    latitude: isGallery ? undefined : row.latitude,
+    longitude: isGallery ? undefined : row.longitude,
     employeeId: row.employee_id,
     employeeName: row.employee_name,
     storeName: row.store_name,
     driveFileId: row.drive_file_id,
     driveWebViewLink: row.drive_web_view_link,
     syncedToCloud: true,
-    isWatermarked: row.is_watermarked ?? false,
+    isWatermarked: isGallery ? true : (row.is_watermarked ?? false),
   };
 }
 
@@ -1010,6 +1014,7 @@ export async function fetchPhotoProofDetails(
     fallbackDateStr?: string;
     fallbackTimeStr?: string;
     employeeName?: string;
+    source?: 'gallery' | 'photo_proof' | 'camera';
   }
 ): Promise<PhotoProofItem | null> {
   if (!proofUrlOrId && !hints?.proofId && !hints?.timestamp) return null;
@@ -1022,19 +1027,31 @@ export async function fetchPhotoProofDetails(
     const localList = await getCacheJSON<PhotoProofItem[]>(PHOTO_PROOFS_KEY);
     if (localList && Array.isArray(localList)) {
       const match = localList.find((loc) => {
-        if (hints?.proofId && loc.id === hints.proofId) return true;
-        if (proofUrlOrId && loc.id === proofUrlOrId) return true;
+        if (hints?.proofId && (loc.id === hints.proofId || loc.localId === hints.proofId)) return true;
+        if (proofUrlOrId && (loc.id === proofUrlOrId || loc.localId === proofUrlOrId)) return true;
         if (driveId && loc.driveFileId === driveId) return true;
-        if (proofUrlOrId && (loc.photoUri === proofUrlOrId || loc.driveWebViewLink === proofUrlOrId)) return true;
+        if (proofUrlOrId && (loc.photoUri === proofUrlOrId || loc.driveWebViewLink === proofUrlOrId || loc.localFileUri === proofUrlOrId)) return true;
         if (driveId && (loc.photoUri?.includes(driveId) || loc.driveWebViewLink?.includes(driveId))) return true;
         if (hints?.timestamp && loc.timestamp === hints.timestamp) return true;
         return false;
       });
       if (match) {
-        localMatch = match;
-        // If local match already has Google Drive details, return immediately
-        if (match.driveFileId || match.driveWebViewLink) {
-          return match;
+        const isGal = match.source === 'gallery' || hints?.source === 'gallery' || (!match.timeDigits && !match.locationText);
+        localMatch = isGal
+          ? {
+              ...match,
+              source: 'gallery',
+              timeDigits: '',
+              timePeriod: '',
+              dateFormatted: '',
+              dayFormatted: '',
+              locationText: '',
+              isWatermarked: true,
+            }
+          : match;
+        // If offline or local match already has Google Drive details, return immediately
+        if (!isAppOnline() || localMatch.driveFileId || localMatch.driveWebViewLink) {
+          return localMatch;
         }
       }
     }
@@ -1042,8 +1059,14 @@ export async function fetchPhotoProofDetails(
     // ignore
   }
 
-  // 2. Query Supabase photo_proofs table
-  try {
+  // When offline, do not attempt network query to Supabase
+  if (!isAppOnline()) {
+    if (localMatch) {
+      return localMatch;
+    }
+  } else {
+    // 2. Query Supabase photo_proofs table
+    try {
     let cloudRow: any = null;
 
     if (hints?.proofId) {
@@ -1088,6 +1111,16 @@ export async function fetchPhotoProofDetails(
 
     if (cloudRow) {
       const mapped = mapRowToPhotoProofItem(cloudRow);
+      const isGal = mapped.source === 'gallery' || hints?.source === 'gallery' || (!cloudRow.time_digits && !cloudRow.location_text);
+      if (isGal) {
+        mapped.source = 'gallery';
+        mapped.timeDigits = '';
+        mapped.timePeriod = '';
+        mapped.dateFormatted = '';
+        mapped.dayFormatted = '';
+        mapped.locationText = '';
+        mapped.isWatermarked = true;
+      }
       if (localMatch) {
         try {
           const localList = (await getCacheJSON<PhotoProofItem[]>(PHOTO_PROOFS_KEY)) || [];
@@ -1102,6 +1135,7 @@ export async function fetchPhotoProofDetails(
   } catch (err) {
     console.warn('[PhotoProof] Failed to fetch photo proof details from Supabase:', err);
   }
+}
 
   // If local match exists (even without drive link), return it
   if (localMatch) {
@@ -1117,6 +1151,24 @@ export async function fetchPhotoProofDetails(
   if (!parsedDate && hints?.fallbackDateStr && hints.fallbackDateStr !== '--') {
     const d = new Date(hints.fallbackDateStr);
     if (!isNaN(d.getTime())) parsedDate = d;
+  }
+
+  if (hints?.source === 'gallery' || (!hints?.timestamp && !hints?.locationText)) {
+    return {
+      id: hints?.proofId || `proof_${Date.now()}`,
+      photoUri: proofUrlOrId || '',
+      source: 'gallery',
+      timestamp: '',
+      timeDigits: '',
+      timePeriod: '',
+      dateFormatted: '',
+      dayFormatted: '',
+      locationText: '',
+      employeeName: hints?.employeeName || null,
+      driveFileId: driveId || null,
+      driveWebViewLink: proofUrlOrId || null,
+      isWatermarked: true,
+    };
   }
 
   if (proofUrlOrId || hints?.locationText || parsedDate) {

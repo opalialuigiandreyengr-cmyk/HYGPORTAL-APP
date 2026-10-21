@@ -428,117 +428,79 @@ begin
     );
   end if;
 
-  -- Build approval routes
+  -- Build approval routes using approval_level_routes and find_request_approver
   for v_route in
-    select
-      sequence_order,
-      approver_position_id,
-      approver_type,
-      specific_approver_id,
-      is_mandatory
-    from public.approval_routes
-    where request_type_id = v_request_type.id
-      and is_active = true
-    order by sequence_order asc
+    select distinct on (step_order) *
+    from public.approval_level_routes
+    where requester_level = v_position.authority_level
+      and (department_id = v_assignment.department_id or department_id is null)
+    order by
+      step_order asc,
+      case when department_id = v_assignment.department_id then 0 else 1 end
+    limit coalesce(v_request_type.approval_count, 1)
   loop
-    for v_approver in
-      select
-        ea.id as assignment_id,
-        ea.employee_id,
-        pos.authority_level
-      from public.employee_assignments ea
-      join public.positions pos on pos.id = ea.position_id
-      where ea.is_primary = true
-        and ea.effective_from <= current_date
-        and (ea.effective_to is null or ea.effective_to >= current_date)
-        and (
-          (v_route.approver_type = 'position' and ea.position_id = v_route.approver_position_id)
-          or
-          (v_route.approver_type = 'store' and ea.store_id = v_assignment.store_id and ea.position_id = v_route.approver_position_id)
-          or
-          (v_route.approver_type = 'cluster' and ea.cluster_id = v_assignment.cluster_id and ea.position_id = v_route.approver_position_id)
-          or
-          (v_route.approver_type = 'area' and ea.area_id = v_assignment.area_id and ea.position_id = v_route.approver_position_id)
-          or
-          (v_route.approver_type = 'specific_user' and ea.employee_id = v_route.specific_approver_id)
-        )
-        and ea.employee_id <> v_profile.employee_id
-        and not (ea.employee_id = any(v_used_employee_ids))
-    loop
-      v_step_order := v_step_order + 1;
-      v_used_employee_ids := array_append(v_used_employee_ids, v_approver.employee_id);
+    select *
+    into v_approver
+    from public.find_request_approver(
+      v_assignment.id,
+      v_assignment.function_id,
+      v_route.approver_level,
+      v_profile.employee_id,
+      v_used_employee_ids
+    )
+    limit 1;
 
-      insert into public.request_approvals (
+    if coalesce((to_jsonb(v_approver)->>'approver_employee_id'), '') <> '' then
+      v_step_order := v_step_order + 1;
+
+      insert into public.request_approval_steps (
         request_id,
         step_order,
-        approver_employee_id,
-        approver_position_id,
-        status,
-        is_current,
-        is_mandatory
+        required_function_id,
+        required_level,
+        assigned_approver_employee_id,
+        assigned_approver_user_id,
+        status
       )
       values (
         v_request_id,
         v_step_order,
-        v_approver.employee_id,
-        v_route.approver_position_id,
-        'pending',
-        case when v_step_order = 1 then true else false end,
-        v_route.is_mandatory
+        v_assignment.function_id,
+        coalesce((to_jsonb(v_approver)->>'resolved_level')::integer, v_route.approver_level),
+        (to_jsonb(v_approver)->>'approver_employee_id')::uuid,
+        coalesce(
+          (to_jsonb(v_approver)->>'approver_user_profile_id')::uuid,
+          (to_jsonb(v_approver)->>'approver_user_id')::uuid,
+          (select id from public.user_profiles where employee_id = (to_jsonb(v_approver)->>'approver_employee_id')::uuid limit 1)
+        ),
+        case when v_step_order = 1 then 'pending' else 'waiting' end
       );
-    end loop;
+
+      v_used_employee_ids := array_append(v_used_employee_ids, (to_jsonb(v_approver)->>'approver_employee_id')::uuid);
+    end if;
   end loop;
 
   if v_step_order = 0 then
-    for v_approver in
-      select
-        ea.id as assignment_id,
-        ea.employee_id,
-        pos.id as position_id,
-        pos.authority_level
-      from public.employee_assignments ea
-      join public.positions pos on pos.id = ea.position_id
-      where ea.is_primary = true
-        and ea.effective_from <= current_date
-        and (ea.effective_to is null or ea.effective_to >= current_date)
-        and pos.authority_level > v_position.authority_level
-        and ea.employee_id <> v_profile.employee_id
-        and (
-          (v_assignment.store_id is not null and ea.store_id = v_assignment.store_id)
-          or
-          (v_assignment.cluster_id is not null and ea.cluster_id = v_assignment.cluster_id)
-          or
-          (v_assignment.area_id is not null and ea.area_id = v_assignment.area_id)
-          or
-          (ea.company_id = v_assignment.company_id)
-        )
-      order by pos.authority_level asc
-      limit 1
-    loop
-      v_step_order := 1;
-      insert into public.request_approvals (
-        request_id,
-        step_order,
-        approver_employee_id,
-        approver_position_id,
-        status,
-        is_current,
-        is_mandatory
-      )
-      values (
-        v_request_id,
-        1,
-        v_approver.employee_id,
-        v_approver.position_id,
-        'pending',
-        true,
-        true
-      );
-    end loop;
-  end if;
+    insert into public.request_approval_steps (
+      request_id,
+      step_order,
+      required_function_id,
+      required_level,
+      status,
+      skipped_reason
+    )
+    values (
+      v_request_id,
+      1,
+      v_assignment.function_id,
+      v_position.authority_level,
+      'admin_fallback',
+      'No approval route configured or matching approver found.'
+    );
 
-  if v_step_order = 0 then
-    raise exception 'No approvers could be determined for this request.';
+    update public.requests
+    set status = 'needs_admin_review'
+    where id = v_request_id;
   end if;
 
   return v_request_id;

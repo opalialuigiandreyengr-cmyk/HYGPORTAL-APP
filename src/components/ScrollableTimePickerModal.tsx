@@ -4,14 +4,13 @@ import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from '
 type ScrollableTimePickerModalProps = {
   visible: boolean;
   title?: string;
-  initialTime?: string; // "HH:mm" or "HH:mm:ss" (24h format, e.g. "14:50:00")
+  initialTime?: string; // "HH:mm" or "HH:mm:ss" (24h format, e.g. "14:50")
   onConfirm: (time24: string) => void;
   onCancel: () => void;
 };
 
 const HOURS_12 = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
 const MINUTES = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
-const SECONDS = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
 const ITEM_HEIGHT = 44;
 const VISIBLE_COUNT = 3;
 const PADDING_COUNT = 1; // 1 item padding top and bottom
@@ -19,7 +18,6 @@ const PADDING_COUNT = 1; // 1 item padding top and bottom
 function parse24To12(time24?: string): {
   hourStr: string;
   minuteStr: string;
-  secondStr: string;
   ampm: 'AM' | 'PM';
 } {
   if (!time24) {
@@ -29,29 +27,39 @@ function parse24To12(time24?: string): {
     h = h % 12 || 12;
     const hFormatted = String(h).padStart(2, '0');
     const mFormatted = String(now.getMinutes()).padStart(2, '0');
-    const sFormatted = String(now.getSeconds()).padStart(2, '0');
-    return { hourStr: hFormatted, minuteStr: mFormatted, secondStr: sFormatted, ampm };
+    return { hourStr: hFormatted, minuteStr: mFormatted, ampm };
   }
 
-  const parts = time24.split(':');
+  const clean = time24.trim();
+  const ampmMatch = clean.toUpperCase().match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$/);
+  if (ampmMatch) {
+    let h = parseInt(ampmMatch[1], 10);
+    h = h % 12 || 12;
+    const mNum = Math.min(59, Math.max(0, parseInt(ampmMatch[2], 10)));
+    return {
+      hourStr: String(h).padStart(2, '0'),
+      minuteStr: String(mNum).padStart(2, '0'),
+      ampm: ampmMatch[3] as 'AM' | 'PM',
+    };
+  }
+
+  const parts = clean.split(':');
   let h = parseInt(parts[0] || '9', 10);
   const mNum = Math.min(59, Math.max(0, parseInt(parts[1] || '0', 10)));
-  const sNum = Math.min(59, Math.max(0, parseInt(parts[2] || '0', 10)));
   const ampm: 'AM' | 'PM' = h >= 12 ? 'PM' : 'AM';
   h = h % 12 || 12;
   const hFormatted = String(h).padStart(2, '0');
   const mFormatted = String(mNum).padStart(2, '0');
-  const sFormatted = String(sNum).padStart(2, '0');
 
-  return { hourStr: hFormatted, minuteStr: mFormatted, secondStr: sFormatted, ampm };
+  return { hourStr: hFormatted, minuteStr: mFormatted, ampm };
 }
 
-function convert12To24(hourStr: string, minuteStr: string, secondStr: string, ampm: 'AM' | 'PM'): string {
+function convert12To24(hourStr: string, minuteStr: string, ampm: 'AM' | 'PM'): string {
   let h = parseInt(hourStr, 10);
   if (ampm === 'PM' && h < 12) h += 12;
   if (ampm === 'AM' && h === 12) h = 0;
   const hFormatted = String(h).padStart(2, '0');
-  return `${hFormatted}:${minuteStr}:${secondStr}`;
+  return `${hFormatted}:${minuteStr}`;
 }
 
 type WheelColumnProps<T> = {
@@ -159,14 +167,13 @@ function WheelColumn<T extends string | number>({
 export function ScrollableTimePickerModal({
   visible,
   title,
-  initialTime = '09:00:00',
+  initialTime = '09:00',
   onConfirm,
   onCancel,
 }: ScrollableTimePickerModalProps) {
   const parsed = useMemo(() => parse24To12(initialTime), [initialTime]);
   const [selectedHour, setSelectedHour] = useState(parsed.hourStr);
   const [selectedMinute, setSelectedMinute] = useState(parsed.minuteStr);
-  const [selectedSecond, setSelectedSecond] = useState(parsed.secondStr);
   const [selectedAmPm, setSelectedAmPm] = useState<'AM' | 'PM'>(parsed.ampm);
 
   useEffect(() => {
@@ -174,7 +181,6 @@ export function ScrollableTimePickerModal({
       const p = parse24To12(initialTime);
       setSelectedHour(p.hourStr);
       setSelectedMinute(p.minuteStr);
-      setSelectedSecond(p.secondStr);
       setSelectedAmPm(p.ampm);
     }
   }, [visible, initialTime]);
@@ -182,7 +188,7 @@ export function ScrollableTimePickerModal({
   if (!visible) return null;
 
   const handleConfirm = () => {
-    const time24 = convert12To24(selectedHour, selectedMinute, selectedSecond, selectedAmPm);
+    const time24 = convert12To24(selectedHour, selectedMinute, selectedAmPm);
     onConfirm(time24);
   };
 
@@ -204,20 +210,17 @@ export function ScrollableTimePickerModal({
               <Text style={styles.previewDigits}>{selectedHour}</Text>
               <Text style={styles.previewColon}>:</Text>
               <Text style={styles.previewDigits}>{selectedMinute}</Text>
-              <Text style={styles.previewColon}>:</Text>
-              <Text style={styles.previewDigits}>{selectedSecond}</Text>
               <Text style={styles.previewPeriod}>{selectedAmPm}</Text>
             </View>
           </View>
 
-          {/* Section 2: ADJUST HOUR · MINUTE · SECOND */}
+          {/* Section 2: ADJUST HOUR · MINUTE */}
           <Text style={[styles.sectionHeading, { marginTop: 12 }]}>
-            Adjust Hour · Minute · Second
+            Adjust Hour · Minute
           </Text>
           <View style={styles.columnHeaderRow}>
             <Text style={styles.columnHeaderText}>Hour</Text>
             <Text style={styles.columnHeaderText}>Min</Text>
-            <Text style={styles.columnHeaderText}>Sec</Text>
           </View>
 
           {/* Wheels Frame re-keyed by initialTime so columns mount pre-scrolled */}
@@ -234,13 +237,6 @@ export function ScrollableTimePickerModal({
               items={MINUTES}
               selectedValue={selectedMinute}
               onSelect={setSelectedMinute}
-            />
-
-            {/* Second Wheel */}
-            <WheelColumn
-              items={SECONDS}
-              selectedValue={selectedSecond}
-              onSelect={setSelectedSecond}
             />
           </View>
 
@@ -300,7 +296,7 @@ const styles = StyleSheet.create({
   },
   card: {
     width: '100%',
-    maxWidth: 310,
+    maxWidth: 290,
     backgroundColor: '#ffffff',
     borderRadius: 20,
     padding: 20,
@@ -339,22 +335,22 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   previewDigits: {
-    fontSize: 32,
+    fontSize: 34,
     fontWeight: '800',
     color: '#0f172a',
     letterSpacing: 0.5,
-    minWidth: 38,
+    minWidth: 42,
     textAlign: 'center',
   },
   previewColon: {
     fontSize: 26,
     fontWeight: '700',
     color: '#334155',
-    marginHorizontal: 3,
+    marginHorizontal: 4,
     alignSelf: 'center',
   },
   previewPeriod: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '800',
     color: '#0f172a',
     marginLeft: 8,

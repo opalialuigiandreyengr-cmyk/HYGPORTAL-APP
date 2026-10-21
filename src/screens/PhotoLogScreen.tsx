@@ -26,6 +26,7 @@ import {
   Download,
   ExternalLink,
   Eye,
+  Image as ImageIcon,
   MapPin,
   Plus,
   Share2,
@@ -83,6 +84,7 @@ function wrapLocationText(text: string, maxCharsPerLine = 38): string[] {
 
 function isPhotoWatermarked(item?: PhotoProofItem | null): boolean {
   if (!item) return false;
+  if (item.source === 'gallery' || (!item.timeDigits && !item.locationText)) return true;
   // Strictly applies to web/PWA where photos are captured onto the canvas with burned-in text.
   // Also checks explicit isWatermarked boolean if synced from web/PWA client.
   return Boolean(item.isWatermarked);
@@ -791,7 +793,7 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
                     </View>
                   )}
                   {/* Details overlay only shown if the photo does not already have a burned watermark */}
-                  {!isPhotoWatermarked(item) && (
+                  {!isPhotoWatermarked(item) && item.source !== 'gallery' && item.locationText && (
                     <View style={styles.imageOverlayGradient}>
                       <View style={styles.overlayTimeRow}>
                         <Text style={styles.overlayTimeText}>
@@ -825,25 +827,40 @@ export function PhotoLogScreen({ onBack, onTakeNew, employeeId, employeeName, us
                     </View>
                   )}
 
-                  <View style={styles.metaRow}>
-                    <MapPin size={15} color="#64748b" strokeWidth={2.2} />
-                    <Text style={styles.metaLocationText} numberOfLines={4}>
-                      {item.locationText}
-                    </Text>
-                  </View>
+                  {item.source !== 'gallery' && item.locationText ? (
+                    <View style={styles.metaRow}>
+                      <MapPin size={15} color="#64748b" strokeWidth={2.2} />
+                      <Text style={styles.metaLocationText} numberOfLines={4}>
+                        {item.locationText}
+                      </Text>
+                    </View>
+                  ) : null}
 
                   <View style={styles.cardBottomRow}>
                     <View style={styles.metaInfoGroup}>
-                      <View style={styles.metaChip}>
-                        <Clock size={13} color="#0284c7" strokeWidth={2.2} />
-                        <Text style={styles.metaChipText}>
-                          {item.timeDigits} {item.timePeriod}
-                        </Text>
-                      </View>
-                      <View style={styles.metaChip}>
-                        <Calendar size={13} color="#059669" strokeWidth={2.2} />
-                        <Text style={styles.metaChipText}>{item.dateFormatted}</Text>
-                      </View>
+                      {item.source === 'gallery' ? (
+                        <View style={styles.metaChip}>
+                          <ImageIcon size={13} color="#64748b" strokeWidth={2.2} />
+                          <Text style={styles.metaChipText}>Gallery Upload</Text>
+                        </View>
+                      ) : (
+                        <>
+                          {item.timeDigits ? (
+                            <View style={styles.metaChip}>
+                              <Clock size={13} color="#0284c7" strokeWidth={2.2} />
+                              <Text style={styles.metaChipText}>
+                                {item.timeDigits} {item.timePeriod}
+                              </Text>
+                            </View>
+                          ) : null}
+                          {item.dateFormatted ? (
+                            <View style={styles.metaChip}>
+                              <Calendar size={13} color="#059669" strokeWidth={2.2} />
+                              <Text style={styles.metaChipText}>{item.dateFormatted}</Text>
+                            </View>
+                          ) : null}
+                        </>
+                      )}
                     </View>
 
                     <Pressable

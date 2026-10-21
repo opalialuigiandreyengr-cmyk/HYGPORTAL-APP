@@ -1,10 +1,13 @@
+import { DeviceEventEmitter } from 'react-native';
 import { ensureFreshSession, supabase } from '../lib/supabase';
 import { getCacheJSON, removeCacheItem, setCacheJSON } from '../lib/localCache';
-import { removeOfflineItem } from './offlineQueue';
 
 export type RequestApprovalSummary = {
   step_order: number;
   required_level: number;
+  position_level?: number | null;
+  approver_level?: number | null;
+  level?: number | null;
   status: string;
   acted_at: string | null;
   remarks: string | null;
@@ -50,6 +53,9 @@ export type MyRequest = {
 
 import { isAutoApprovedBirthdayGrant } from './birthdayLeave';
 import { invalidateBalanceHistoryCache } from './balanceHistory';
+import { isAppOnline } from './network';
+import { loadPositionAuthorities } from './positions';
+import { enqueueOfflineItem, getOfflineQueue, removeOfflineItem, removeRequestFromLocalCache, type OfflineQueueItem } from './offlineQueue';
 
 let inFlightRequestsPromise: Promise<MyRequest[]> | null = null;
 let lastRequestsFetchAt = 0;
@@ -60,9 +66,31 @@ export function invalidateRequestsCache() {
   invalidateBalanceHistoryCache();
 }
 
+DeviceEventEmitter.addListener('my_requests_updated', () => {
+  lastRequestsFetchAt = 0;
+  invalidateBalanceHistoryCache();
+});
+
+DeviceEventEmitter.addListener('requests_synced_online', async () => {
+  try {
+    invalidateRequestsCache();
+    await removeCacheItem('my_requests_v1').catch(() => {});
+    if (isAppOnline()) {
+      await loadMyRequests(true).catch(() => {});
+    }
+  } catch {
+    // ignore
+  }
+});
+
 export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]> {
   const cacheKey = 'my_requests_v1';
   const cached = await getCacheJSON<MyRequest[]>(cacheKey);
+
+  // When offline, immediately return cached data without attempting any network calls
+  if (!isAppOnline()) {
+    return cached ?? [];
+  }
 
   // If cache is fresh and not forced, return cached data immediately (0 network calls)
   if (!forceRefresh && cached && cached.length > 0 && Date.now() - lastRequestsFetchAt < REQUESTS_CACHE_TTL_MS) {
@@ -78,6 +106,7 @@ export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]>
     try {
       // Ensure session is fresh before fetching requests
       await ensureFreshSession().catch(() => {});
+      loadPositionAuthorities().catch(() => {});
 
     const { data, error } = await supabase.rpc('get_my_requests');
 
@@ -93,6 +122,10 @@ export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]>
   // Normalize request status from database
   items = items.map((req) => {
     const rawLower = (req.status || '').toLowerCase().trim();
+    // If pre-approved scheduled OT, preserve it
+    if (rawLower.includes('pre_approved') || rawLower.includes('pre-approved')) {
+      return { ...req, status: 'pre_approved' };
+    }
     // If validated in database, preserve it
     if (rawLower.includes('validat')) {
       return { ...req, status: req.status || 'validated' };
@@ -150,12 +183,14 @@ export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]>
       }
     }
 
-    // Preserve any pending offline requests awaiting sync
+    // Preserve any pending offline requests awaiting sync (replace matching server items with offline edits, or prepend new offline items)
     const offlineItems = cached.filter(
       (item) =>
         item.request_id?.startsWith('offline_') ||
         (item.status || '').toLowerCase().includes('offline'),
     );
+    const offlineMap = new Map(offlineItems.map((off) => [off.request_id, off]));
+    items = items.map((serverItem) => offlineMap.get(serverItem.request_id) || serverItem);
     for (const offItem of offlineItems) {
       if (!items.some((serverItem) => serverItem.request_id === offItem.request_id)) {
         items = [offItem, ...items];
@@ -417,66 +452,189 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
   }
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export function isUUID(str?: string | null): boolean {
+  return Boolean(str && UUID_REGEX.test(str.trim()));
+}
+
 export async function deleteMyPendingRequest(requestId: string, isPerk = false) {
   if (!requestId) {
     throw new Error('Missing Request ID.');
   }
 
-  // 1. Handle local offline requests immediately without hitting Supabase
-  if (requestId.startsWith('offline_') || requestId.includes('local')) {
+  const performOfflineDeletion = async () => {
     await removeOfflineItem(requestId).catch(() => {});
-    try {
-      const cached = await getCacheJSON<MyRequest[]>('my_requests_v1');
-      if (cached && cached.length) {
-        const filtered = cached.filter((c) => c.request_id !== requestId);
-        await setCacheJSON('my_requests_v1', filtered);
-      }
-    } catch {
-      // ignore
+    await removeRequestFromLocalCache(requestId).catch(() => {});
+
+    // If a valid server online request is deleted while offline, queue a background deletion to sync when back online
+    if (isUUID(requestId) && !requestId.startsWith('offline_') && !requestId.includes('local')) {
+      await enqueueOfflineItem({
+        id: `offline_delete_${requestId}`,
+        type: 'delete_request',
+        createdAt: new Date().toISOString(),
+        payload: {
+          requestId,
+          isPerk,
+        },
+        syncAttempts: 0,
+      }).catch(() => {});
     }
+
+    invalidateRequestsCache();
+    DeviceEventEmitter.emit('my_requests_updated');
+  };
+
+  const queue: OfflineQueueItem[] = await getOfflineQueue().catch(() => [] as OfflineQueueItem[]);
+  const isQueued = queue.some(
+    (q: OfflineQueueItem) =>
+      q.id === requestId ||
+      (q.type === 'esarf' && q.displayItem?.request_id === requestId) ||
+      (q.type === 'leave' && q.displayItems?.some((d: MyRequest) => d.request_id === requestId)),
+  );
+
+  // 1. If currently offline, or if this is not a server UUID, or if it is queued offline, handle locally immediately with 0 network calls/timeouts
+  if (!isAppOnline() || !isUUID(requestId) || requestId.startsWith('offline_') || requestId.includes('local') || isQueued) {
+    await performOfflineDeletion();
     return;
   }
 
-  const lockInfo: ActiveViewerInfo = await withTimeout(
-    checkApproverActiveViewing(requestId),
-    5000,
-    'Checking approver review status timed out.',
-  ).catch((): ActiveViewerInfo => ({ isLocked: false }));
+  // Also clean up any pending offline update for this online request
+  await removeOfflineItem(requestId).catch(() => {});
+  await removeOfflineItem(`offline_update_${requestId}`).catch(() => {});
+  await removeOfflineItem(`offline_edit_${requestId}`).catch(() => {});
 
-  if (lockInfo.isLocked) {
-    throw new Error(
-      `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Deleting is temporarily disabled while they are viewing it to prevent data conflicts.`,
-    );
-  }
-
-  // Prevent deletion if any approval step has already been approved
-  if (!isPerk) {
-    const { data: deleteApprovedSteps } = await withTimeout<{ data: any[] | null; error?: any }>(
-      supabase
-        .from('request_approval_steps')
-        .select('id')
-        .eq('request_id', requestId)
-        .ilike('status', '%approved%')
-        .limit(1),
-      8000,
-      'Checking approval steps timed out.',
-    ).catch(() => ({ data: null }));
-
-    if (deleteApprovedSteps && deleteApprovedSteps.length > 0) {
-      throw new Error('This request has already received an approval in the timeline and can no longer be deleted.');
-    }
-  }
-
-  let rpcSuccess = false;
   try {
+    const lockInfo: ActiveViewerInfo = await withTimeout(
+      checkApproverActiveViewing(requestId),
+      2000,
+      'Checking approver review status timed out.',
+    ).catch((): ActiveViewerInfo => ({ isLocked: false }));
+
+    if (lockInfo.isLocked) {
+      throw new Error(
+        `This request is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Deleting is temporarily disabled while they are viewing it to prevent data conflicts.`,
+      );
+    }
+
+    // Call delete_my_pending_request RPC directly (handles ownership, pending check, timeline check, and related record deletion atomically)
     const { error: rpcErr } = await withTimeout<{ data: any; error: any }>(
       supabase.rpc('delete_my_pending_request', {
         p_request_id: requestId,
         p_is_perk: isPerk,
       }),
-      10000,
+      5000,
       'Database delete operation timed out.',
     );
+
+    if (rpcErr) {
+      const msg = rpcErr.message || '';
+      if (
+        msg.toLowerCase().includes('already received an approval') ||
+        msg.toLowerCase().includes('cannot be deleted') ||
+        msg.toLowerCase().includes('only pending')
+      ) {
+        throw new Error(msg);
+      }
+
+      // Try admin_delete_request fallback
+      const { error: adminErr } = await withTimeout<{ data: any; error: any }>(
+        supabase.rpc('admin_delete_request', {
+          p_request_id: requestId,
+          p_is_perk: isPerk,
+        }),
+        4000,
+        'Admin delete fallback timed out.',
+      );
+
+      if (adminErr) {
+        throw new Error(adminErr.message || rpcErr.message);
+      }
+    }
+
+    try {
+      invalidateRequestsCache();
+      await removeRequestFromLocalCache(requestId);
+    } catch {
+      // ignore
+    }
+  } catch (err: any) {
+    // If it is a business logic error (e.g. active review or already approved), rethrow it
+    const msg = (err?.message || '').toLowerCase();
+    const isBusinessLogicError =
+      msg.includes('currently being reviewed') ||
+      msg.includes('timeline and can no longer be deleted') ||
+      msg.includes('already received an approval');
+
+    if (isBusinessLogicError) {
+      throw err;
+    }
+
+    // If it's a network error, timeout, or connection failure, fall back seamlessly to offline deletion!
+    const isNetworkError =
+      !isAppOnline() ||
+      msg.includes('network') ||
+      msg.includes('failed to fetch') ||
+      msg.includes('timeout') ||
+      msg.includes('timed out') ||
+      msg.includes('abort') ||
+      msg.includes('offline');
+
+    if (isNetworkError) {
+      console.warn('[requests] Network issue during deletion, falling back to offline queue:', err);
+      await performOfflineDeletion();
+      return;
+    }
+
+    throw err;
+  }
+}
+
+export type AttachScheduledOtProofParams = {
+  requestId: string;
+  proofs: {
+    uri: string;
+    source?: 'photo_proof' | 'gallery' | 'camera';
+    name?: string;
+    timestamp?: string;
+    locationText?: string;
+    driveWebViewLink?: string | null;
+    photoProofId?: string;
+  }[];
+};
+
+export async function attachScheduledOtPhotoProof({ requestId, proofs }: AttachScheduledOtProofParams) {
+  if (!requestId) {
+    throw new Error('Missing Request ID.');
+  }
+  if (!proofs || proofs.length === 0) {
+    throw new Error('Please select at least 1 photo proof to attach.');
+  }
+
+  // Format proof tags
+  let proofTags = '';
+  for (const proof of proofs) {
+    const link = proof.driveWebViewLink || (proof.uri?.startsWith('http') ? proof.uri : '');
+    if (!link) continue;
+    proofTags += ` [Proof: ${link}]`;
+    const isGallery = proof.source === 'gallery' || (!proof.timestamp && !proof.locationText && !proof.photoProofId);
+    if (isGallery) {
+      proofTags += ` [ProofSource: gallery]`;
+    } else {
+      if (proof.timestamp) proofTags += ` [ProofTime: ${proof.timestamp}]`;
+      if (proof.locationText) {
+        const cleanLoc = proof.locationText.replace(/[\[\]]/g, '').trim();
+        if (cleanLoc) proofTags += ` [ProofLoc: ${cleanLoc}]`;
+      }
+      if (proof.photoProofId) proofTags += ` [ProofId: ${proof.photoProofId}]`;
+    }
+  }
+
+  let rpcSuccess = false;
+  try {
+    const { error: rpcErr } = await supabase.rpc('attach_scheduled_ot_photo_proof', {
+      p_request_id: requestId,
+      p_proof_tags: proofTags.trim(),
+    });
     if (!rpcErr) {
       rpcSuccess = true;
     }
@@ -485,78 +643,49 @@ export async function deleteMyPendingRequest(requestId: string, isPerk = false) 
   }
 
   if (!rpcSuccess) {
-    try {
-      const { error: adminErr } = await withTimeout<{ data: any; error: any }>(
-        supabase.rpc('admin_delete_request', {
-          p_request_id: requestId,
-          p_is_perk: isPerk,
-        }),
-        10000,
-        'Admin delete fallback timed out.',
-      );
-      if (!adminErr) {
-        rpcSuccess = true;
-      }
-    } catch {
-      rpcSuccess = false;
+    // Fallback: update tables directly
+    const { data: timeReq } = await supabase
+      .from('time_request_details')
+      .select('reason')
+      .eq('request_id', requestId)
+      .maybeSingle<{ reason: string | null }>();
+
+    const updatedReason = `${(timeReq?.reason || '').trim()} ${proofTags.trim()}`.trim();
+
+    await supabase
+      .from('time_request_details')
+      .update({ reason: updatedReason })
+      .eq('request_id', requestId);
+
+    await supabase
+      .from('requests')
+      .update({
+        status: 'pending',
+        reason: updatedReason,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', requestId);
+
+    // Activate first step in request_approval_steps
+    const { data: firstStep } = await supabase
+      .from('request_approval_steps')
+      .select('id')
+      .eq('request_id', requestId)
+      .order('step_order', { ascending: true })
+      .limit(1)
+      .maybeSingle<{ id: string }>();
+
+    if (firstStep?.id) {
+      await supabase
+        .from('request_approval_steps')
+        .update({ status: 'pending' })
+        .eq('id', firstStep.id)
+        .eq('status', 'waiting');
     }
   }
 
-  if (!rpcSuccess) {
-    if (isPerk) {
-      const { error } = await supabase
-        .from('employee_perk_requests')
-        .delete()
-        .eq('id', requestId);
-      if (error) {
-        throw new Error(error.message);
-      }
-    } else {
-      // If Use Offset request had deducted balance, restore it before deleting
-      try {
-        const { data: offsetTx } = await supabase
-          .from('offset_transactions')
-          .select('employee_id, hours')
-          .eq('request_id', requestId)
-          .eq('transaction_type', 'use');
-        if (offsetTx && offsetTx.length > 0) {
-          const empId = offsetTx[0].employee_id;
-          const totalRefund = offsetTx.reduce((sum, tx) => sum + Number(tx.hours ?? 0), 0);
-          if (empId && totalRefund > 0) {
-            const { data: curBal } = await supabase
-              .from('offset_balances')
-              .select('balance_hours')
-              .eq('employee_id', empId)
-              .maybeSingle<{ balance_hours: number | null }>();
-            const newBal = Number(curBal?.balance_hours ?? 0) + totalRefund;
-            await supabase
-              .from('offset_balances')
-              .update({ balance_hours: newBal, updated_at: new Date().toISOString() })
-              .eq('employee_id', empId);
-          }
-        }
-      } catch {
-        // ignore
-      }
-
-      await supabase.from('approval_push_outbox').delete().eq('request_id', requestId);
-      await supabase.from('offset_transactions').delete().eq('request_id', requestId);
-      await supabase.from('leave_transactions').delete().eq('request_id', requestId);
-      await supabase.from('time_request_details').delete().eq('request_id', requestId);
-      await supabase.from('leave_request_details').delete().eq('request_id', requestId);
-      await supabase.from('request_approval_steps').delete().eq('request_id', requestId);
-      const { error } = await supabase.from('requests').delete().eq('id', requestId);
-      if (error) {
-        throw new Error(error.message);
-      }
-    }
-  }
-
-  try {
-    invalidateRequestsCache();
-    await removeCacheItem('my_requests_v1');
-  } catch {
-    // ignore
-  }
+  invalidateRequestsCache();
+  await removeCacheItem('my_requests_v1').catch(() => {});
+  DeviceEventEmitter.emit('my_requests_updated');
 }
 

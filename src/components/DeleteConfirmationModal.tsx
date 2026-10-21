@@ -11,6 +11,7 @@ type DeleteConfirmationModalProps = {
   request: MyRequest | null;
   sequence?: number;
   isDeleting?: boolean;
+  useModal?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 };
@@ -34,121 +35,162 @@ export function DeleteConfirmationModal({
   request,
   sequence = 1,
   isDeleting = false,
+  useModal = true,
   onConfirm,
   onCancel,
 }: DeleteConfirmationModalProps) {
-  if (!visible || !request) return null;
+  const lastRequestRef = React.useRef(request);
+  if (request) {
+    lastRequestRef.current = request;
+  }
+  const displayRequest = request || lastRequestRef.current;
+  if (!displayRequest) return null;
 
-  const requestCode = formatUnifiedRequestCode(request, sequence);
-  const requestType = formatUnifiedRequestType(request);
-  const isEsarf = request.request_type_code !== 'leave' && request.request_type_code !== 'discount' && request.request_type_code !== 'charge';
+  let requestCode = 'REQ-PENDING';
+  let requestType = displayRequest?.request_type_name || 'Request';
+  try {
+    if (displayRequest) {
+      requestCode = formatUnifiedRequestCode(displayRequest, sequence);
+    }
+  } catch {
+    // fallback safe
+  }
+  try {
+    if (displayRequest) {
+      requestType = formatUnifiedRequestType(displayRequest);
+    }
+  } catch {
+    // fallback safe
+  }
+
+  const isEsarf = displayRequest?.request_type_code !== 'leave' && displayRequest?.request_type_code !== 'discount' && displayRequest?.request_type_code !== 'charge';
   const rawDate = isEsarf
-    ? request.submitted_at || request.date_from
-    : request.request_type_code === 'leave'
-      ? request.start_date || request.date_from || request.submitted_at
-      : request.date_from || request.submitted_at || null;
+    ? displayRequest?.submitted_at || displayRequest?.date_from
+    : displayRequest?.request_type_code === 'leave'
+      ? displayRequest?.start_date || displayRequest?.date_from || displayRequest?.submitted_at
+      : displayRequest?.date_from || displayRequest?.submitted_at || null;
   const requestDate = formatConfirmationDate(rawDate);
-  const reason = request.reason?.trim() || null;
+  const reason = displayRequest?.reason?.trim() || null;
 
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
-      <View style={styles.backdrop}>
-        <Pressable style={styles.dismissArea} onPress={isDeleting ? undefined : onCancel} />
+  if (!visible) return null;
 
-        <View style={styles.card}>
-          {/* Close button */}
-          <Pressable
-            style={styles.closeBtn}
-            onPress={isDeleting ? undefined : onCancel}
-            hitSlop={12}
-            accessibilityLabel="Close confirmation"
-          >
-            <X size={16} color="#94a3b8" />
-          </Pressable>
+  const content = (
+    <Pressable
+      style={styles.backdrop}
+      onPress={isDeleting ? undefined : onCancel}
+    >
+      <Pressable
+        style={styles.card}
+        onPress={(e) => {
+          e?.stopPropagation?.();
+        }}
+      >
+        {/* Close button */}
+        <Pressable
+          style={styles.closeBtn}
+          onPress={isDeleting ? undefined : onCancel}
+          hitSlop={12}
+          accessibilityLabel="Close confirmation"
+        >
+          <X size={16} color="#94a3b8" />
+        </Pressable>
 
-          {/* Red Trash Icon Header */}
-          <View style={styles.iconWrapper}>
-            <View style={styles.iconOuterRing}>
-              <View style={styles.iconInnerCircle}>
-                <Trash2 size={24} color="#dc2626" strokeWidth={2.4} />
-              </View>
+        {/* Red Trash Icon Header */}
+        <View style={styles.iconWrapper}>
+          <View style={styles.iconOuterRing}>
+            <View style={styles.iconInnerCircle}>
+              <Trash2 size={24} color="#dc2626" strokeWidth={2.4} />
             </View>
-          </View>
-
-          {/* Badge & Title */}
-          <View style={styles.headerBlock}>
-            <View style={styles.badge}>
-              <AlertTriangle size={12} color="#b91c1c" strokeWidth={2.4} />
-              <Text style={styles.badgeText}>DELETE CONFIRMATION</Text>
-            </View>
-            <Text style={styles.title}>Delete Pending Request?</Text>
-            <Text style={styles.description}>
-              Are you sure you want to delete this pending request? This action cannot be undone.
-            </Text>
-          </View>
-
-          {/* Request Info Card */}
-          <View style={styles.requestCard}>
-            <View style={styles.cardTopRow}>
-              <View style={styles.codePill}>
-                <FileText size={12} color="#1d4ed8" strokeWidth={2.2} />
-                <Text style={styles.codePillText} numberOfLines={1}>
-                  {requestCode}
-                </Text>
-              </View>
-              <View style={styles.typePill}>
-                <Text style={styles.typePillText} numberOfLines={1}>
-                  {requestType}
-                </Text>
-              </View>
-            </View>
-
-            {requestDate ? (
-              <View style={styles.dateRow}>
-                <CalendarDays size={13} color={colors.muted} strokeWidth={2.2} />
-                <Text style={styles.dateText} numberOfLines={1}>
-                  {requestDate}
-                </Text>
-              </View>
-            ) : null}
-
-            {reason ? (
-              <Text style={styles.reasonText} numberOfLines={2}>
-                "{reason}"
-              </Text>
-            ) : null}
-          </View>
-
-          {/* Action Buttons */}
-          <View style={styles.actionsRow}>
-            <Pressable
-              disabled={isDeleting}
-              style={[styles.cancelBtn, isDeleting ? styles.btnDisabled : null]}
-              onPress={onCancel}
-            >
-              <Text style={styles.cancelBtnText}>Cancel</Text>
-            </Pressable>
-
-            <Pressable
-              disabled={isDeleting}
-              style={[styles.deleteBtn, isDeleting ? styles.deleteBtnLoading : null]}
-              onPress={onConfirm}
-            >
-              {isDeleting ? (
-                <>
-                  <ActivityIndicator size="small" color="#ffffff" />
-                  <Text style={styles.deleteBtnText}>Deleting...</Text>
-                </>
-              ) : (
-                <>
-                  <Trash2 size={16} color="#ffffff" strokeWidth={2.4} />
-                  <Text style={styles.deleteBtnText}>Delete</Text>
-                </>
-              )}
-            </Pressable>
           </View>
         </View>
+
+        {/* Badge & Title */}
+        <View style={styles.headerBlock}>
+          <View style={styles.badge}>
+            <AlertTriangle size={12} color="#b91c1c" strokeWidth={2.4} />
+            <Text style={styles.badgeText}>DELETE CONFIRMATION</Text>
+          </View>
+          <Text style={styles.title}>Delete Pending Request?</Text>
+          <Text style={styles.description}>
+            Are you sure you want to delete this pending request? This action cannot be undone.
+          </Text>
+        </View>
+
+        {/* Request Info Card */}
+        <View style={styles.requestCard}>
+          <View style={styles.cardTopRow}>
+            <View style={styles.codePill}>
+              <FileText size={12} color="#1d4ed8" strokeWidth={2.2} />
+              <Text style={styles.codePillText} numberOfLines={1}>
+                {requestCode}
+              </Text>
+            </View>
+            <View style={styles.typePill}>
+              <Text style={styles.typePillText} numberOfLines={1}>
+                {requestType}
+              </Text>
+            </View>
+          </View>
+
+          {requestDate ? (
+            <View style={styles.dateRow}>
+              <CalendarDays size={13} color={colors.muted} strokeWidth={2.2} />
+              <Text style={styles.dateText} numberOfLines={1}>
+                {requestDate}
+              </Text>
+            </View>
+          ) : null}
+
+          {reason ? (
+            <Text style={styles.reasonText} numberOfLines={2}>
+              "{reason}"
+            </Text>
+          ) : null}
+        </View>
+
+        {/* Action Buttons */}
+        <View style={styles.actionsRow}>
+          <Pressable
+            disabled={isDeleting}
+            style={[styles.cancelBtn, isDeleting ? styles.btnDisabled : null]}
+            onPress={onCancel}
+          >
+            <Text style={styles.cancelBtnText}>Cancel</Text>
+          </Pressable>
+
+          <Pressable
+            disabled={isDeleting}
+            style={[styles.deleteBtn, isDeleting ? styles.deleteBtnLoading : null]}
+            onPress={onConfirm}
+          >
+            {isDeleting ? (
+              <>
+                <ActivityIndicator size="small" color="#ffffff" />
+                <Text style={styles.deleteBtnText}>Deleting...</Text>
+              </>
+            ) : (
+              <>
+                <Trash2 size={16} color="#ffffff" strokeWidth={2.4} />
+                <Text style={styles.deleteBtnText}>Delete</Text>
+              </>
+            )}
+          </Pressable>
+        </View>
+      </Pressable>
+    </Pressable>
+  );
+
+  if (!useModal) {
+    return (
+      <View style={[StyleSheet.absoluteFill, { zIndex: 9999, elevation: 30 }]}>
+        {content}
       </View>
+    );
+  }
+
+  return (
+    <Modal visible={Boolean(visible && displayRequest)} transparent animationType="fade" onRequestClose={onCancel}>
+      {content}
     </Modal>
   );
 }
@@ -160,9 +202,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     padding: spacing.md,
-  },
-  dismissArea: {
-    ...StyleSheet.absoluteFill,
   },
   card: {
     width: '100%',
@@ -178,10 +217,11 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 14 },
     shadowOpacity: 0.25,
     shadowRadius: 28,
-    elevation: 12,
+    elevation: 24,
     position: 'relative',
     alignItems: 'center',
     overflow: 'hidden',
+    zIndex: 10,
   },
   closeBtn: {
     position: 'absolute',

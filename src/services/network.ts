@@ -126,6 +126,24 @@ export async function refreshNetworkStatus(): Promise<NetworkStatus> {
 }
 
 export function initNetworkService() {
+  if (Platform.OS === 'web') {
+    if (isInitialized) return;
+    isInitialized = true;
+    if (typeof window !== 'undefined') {
+      const handleOnline = () => {
+        updateStatus({ isOnline: true, isConnected: true, isInternetReachable: true, connectionType: 'wifi' });
+      };
+      const handleOffline = () => {
+        updateStatus({ isOnline: false, isConnected: false, isInternetReachable: false, connectionType: 'none' });
+      };
+      window.addEventListener('online', handleOnline);
+      window.addEventListener('offline', handleOffline);
+      const isOnline = typeof navigator !== 'undefined' ? navigator.onLine !== false : true;
+      updateStatus({ isOnline, isConnected: isOnline, isInternetReachable: isOnline, connectionType: isOnline ? 'wifi' : 'none' });
+    }
+    return;
+  }
+
   if (!isOfflineSupported) return;
   if (isInitialized) return;
   isInitialized = true;
@@ -161,6 +179,16 @@ export function initNetworkService() {
 }
 
 export function getNetworkStatus(): NetworkStatus {
+  if (Platform.OS === 'web') {
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine !== false : true;
+    return {
+      isOnline: isOnline && currentStatus.isOnline,
+      isConnected: isOnline && currentStatus.isConnected,
+      isInternetReachable: isOnline && currentStatus.isInternetReachable,
+      connectionType: isOnline ? 'wifi' : 'none',
+      lastCheckedAt: Date.now(),
+    };
+  }
   if (!isOfflineSupported) {
     return {
       isOnline: true,
@@ -174,6 +202,12 @@ export function getNetworkStatus(): NetworkStatus {
 }
 
 export function isAppOnline(): boolean {
+  if (Platform.OS === 'web') {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return false;
+    }
+    return currentStatus.isOnline;
+  }
   if (!isOfflineSupported) {
     return true;
   }
@@ -182,29 +216,15 @@ export function isAppOnline(): boolean {
 
 /**
  * React Hook providing real-time online/offline status.
- * Always returns online on non-Android platforms (iOS Web/PWA).
  */
 export function useNetworkStatus(): NetworkStatus {
   const [status, setStatus] = useState<NetworkStatus>(() => {
-    if (!isOfflineSupported) {
-      return {
-        isOnline: true,
-        isConnected: true,
-        isInternetReachable: true,
-        connectionType: 'wifi',
-        lastCheckedAt: Date.now(),
-      };
-    }
-    return currentStatus;
+    return getNetworkStatus();
   });
 
   useEffect(() => {
-    if (!isOfflineSupported) {
-      return;
-    }
-
     initNetworkService();
-    setStatus(currentStatus);
+    setStatus(getNetworkStatus());
 
     const handler = (newStatus: NetworkStatus) => {
       setStatus(newStatus);

@@ -111,6 +111,7 @@ import { ApplyDiscountScreen } from './src/screens/ApplyDiscountScreen';
 import { ApplyEsarfScreen } from './src/screens/ApplyEsarfScreen';
 import { ApprovalsScreen } from './src/screens/ApprovalsScreen';
 import { CreateEmployeeProfileScreen } from './src/screens/CreateEmployeeProfileScreen';
+import { FileOfficialTravelOrderScreen } from './src/screens/FileOfficialTravelOrderScreen';
 import { DashboardScreen } from './src/screens/DashboardScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { NotificationsScreen } from './src/screens/NotificationsScreen';
@@ -149,7 +150,7 @@ import { getSafeBottomInset, getScreenBottomPadding } from './src/utils/safeArea
 type PortalTab = 'home' | 'requests' | 'approvals' | 'notifications' | 'perks' | 'profile' | 'settings' | 'rewards' | 'my_team' | 'tutorials';
 type PublicScreen = 'login' | 'create_profile' | 'register_account';
 type AdminScreen = 'home' | 'authority' | 'departments' | 'routes' | 'approvers' | 'clusters';
-type QuickRequestScreen = 'assistant' | 'apply_esarf' | 'request_leave' | 'apply_discount' | 'photo_proof' | 'photo_log';
+type QuickRequestScreen = 'assistant' | 'apply_esarf' | 'request_leave' | 'apply_discount' | 'file_travel_order' | 'photo_proof' | 'photo_log';
 const SUPER_ADMIN_EMAIL = 'hygportal@gmail.com';
 const hygLogo = hygPortalLogo;
 const hygCoinsImage = require('./assets/hygcoins.png');
@@ -1714,6 +1715,7 @@ export default function App() {
           onApplyEsarf={() => openQuickRequest('apply_esarf')}
           onRequestLeave={() => openQuickRequest('request_leave')}
           onApplyPerks={() => openQuickRequest('apply_discount')}
+          onFileTravelOrder={() => openQuickRequest('file_travel_order')}
           onPhotoProof={handleOpenPhotoProof}
           onPhotoLog={() => openQuickRequest('photo_log')}
           onActivityLog={() => openQuickRequest('photo_log')}
@@ -1796,6 +1798,7 @@ export default function App() {
             photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
             birthDate={profileResult?.status === 'linked' ? profileResult.profile.birthDate : null}
             dateHired={profileResult?.status === 'linked' ? profileResult.profile.dateHired : null}
+            dayOff={profileResult?.status === 'linked' ? profileResult.profile.dayOff : null}
             leaveCreditRemaining={dashboardSummary.leave_credit_remaining}
             initialDraft={assistantDraft?.intent === 'draft_leave_request' ? assistantDraft : null}
             editingRequest={editingRequest}
@@ -1832,6 +1835,29 @@ export default function App() {
               setRequestsRefreshKey((k) => k + 1);
               await refreshDashboard();
             }}
+          />
+        </SlideOverlayContainer>
+
+        <SlideOverlayContainer visible={activeQuickRequestScreen === 'file_travel_order'}>
+          <FileOfficialTravelOrderScreen
+            profileResult={profileResult}
+            name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
+            username={currentUsername}
+            photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
+            employeeId={profileResult?.status === 'linked' ? (profileResult.profile.employeeNo || profileResult.profile.employeeId) : (signedInUser?.id ?? null)}
+            employeeName={profileResult?.status === 'linked' ? profileResult.profile.fullName : (signedInUser?.email ?? 'Employee')}
+            companyName={profileResult?.status === 'linked' ? profileResult.profile.companyName : null}
+            departmentName={profileResult?.status === 'linked' ? profileResult.profile.departmentName : null}
+            storeName={profileResult?.status === 'linked' ? profileResult.profile.storeName : null}
+            positionName={profileResult?.status === 'linked' ? profileResult.profile.positionName : null}
+            userEmail={signedInUser?.email ?? null}
+            authUserId={signedInUser?.id ?? null}
+            notificationCount={notificationUnreadCount}
+            onAssistant={openAssistant}
+            onNotifications={openNotifications}
+            onBack={closeQuickRequest}
+            onToast={setAppToast}
+            onRefresh={refreshDashboard}
           />
         </SlideOverlayContainer>
 
@@ -2134,6 +2160,7 @@ function RewardsPlaceholderScreen({
     <View style={styles.settingsRoot}>
       <StatusBar style="dark" />
       <TopBar
+        showNetworkStatus
         name={profileName || 'Rewards'}
         username={username}
         photoUrl={profilePhotoUrl}

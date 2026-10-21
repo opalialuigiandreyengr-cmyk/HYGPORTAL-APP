@@ -38,6 +38,7 @@ type Props = {
   backAccessory?: 'sparkles' | 'info';
   onBackAccessory?: () => void;
   onSignOut?: () => void | Promise<void>;
+  showNetworkStatus?: boolean;
 };
 
 export function TopBar({
@@ -47,6 +48,7 @@ export function TopBar({
   photoUrl,
   pointsBalance = 0,
   notificationCount = 0,
+  showNetworkStatus = false,
   onNotifications,
   onHelpTutorials,
   onAvatar,
@@ -85,10 +87,14 @@ export function TopBar({
   const network = useNetworkStatus();
   const isOnline = network.isOnline;
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState({ current: 0, total: 0, percent: 0 });
   const [pendingCounts, setPendingCounts] = useState({ total: 0, esarf: 0, leave: 0, photoProof: 0, profile: 0 });
   const [showNetworkModal, setShowNetworkModal] = useState(false);
   const [justSyncedNotice, setJustSyncedNotice] = useState<string | null>(null);
   const syncNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const spinAnim = useRef(new Animated.Value(0)).current;
+  const progressAnim = useRef(new Animated.Value(0)).current;
 
   const refreshPending = useCallback(async () => {
     try {
@@ -100,16 +106,60 @@ export function TopBar({
   }, []);
 
   useEffect(() => {
+    let loopAnim: Animated.CompositeAnimation | null = null;
+    if (isSyncing) {
+      spinAnim.setValue(0);
+      loopAnim = Animated.loop(
+        Animated.timing(spinAnim, {
+          toValue: 1,
+          duration: 1200,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        }),
+      );
+      loopAnim.start();
+    } else {
+      spinAnim.setValue(0);
+    }
+    return () => {
+      loopAnim?.stop();
+    };
+  }, [isSyncing, spinAnim]);
+
+  useEffect(() => {
+    Animated.timing(progressAnim, {
+      toValue: syncProgress.percent,
+      duration: 250,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [syncProgress.percent, progressAnim]);
+
+  useEffect(() => {
     void refreshPending();
 
     const qSub = DeviceEventEmitter.addListener('offline_queue_changed', () => {
       void refreshPending();
     });
-    const syncStartSub = DeviceEventEmitter.addListener('offline_sync_started', () => {
+    const syncStartSub = DeviceEventEmitter.addListener('offline_sync_started', (info) => {
       setIsSyncing(true);
+      const total = info && typeof info.total === 'number' ? info.total : pendingCounts.total;
+      setSyncProgress({ current: 0, total, percent: 0 });
+      progressAnim.setValue(0);
+    });
+    const syncProgressSub = DeviceEventEmitter.addListener('offline_sync_progress', (info) => {
+      if (info) {
+        setSyncProgress({
+          current: typeof info.current === 'number' ? info.current : 0,
+          total: typeof info.total === 'number' ? info.total : 0,
+          percent: typeof info.percent === 'number' ? info.percent : 0,
+        });
+      }
     });
     const syncEndSub = DeviceEventEmitter.addListener('offline_sync_completed', (info) => {
       setIsSyncing(false);
+      setSyncProgress({ current: 0, total: 0, percent: 0 });
+      progressAnim.setValue(0);
       void refreshPending();
       if (info && info.total > 0) {
         setJustSyncedNotice(`Saved online! ${info.total} offline item(s) synced.`);
@@ -123,10 +173,16 @@ export function TopBar({
     return () => {
       qSub.remove();
       syncStartSub.remove();
+      syncProgressSub.remove();
       syncEndSub.remove();
       if (syncNoticeTimer.current) clearTimeout(syncNoticeTimer.current);
     };
-  }, [refreshPending]);
+  }, [refreshPending, pendingCounts.total, progressAnim]);
+
+  const spinInterpolate = spinAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
 
   useEffect(() => {
     Animated.timing(sidebarProgress, {
@@ -185,7 +241,7 @@ export function TopBar({
           </Pressable>
 
           {/* Online/Offline Status Indicator next to the burger icon (Android APK only) */}
-          {isOfflineSupported ? (
+          {isOfflineSupported && showNetworkStatus && !onBackHome ? (
             <Pressable
               style={[
                 styles.networkBadge,
@@ -297,18 +353,61 @@ export function TopBar({
       </View>
 
       {/* Offline Status Banner on screens (Android APK only) */}
-      {isOfflineSupported && !isOnline ? (
+      {isOfflineSupported && (!isOnline || isSyncing) ? (
         <Pressable
-          style={styles.offlineBanner}
+          style={[styles.offlineBanner, isSyncing && styles.syncingBanner]}
           onPress={() => setShowNetworkModal(true)}
           accessibilityRole="button"
-          accessibilityLabel="Offline status banner"
+          accessibilityLabel={isSyncing ? 'Syncing status banner' : 'Offline status banner'}
         >
-          <WifiOff size={13} color="#b91c1c" strokeWidth={2.5} />
-          <Text style={styles.offlineBannerText} numberOfLines={1}>
-            Offline Mode — Requests & proofs save locally and auto-sync
-          </Text>
-          {pendingCounts.total > 0 ? (
+          {isSyncing ? (
+            <Animated.View style={{ transform: [{ rotate: spinInterpolate }] }}>
+              <RefreshCw size={13} color="#2563eb" strokeWidth={2.4} />
+            </Animated.View>
+          ) : (
+            <WifiOff size={13} color="#b91c1c" strokeWidth={2.5} />
+          )}
+
+          {isSyncing ? (
+            <View style={styles.syncProgressContainer}>
+              <View style={styles.syncProgressHeaderRow}>
+                <Text style={styles.syncProgressText} numberOfLines={1}>
+                  {syncProgress.total > 0
+                    ? `Syncing offline items (${syncProgress.current}/${syncProgress.total})...`
+                    : 'Syncing to online...'}
+                </Text>
+                <Text style={styles.syncProgressPercent}>
+                  {syncProgress.percent}%
+                </Text>
+              </View>
+              <View style={styles.syncProgressBarTrack}>
+                <Animated.View
+                  style={[
+                    styles.syncProgressBarFill,
+                    {
+                      width: progressAnim.interpolate({
+                        inputRange: [0, 100],
+                        outputRange: ['0%', '100%'],
+                        extrapolate: 'clamp',
+                      }),
+                    },
+                  ]}
+                />
+              </View>
+            </View>
+          ) : (
+            <Text style={styles.offlineBannerText} numberOfLines={1}>
+              Offline Mode — Requests & proofs save locally and auto-sync
+            </Text>
+          )}
+
+          {isSyncing ? (
+            <View style={styles.syncingBannerBadge}>
+              <Text style={styles.syncingBannerBadgeText}>
+                {syncProgress.total > 0 ? `${syncProgress.current}/${syncProgress.total}` : 'Syncing'}
+              </Text>
+            </View>
+          ) : pendingCounts.total > 0 ? (
             <View style={styles.offlineBannerBadge}>
               <Text style={styles.offlineBannerBadgeText}>{pendingCounts.total} queued</Text>
             </View>
@@ -1096,12 +1195,65 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     gap: 7,
   },
+  syncingBanner: {
+    backgroundColor: '#eff6ff',
+    borderBottomColor: '#bfdbfe',
+    paddingVertical: 5.5,
+  },
   offlineBannerText: {
     flexShrink: 1,
     fontSize: 11,
     color: '#991b1b',
     fontWeight: fontWeights.medium,
     textAlign: 'center',
+  },
+  syncProgressContainer: {
+    flex: 1,
+    maxWidth: 420,
+    justifyContent: 'center',
+    gap: 3,
+  },
+  syncProgressHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 6,
+  },
+  syncProgressText: {
+    fontSize: 11,
+    color: '#1d4ed8',
+    fontWeight: fontWeights.semibold,
+    flexShrink: 1,
+  },
+  syncProgressPercent: {
+    fontSize: 10.5,
+    color: '#2563eb',
+    fontWeight: fontWeights.bold,
+  },
+  syncProgressBarTrack: {
+    width: '100%',
+    height: 4.5,
+    backgroundColor: '#dbeafe',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  syncProgressBarFill: {
+    height: '100%',
+    backgroundColor: '#2563eb',
+    borderRadius: 3,
+  },
+  syncingBannerBadge: {
+    backgroundColor: '#dbeafe',
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#93c5fd',
+  },
+  syncingBannerBadgeText: {
+    fontSize: 9.5,
+    fontWeight: fontWeights.bold,
+    color: '#1d4ed8',
   },
   offlineBannerBadge: {
     backgroundColor: '#fee2e2',

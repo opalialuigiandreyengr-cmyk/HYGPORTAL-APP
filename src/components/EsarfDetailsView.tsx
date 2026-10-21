@@ -2,9 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Pressable, TextInput, Image, Modal, Linking, ActivityIndicator, Platform } from 'react-native';
 import { CalendarDays, Camera, Check, Clock3, Edit3, ExternalLink, Eye, FileText, Image as ImageIcon, MapPin, Users, X } from 'lucide-react-native';
 import { colors, radius, fontWeights, spacing } from '../theme';
-import { computeWorkedMinutes, computeOffsetOvertimeHours } from '../utils/requestCalculations';
+import { computeWorkedMinutes, computeOffsetOvertimeHours, isFioOrObOnly } from '../utils/requestCalculations';
 import { parseEsarfDateRangeStringToYMD } from '../utils/dateTime';
 import { fetchPhotoProofDetails, type PhotoProofItem } from '../services/photoProof';
+import { isAppOnline } from '../services/network';
 
 export function formatEsarfDateRange(dateFromStr?: string | null, dateToStr?: string | null): string {
   if (!dateFromStr) return 'mm/dd-dd/yyyy';
@@ -45,6 +46,7 @@ export type ParsedEsarfProof = {
   proofTime?: string;
   proofLocation?: string;
   proofId?: string;
+  proofSource?: 'photo_proof' | 'gallery' | 'camera';
 };
 
 export type ParsedEsarfEntry = {
@@ -61,8 +63,78 @@ export type ParsedEsarfEntry = {
   proofTime?: string;
   proofLocation?: string;
   proofId?: string;
+  proofSource?: 'photo_proof' | 'gallery' | 'camera';
   proofs?: ParsedEsarfProof[];
 };
+
+export function parseProofsFromReasonText(text?: string | null): ParsedEsarfProof[] {
+  if (!text) return [];
+
+  const proofRegex = /\[Proof:\s*([^\]]+)\]/gi;
+  const matches = [...text.matchAll(proofRegex)];
+  if (matches.length === 0) return [];
+
+  const proofs: ParsedEsarfProof[] = [];
+
+  for (let i = 0; i < matches.length; i++) {
+    const currentMatch = matches[i];
+    const proofUrl = currentMatch[1].trim();
+    const startIndex = (currentMatch.index ?? 0) + currentMatch[0].length;
+    const nextMatch = matches[i + 1];
+    const endIndex = nextMatch ? (nextMatch.index ?? text.length) : text.length;
+
+    // The segment of text belonging to this specific proof
+    const segment = text.substring(startIndex, endIndex);
+
+    const sourceMatch = segment.match(/\[ProofSource:\s*([^\]]+)\]/i);
+    const timeMatch = segment.match(/\[ProofTime:\s*([^\]]+)\]/i);
+    const locMatch = segment.match(/\[ProofLoc:\s*([^\]]+)\]/i);
+    const idMatch = segment.match(/\[ProofId:\s*([^\]]+)\]/i);
+
+    const rawSource = sourceMatch ? (sourceMatch[1].trim().toLowerCase() as 'photo_proof' | 'gallery' | 'camera') : undefined;
+
+    // A proof is from gallery if:
+    // 1) Explicitly tagged as gallery: rawSource === 'gallery'
+    // 2) Or segment contains '[ProofSource: gallery]'
+    // 3) Or it has NO ProofTime, NO ProofLoc, and NO ProofId (gallery uploads never record camera location/time)
+    const isExplicitGallery = rawSource === 'gallery' || /\[ProofSource:\s*gallery\]/i.test(segment);
+    const hasCameraDetails = Boolean(timeMatch || locMatch || idMatch);
+    const isGallery = isExplicitGallery || (!hasCameraDetails && rawSource !== 'camera' && rawSource !== 'photo_proof');
+
+    const proofSource: 'photo_proof' | 'gallery' | 'camera' = isGallery
+      ? 'gallery'
+      : (rawSource || 'photo_proof');
+
+    proofs.push({
+      proofUrl,
+      proofSource,
+      proofTime: isGallery ? undefined : timeMatch?.[1]?.trim(),
+      proofLocation: isGallery ? undefined : locMatch?.[1]?.trim(),
+      proofId: isGallery ? undefined : idMatch?.[1]?.trim(),
+    });
+  }
+
+  // If cloud links exist, filter out stale local file URIs (e.g. file:, content:, blob:)
+  let cleanProofs = proofs;
+  if (cleanProofs.some((p) => p.proofUrl.startsWith('http://') || p.proofUrl.startsWith('https://'))) {
+    cleanProofs = cleanProofs.filter(
+      (p) =>
+        !p.proofUrl.startsWith('file:') &&
+        !p.proofUrl.startsWith('content:') &&
+        !p.proofUrl.startsWith('blob:') &&
+        !p.proofUrl.startsWith('data:') &&
+        !p.proofUrl.startsWith('/')
+    );
+  }
+
+  // Deduplicate identical proof URLs
+  const seenUrls = new Set<string>();
+  return cleanProofs.filter((p) => {
+    if (seenUrls.has(p.proofUrl)) return false;
+    seenUrls.add(p.proofUrl);
+    return true;
+  });
+}
 
 export function extractDriveFileId(url?: string | null): string | null {
   if (!url || typeof url !== 'string') return null;
@@ -89,7 +161,14 @@ export function extractDriveFileId(url?: string | null): string | null {
 export function getDirectProofImageUrl(url?: string | null): string {
   if (!url || typeof url !== 'string') return '';
   const trimmed = url.trim();
-  if (trimmed.startsWith('data:') || trimmed.startsWith('file://')) {
+  if (
+    trimmed.startsWith('data:') ||
+    trimmed.startsWith('file://') ||
+    trimmed.startsWith('file:/') ||
+    trimmed.startsWith('content://') ||
+    trimmed.startsWith('ph://') ||
+    trimmed.startsWith('/')
+  ) {
     return trimmed;
   }
 
@@ -114,7 +193,15 @@ export function getExternalProofWebUrl(url?: string | null): string {
 export async function fetchProofImageAsBlobOrDataUri(url: string): Promise<string> {
   if (!url || typeof url !== 'string') return '';
   const trimmed = url.trim();
-  if (trimmed.startsWith('data:') || trimmed.startsWith('blob:') || trimmed.startsWith('file://')) {
+  if (
+    trimmed.startsWith('data:') ||
+    trimmed.startsWith('blob:') ||
+    trimmed.startsWith('file://') ||
+    trimmed.startsWith('file:/') ||
+    trimmed.startsWith('content://') ||
+    trimmed.startsWith('ph://') ||
+    trimmed.startsWith('/')
+  ) {
     return trimmed;
   }
 
@@ -250,6 +337,7 @@ export function formatUnifiedRequestType(
     total_hours?: number | null;
   },
 ): string {
+  if (!item) return 'Request';
   if (item.request_type_code === 'leave') {
     return item.leave_type ? `${item.leave_type} Leave` : 'Leave Request';
   }
@@ -261,7 +349,7 @@ export function formatUnifiedRequestType(
   if (item.transaction_type && item.transaction_type.trim()) {
     const parts = item.transaction_type.split(/[,/]+/).map((s) => s.trim()).filter(Boolean);
     rawTokens.push(...parts);
-  } else {
+  } else if (item.reason && item.reason.includes('[Entry ')) {
     const parsed = parseEsarfEntries(item);
     if (parsed.length > 0) {
       parsed.forEach((e) => {
@@ -299,6 +387,7 @@ export function parseEsarfEntries(item: {
   time_schedule?: string | null;
   day_off?: string | null;
 }): ParsedEsarfEntry[] {
+  if (!item) return [];
   const rawReason = item.reason || '';
 
   if (rawReason.includes('[Entry ')) {
@@ -307,13 +396,14 @@ export function parseEsarfEntries(item: {
 
     blocks.forEach((block, idx) => {
       const fullText = `[Entry ${block.trim()}`;
-      const match = fullText.match(/^\[Entry\s+(\d+)\]\s*\(([^)]+)\)\s*(.*?)\s*\(([^)]+)\):\s*([\s\S]*)$/);
+      const match = fullText.match(/^\[Entry\s+(\d+)\]\s*\(([^)]+)\)\s*(.*?)(?:\s*\(([^)]+)\))?:\s*([\s\S]*)$/);
 
       if (match) {
         const entryNum = parseInt(match[1], 10) || idx + 1;
         let transactionLabel = match[2].trim();
         if (blocks.length === 1 && item.transaction_type && item.transaction_type.trim()) {
-          transactionLabel = formatUnifiedRequestType(item);
+          const tokens = item.transaction_type.split(/[,/]+/).map((s) => normalizeTransactionToken(s)).filter(Boolean);
+          transactionLabel = tokens.length > 0 ? Array.from(new Set(tokens)).join(' / ') : item.transaction_type.trim();
         } else {
           const tokens = transactionLabel.split(/[,/]+/).map((s) => normalizeTransactionToken(s)).filter(Boolean);
           if (tokens.length > 0) {
@@ -321,29 +411,19 @@ export function parseEsarfEntries(item: {
           }
         }
         const dateTimeChunk = match[3].trim();
-        const hoursStr = match[4].replace(/hrs?/i, '').trim();
+        const hoursStr = match[4] ? match[4].replace(/hrs?/i, '').trim() : '';
         const rawReasonText = match[5].trim();
         const isEntryRejected = fullText.includes('[REJECTED]') || fullText.toLowerCase().includes('status: rejected');
 
         const actualMatch = rawReasonText.match(/\[Actual:\s*([\d.]+)\s*hrs?\]/i);
         let actualHoursStr: string | undefined = actualMatch ? actualMatch[1] : undefined;
 
-        const proofMatches = [...rawReasonText.matchAll(/\[Proof:\s*([^\]]+)\]/gi)];
-        const proofTimeMatches = [...rawReasonText.matchAll(/\[ProofTime:\s*([^\]]+)\]/gi)];
-        const proofLocMatches = [...rawReasonText.matchAll(/\[ProofLoc:\s*([^\]]+)\]/gi)];
-        const proofIdMatches = [...rawReasonText.matchAll(/\[ProofId:\s*([^\]]+)\]/gi)];
-
-        const parsedProofsList: ParsedEsarfProof[] = proofMatches.map((m, pIdx) => ({
-          proofUrl: m[1].trim(),
-          proofTime: proofTimeMatches[pIdx]?.[1]?.trim(),
-          proofLocation: proofLocMatches[pIdx]?.[1]?.trim(),
-          proofId: proofIdMatches[pIdx]?.[1]?.trim(),
-        }));
-
+        const parsedProofsList = parseProofsFromReasonText(rawReasonText);
         let proofUrl: string | undefined = parsedProofsList[0]?.proofUrl;
         let proofTime: string | undefined = parsedProofsList[0]?.proofTime;
         let proofLocation: string | undefined = parsedProofsList[0]?.proofLocation;
         let proofId: string | undefined = parsedProofsList[0]?.proofId;
+        let proofSource: 'photo_proof' | 'gallery' | 'camera' | undefined = parsedProofsList[0]?.proofSource;
 
         let cleanReasonText = rawReasonText
           .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
@@ -351,6 +431,7 @@ export function parseEsarfEntries(item: {
           .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
+          .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
           .trim();
 
         let dateStr = '';
@@ -419,6 +500,7 @@ export function parseEsarfEntries(item: {
           proofTime,
           proofLocation,
           proofId,
+          proofSource,
           proofs: parsedProofsList.length > 0 ? parsedProofsList : undefined,
         });
       }
@@ -447,22 +529,13 @@ export function parseEsarfEntries(item: {
 
   const actualMatch = rawReason.match(/\[Actual:\s*([\d.]+)\s*hrs?\]/i);
   let actualHoursStr: string | undefined = actualMatch ? actualMatch[1] : undefined;
-  const proofMatches = [...rawReason.matchAll(/\[Proof:\s*([^\]]+)\]/gi)];
-  const proofTimeMatches = [...rawReason.matchAll(/\[ProofTime:\s*([^\]]+)\]/gi)];
-  const proofLocMatches = [...rawReason.matchAll(/\[ProofLoc:\s*([^\]]+)\]/gi)];
-  const proofIdMatches = [...rawReason.matchAll(/\[ProofId:\s*([^\]]+)\]/gi)];
 
-  const parsedProofsList: ParsedEsarfProof[] = proofMatches.map((m, pIdx) => ({
-    proofUrl: m[1].trim(),
-    proofTime: proofTimeMatches[pIdx]?.[1]?.trim(),
-    proofLocation: proofLocMatches[pIdx]?.[1]?.trim(),
-    proofId: proofIdMatches[pIdx]?.[1]?.trim(),
-  }));
-
+  const parsedProofsList = parseProofsFromReasonText(rawReason);
   let proofUrl: string | undefined = parsedProofsList[0]?.proofUrl;
   let proofTime: string | undefined = parsedProofsList[0]?.proofTime;
   let proofLocation: string | undefined = parsedProofsList[0]?.proofLocation;
   let proofId: string | undefined = parsedProofsList[0]?.proofId;
+  let proofSource: 'photo_proof' | 'gallery' | 'camera' | undefined = parsedProofsList[0]?.proofSource;
 
   const cleanReason = rawReason
     .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
@@ -470,12 +543,25 @@ export function parseEsarfEntries(item: {
     .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
+    .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
     .trim();
 
   const timeFromStr = formatTime(item.time_from);
   const timeToStr = formatTime(item.time_to);
   const totalHours = item.total_hours !== null && item.total_hours !== undefined ? String(item.total_hours) : '0';
-  const transactionLabel = formatUnifiedRequestType(item);
+  let transactionLabel = 'ESARF Request';
+  if (item.transaction_type && item.transaction_type.trim()) {
+    const tokens = item.transaction_type.split(/[,/]+/).map((s) => normalizeTransactionToken(s)).filter(Boolean);
+    transactionLabel = tokens.length > 0 ? Array.from(new Set(tokens)).join(' / ') : item.transaction_type.trim();
+  } else if ((item as any)?.request_type_code === 'overtime') {
+    transactionLabel = 'OT';
+  } else if ((item as any)?.request_type_code === 'offset_earn') {
+    transactionLabel = 'Offset';
+  } else if ((item as any)?.request_type_code === 'use_offset') {
+    transactionLabel = 'Use Offset';
+  } else if ((item as any)?.request_type_name) {
+    transactionLabel = (item as any)?.request_type_name;
+  }
 
   const isOffset =
     isOffsetEarnTransaction(transactionLabel) ||
@@ -513,6 +599,7 @@ export function parseEsarfEntries(item: {
       proofTime,
       proofLocation,
       proofId,
+      proofSource,
       proofs: parsedProofsList.length > 0 ? parsedProofsList : undefined,
     },
   ];
@@ -571,6 +658,9 @@ export function computeEffectiveTotalHours(
 
   let sum = 0;
   for (const entry of activeEntries) {
+    if (isFioOrObOnly(entry.transactionLabel)) {
+      continue;
+    }
     const rawVal =
       adjustedHoursMap[entry.index] !== undefined && adjustedHoursMap[entry.index].trim() !== ''
         ? adjustedHoursMap[entry.index]
@@ -757,7 +847,7 @@ function EsarfProofCardItem({
   proofItem: ParsedEsarfProof;
   index: number;
   total: number;
-  onPress: () => void;
+  onPress: (itemDetails?: PhotoProofItem | null) => void;
 }) {
   const [thumbLoading, setThumbLoading] = useState(false);
   const [thumbError, setThumbError] = useState(false);
@@ -766,10 +856,15 @@ function EsarfProofCardItem({
 
   const effectiveUrl = proofItem.proofUrl;
   const directThumbUrl = effectiveUrl ? getDirectProofImageUrl(effectiveUrl) : '';
+  const isGallery =
+    proofItem.proofSource === 'gallery' ||
+    details?.source === 'gallery' ||
+    (!proofItem.proofTime && !proofItem.proofLocation && !proofItem.proofId);
 
   useEffect(() => {
     let active = true;
-    if (!effectiveUrl && !proofItem.proofId) return;
+    if (isGallery || proofItem.proofSource === 'gallery') return;
+    if (!effectiveUrl && !proofItem.proofId && !proofItem.proofTime) return;
 
     fetchPhotoProofDetails(effectiveUrl, {
       proofId: proofItem.proofId,
@@ -779,7 +874,10 @@ function EsarfProofCardItem({
       .then((d) => {
         if (!active || !d) return;
         setDetails(d);
-        if (d.driveFileId) {
+        if (d.photoUri) {
+          setResolvedThumbUri(d.photoUri);
+        }
+        if (d.driveFileId && isAppOnline()) {
           const direct = `https://lh3.googleusercontent.com/d/${d.driveFileId}=w400`;
           fetchProofImageAsBlobOrDataUri(direct).then((blobUri) => {
             if (active && blobUri) setResolvedThumbUri(blobUri);
@@ -791,16 +889,17 @@ function EsarfProofCardItem({
     return () => {
       active = false;
     };
-  }, [proofItem.proofUrl, proofItem.proofId, proofItem.proofTime, proofItem.proofLocation]);
+  }, [effectiveUrl, proofItem.proofId, proofItem.proofTime, proofItem.proofLocation, isGallery]);
 
-  const displayTime =
-    details?.dateFormatted && details?.timeDigits
-      ? `${details.dateFormatted} • ${details.timeDigits} ${details.timePeriod}`
-      : proofItem.proofTime || (total > 1 ? `Photo #${index + 1}` : 'Photo Proof Attached');
-  const displayLocation = details?.locationText || proofItem.proofLocation;
+  const displayTime = isGallery
+    ? (total > 1 ? `Gallery Photo ${index + 1}` : 'Gallery Photo Attached')
+    : (details?.dateFormatted && details?.timeDigits
+        ? `${details.dateFormatted} • ${details.timeDigits} ${details.timePeriod}`
+        : proofItem.proofTime || (total > 1 ? `Photo #${index + 1}` : 'Photo Proof Attached'));
+  const displayLocation = isGallery ? null : (details?.locationText || proofItem.proofLocation);
 
   return (
-    <Pressable style={styles.proofAttachmentCard} onPress={onPress}>
+    <Pressable style={styles.proofAttachmentCard} onPress={() => onPress(isGallery ? null : details)}>
       <View style={styles.proofThumbWrap}>
         {thumbLoading ? (
           <View style={styles.proofThumbOverlay}>
@@ -823,8 +922,12 @@ function EsarfProofCardItem({
             },
             onLoad: () => setThumbLoading(false),
             onError: () => {
-              setThumbLoading(false);
-              setThumbError(true);
+              if (details?.photoUri && resolvedThumbUri !== details.photoUri) {
+                setResolvedThumbUri(details.photoUri);
+              } else {
+                setThumbLoading(false);
+                setThumbError(true);
+              }
             },
           })
         ) : (
@@ -835,8 +938,12 @@ function EsarfProofCardItem({
             onLoadStart={() => setThumbLoading(true)}
             onLoadEnd={() => setThumbLoading(false)}
             onError={() => {
-              setThumbLoading(false);
-              setThumbError(true);
+              if (details?.photoUri && resolvedThumbUri !== details.photoUri) {
+                setResolvedThumbUri(details.photoUri);
+              } else {
+                setThumbLoading(false);
+                setThumbError(true);
+              }
             }}
           />
         )}
@@ -856,7 +963,7 @@ function EsarfProofCardItem({
             </Text>
           </View>
         ) : (
-          <Text style={styles.proofActionHint}>Tap to view photo proof</Text>
+          <Text style={styles.proofActionHint}>{isGallery ? 'Tap to view gallery photo' : 'Tap to view photo proof'}</Text>
         )}
       </View>
       <Eye size={18} color="#64748b" strokeWidth={2} />
@@ -893,6 +1000,7 @@ export function EsarfCardView({
 }) {
   const [previewProofUrl, setPreviewProofUrl] = useState<string | null>(null);
   const [activeModalProof, setActiveModalProof] = useState<ParsedEsarfProof | null>(null);
+  const [activeModalDetails, setActiveModalDetails] = useState<PhotoProofItem | null>(null);
   const inputRef = useRef<TextInput>(null);
   const [isHoursInputFocused, setIsHoursInputFocused] = useState(false);
   const [thumbLoading, setThumbLoading] = useState(false);
@@ -905,14 +1013,18 @@ export function EsarfCardView({
   const [proofDetails, setProofDetails] = useState<PhotoProofItem | null>(null);
 
   const effectiveProofUrl =
+    (!isAppOnline() && proofDetails?.photoUri ? proofDetails.photoUri : null) ||
+    (proofDetails?.photoUri && (proofDetails.photoUri.startsWith('file:') || proofDetails.photoUri.startsWith('content:') || proofDetails.photoUri.startsWith('data:')) ? proofDetails.photoUri : null) ||
     (proofDetails?.driveFileId ? `https://lh3.googleusercontent.com/d/${proofDetails.driveFileId}=w1000` : null) ||
-    (proofDetails?.photoUri && proofDetails.photoUri.startsWith('http') ? proofDetails.photoUri : null) ||
+    proofDetails?.photoUri ||
     proofDetails?.driveWebViewLink ||
     (entry.proofUrl && entry.proofUrl.startsWith('http') ? entry.proofUrl : null) ||
     entry.proofUrl ||
     '';
 
   const effectiveExternalUrl =
+    activeModalDetails?.driveWebViewLink ||
+    (activeModalDetails?.driveFileId ? `https://drive.google.com/file/d/${activeModalDetails.driveFileId}/view` : null) ||
     proofDetails?.driveWebViewLink ||
     (proofDetails?.driveFileId ? `https://drive.google.com/file/d/${proofDetails.driveFileId}/view` : null) ||
     (previewProofUrl ? getExternalProofWebUrl(previewProofUrl) : '') ||
@@ -922,6 +1034,15 @@ export function EsarfCardView({
 
   useEffect(() => {
     let active = true;
+    const isEntryGallery =
+      entry.proofSource === 'gallery' ||
+      (!entry.proofTime && !entry.proofLocation && !entry.proofId);
+
+    if (isEntryGallery) {
+      setProofDetails(null);
+      return;
+    }
+
     if (!entry.proofUrl && !entry.proofId && !entry.proofTime) {
       setProofDetails(null);
       return;
@@ -942,7 +1063,7 @@ export function EsarfCardView({
     return () => {
       active = false;
     };
-  }, [entry.proofUrl, entry.proofTime, entry.proofLocation, entry.proofId, entry.dateStr, entry.timeFromStr]);
+  }, [entry.proofUrl, entry.proofTime, entry.proofLocation, entry.proofId, entry.dateStr, entry.timeFromStr, entry.proofSource]);
 
   useEffect(() => {
     let active = true;
@@ -988,15 +1109,50 @@ export function EsarfCardView({
     };
   }, [entry.proofUrl, effectiveProofUrl]);
 
-  const openProofModal = (rawUrl?: string, itemProof?: ParsedEsarfProof) => {
+  const openProofModal = (rawUrl?: string, itemProof?: ParsedEsarfProof, itemDetails?: PhotoProofItem | null) => {
     setActiveModalProof(itemProof || null);
-    const targetUrl =
+    const isGallery =
+      itemProof?.proofSource === 'gallery' ||
+      itemDetails?.source === 'gallery' ||
+      (!itemProof?.proofTime &&
+        !itemProof?.proofLocation &&
+        !itemProof?.proofId &&
+        (!itemDetails || (!itemDetails.timeDigits && !itemDetails.locationText)));
+
+    const activeDetails = isGallery
+      ? null
+      : (itemDetails || ((entry.proofs && entry.proofs.length > 1) ? null : (entry.proofSource === 'gallery' ? null : proofDetails)));
+    setActiveModalDetails(activeDetails || null);
+
+    if (!isGallery && (!activeDetails || !activeDetails.timeDigits) && (itemProof?.proofId || itemProof?.proofTime || rawUrl)) {
+      fetchPhotoProofDetails(rawUrl, {
+        proofId: itemProof?.proofId,
+        timestamp: itemProof?.proofTime,
+        locationText: itemProof?.proofLocation,
+        source: itemProof?.proofSource || (isGallery ? 'gallery' : undefined),
+      }).then((d) => {
+        if (d && d.source !== 'gallery' && (d.timeDigits || d.locationText)) {
+          setActiveModalDetails(d);
+          if (d.photoUri && !isAppOnline()) {
+            setModalImageUri(d.photoUri);
+          }
+        }
+      });
+    }
+
+    const localUri =
+      activeDetails?.photoUri ||
+      (rawUrl && (rawUrl.startsWith('file:') || rawUrl.startsWith('content:') || rawUrl.startsWith('data:') || rawUrl.startsWith('/')) ? rawUrl : null);
+
+    const cloudDriveUrl =
+      (activeDetails?.driveFileId ? `https://lh3.googleusercontent.com/d/${activeDetails.driveFileId}=w1000` : null) ||
+      (activeDetails?.photoUri && activeDetails.photoUri.startsWith('http') ? activeDetails.photoUri : null) ||
+      activeDetails?.driveWebViewLink ||
       rawUrl ||
-      (proofDetails?.driveFileId ? `https://lh3.googleusercontent.com/d/${proofDetails.driveFileId}=w1000` : null) ||
-      (proofDetails?.photoUri && proofDetails.photoUri.startsWith('http') ? proofDetails.photoUri : null) ||
-      proofDetails?.driveWebViewLink ||
-      effectiveProofUrl ||
+      (isGallery ? '' : effectiveProofUrl) ||
       '';
+
+    const targetUrl = (!isAppOnline() && localUri) ? localUri : (localUri || cloudDriveUrl);
     const direct = getDirectProofImageUrl(targetUrl);
     setModalImageUri(direct);
     setModalLoading(true);
@@ -1004,7 +1160,7 @@ export function EsarfCardView({
     setModalFallbackAttempted(false);
     setPreviewProofUrl(targetUrl);
 
-    if (Platform.OS === 'web' && typeof fetch !== 'undefined') {
+    if (Platform.OS === 'web' && typeof fetch !== 'undefined' && direct.startsWith('http')) {
       fetchProofImageAsBlobOrDataUri(direct)
         .then((resolved) => {
           setModalImageUri(resolved);
@@ -1017,14 +1173,37 @@ export function EsarfCardView({
   };
 
   const handleModalImageError = () => {
+    const isModalGallery =
+      activeModalProof?.proofSource === 'gallery' ||
+      activeModalDetails?.source === 'gallery' ||
+      (!activeModalProof?.proofTime &&
+        !activeModalProof?.proofLocation &&
+        !activeModalProof?.proofId &&
+        (!activeModalDetails || (!activeModalDetails.timeDigits && !activeModalDetails.locationText)));
+
+    const activeDetails = isModalGallery
+      ? null
+      : (activeModalDetails || ((entry.proofs && entry.proofs.length > 1) ? null : proofDetails));
+    const localUri = activeDetails?.photoUri;
+
+    // 1. Fallback to local photo proof cached file if available
+    if (localUri && localUri !== modalImageUri && !modalFallbackAttempted) {
+      setModalFallbackAttempted(true);
+      setModalImageUri(localUri);
+      setModalLoading(false);
+      setModalError(false);
+      return;
+    }
+
+    // 2. If online, try Google Drive thumbnail fallback
     const driveId =
       extractDriveFileId(previewProofUrl) ||
-      extractDriveFileId(proofDetails?.driveFileId) ||
-      extractDriveFileId(proofDetails?.driveWebViewLink) ||
-      extractDriveFileId(proofDetails?.photoUri) ||
+      extractDriveFileId(activeDetails?.driveFileId) ||
+      extractDriveFileId(activeDetails?.driveWebViewLink) ||
+      extractDriveFileId(activeDetails?.photoUri) ||
       extractDriveFileId(entry.proofUrl);
 
-    if (!modalFallbackAttempted && driveId) {
+    if (!modalFallbackAttempted && driveId && isAppOnline()) {
       setModalFallbackAttempted(true);
       const fallbackUrl = `https://drive.google.com/thumbnail?id=${driveId}&sz=w1000`;
       setModalImageUri(fallbackUrl);
@@ -1035,18 +1214,18 @@ export function EsarfCardView({
             setModalLoading(false);
           })
           .catch(() => {
-            setModalLoading(false);
-            setModalError(true);
+            if (localUri) {
+              setModalImageUri(localUri);
+              setModalLoading(false);
+            } else {
+              setModalLoading(false);
+              setModalError(true);
+            }
           });
       }
-    } else if (
-      proofDetails?.photoUri &&
-      proofDetails.photoUri.startsWith('http') &&
-      proofDetails.photoUri !== modalImageUri &&
-      !modalFallbackAttempted
-    ) {
+    } else if (localUri && localUri !== modalImageUri) {
       setModalFallbackAttempted(true);
-      setModalImageUri(proofDetails.photoUri);
+      setModalImageUri(localUri);
       setModalLoading(false);
     } else {
       setModalLoading(false);
@@ -1163,47 +1342,67 @@ export function EsarfCardView({
           <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>{entry.dateStr}</Text>
         </View>
 
-        <View style={styles.gridCol}>
-          <View style={styles.gridLabelRow}>
-            <Text style={styles.gridLabel}>Total Hrs.</Text>
-            {isEditableHours && !isEntryRejected && !isDisabled ? (
-              <View style={styles.adjustablePill}>
-                <Edit3 size={10} color="#854d0e" strokeWidth={2.4} />
-                <Text style={styles.adjustablePillText}>Editable</Text>
-              </View>
-            ) : null}
-          </View>
+        {!isFioOrObOnly(entry.transactionLabel) ? (
+          <View style={styles.gridCol}>
+            <View style={styles.gridLabelRow}>
+              <Text style={styles.gridLabel}>Total Hrs.</Text>
+              {isEditableHours && !isEntryRejected && !isDisabled ? (
+                <View style={styles.adjustablePill}>
+                  <Edit3 size={10} color="#854d0e" strokeWidth={2.4} />
+                  <Text style={styles.adjustablePillText}>Editable</Text>
+                </View>
+              ) : null}
+            </View>
 
-          {isEditableHours && !isEntryRejected && !isDisabled ? (
-            <View>
-              <View style={styles.editableHoursRow}>
-                <Pressable
-                  style={[
-                    styles.hoursInputShell,
-                    isHoursInputFocused && styles.hoursInputShellFocused,
-                  ]}
-                  onPress={() => inputRef.current?.focus()}
-                >
-                  <TextInput
-                    ref={inputRef}
-                    style={styles.hoursInputField}
-                    value={
-                      adjustedHours !== undefined
-                        ? adjustedHours
-                        : entry.totalHours != null
-                        ? String(entry.totalHours)
-                        : ''
-                    }
-                    onChangeText={onHoursChange}
-                    onFocus={() => setIsHoursInputFocused(true)}
-                    onBlur={() => setIsHoursInputFocused(false)}
-                    keyboardType="decimal-pad"
-                    selectTextOnFocus={false}
-                    placeholder="0.00"
-                    placeholderTextColor="#94a3b8"
-                  />
-                  <Text style={styles.hoursUnitText}>hrs</Text>
-                </Pressable>
+            {isEditableHours && !isEntryRejected && !isDisabled ? (
+              <View>
+                <View style={styles.editableHoursRow}>
+                  <Pressable
+                    style={[
+                      styles.hoursInputShell,
+                      isHoursInputFocused && styles.hoursInputShellFocused,
+                    ]}
+                    onPress={() => inputRef.current?.focus()}
+                  >
+                    <TextInput
+                      ref={inputRef}
+                      style={styles.hoursInputField}
+                      value={
+                        adjustedHours !== undefined
+                          ? adjustedHours
+                          : entry.totalHours != null
+                          ? String(entry.totalHours)
+                          : ''
+                      }
+                      onChangeText={onHoursChange}
+                      onFocus={() => setIsHoursInputFocused(true)}
+                      onBlur={() => setIsHoursInputFocused(false)}
+                      keyboardType="decimal-pad"
+                      selectTextOnFocus={false}
+                      placeholder="0.00"
+                      placeholderTextColor="#94a3b8"
+                    />
+                    <Text style={styles.hoursUnitText}>hrs</Text>
+                  </Pressable>
+                  {entry.actualHours ? (
+                    <View style={styles.actualHoursBadge}>
+                      <Text style={styles.actualHoursBadgeText}>
+                        Actual: {formatDisplayHours(entry.actualHours)}h
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+                {adjustedHours !== undefined && adjustedHours !== entry.totalHours ? (
+                  <Text style={styles.originalHoursNote}>
+                    Orig: {entry.totalHours} hrs
+                  </Text>
+                ) : null}
+              </View>
+            ) : (
+              <View style={styles.totalHoursValueRow}>
+                <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>
+                  {adjustedHours !== undefined ? adjustedHours : entry.totalHours}
+                </Text>
                 {entry.actualHours ? (
                   <View style={styles.actualHoursBadge}>
                     <Text style={styles.actualHoursBadgeText}>
@@ -1212,27 +1411,9 @@ export function EsarfCardView({
                   </View>
                 ) : null}
               </View>
-              {adjustedHours !== undefined && adjustedHours !== entry.totalHours ? (
-                <Text style={styles.originalHoursNote}>
-                  Orig: {entry.totalHours} hrs
-                </Text>
-              ) : null}
-            </View>
-          ) : (
-            <View style={styles.totalHoursValueRow}>
-              <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>
-                {adjustedHours !== undefined ? adjustedHours : entry.totalHours}
-              </Text>
-              {entry.actualHours ? (
-                <View style={styles.actualHoursBadge}>
-                  <Text style={styles.actualHoursBadgeText}>
-                    Actual: {formatDisplayHours(entry.actualHours)}h
-                  </Text>
-                </View>
-              ) : null}
-            </View>
-          )}
-        </View>
+            )}
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.gridRow}>
@@ -1257,18 +1438,25 @@ export function EsarfCardView({
 
       {/* Attached Photo Proofs (up to 3) */}
       {(() => {
+        const isEntryGallery =
+          entry.proofSource === 'gallery' ||
+          (!entry.proofTime && !entry.proofLocation && !entry.proofId && Boolean(entry.proofUrl));
+
         const proofsToRender: ParsedEsarfProof[] =
           entry.proofs && entry.proofs.length > 0
             ? entry.proofs
-            : entry.proofUrl || entry.proofId || proofDetails
+            : entry.proofUrl || entry.proofId || (isEntryGallery ? null : proofDetails)
             ? [
                 {
                   proofUrl: effectiveProofUrl || entry.proofUrl || '',
-                  proofTime: proofDetails?.dateFormatted
-                    ? `${proofDetails.dateFormatted} • ${proofDetails.timeDigits} ${proofDetails.timePeriod}`
-                    : entry.proofTime,
-                  proofLocation: proofDetails?.locationText || entry.proofLocation,
-                  proofId: proofDetails?.id || entry.proofId,
+                  proofTime: isEntryGallery
+                    ? undefined
+                    : (proofDetails?.dateFormatted
+                        ? `${proofDetails.dateFormatted} • ${proofDetails.timeDigits} ${proofDetails.timePeriod}`
+                        : entry.proofTime),
+                  proofLocation: isEntryGallery ? undefined : (proofDetails?.locationText || entry.proofLocation),
+                  proofId: isEntryGallery ? undefined : (proofDetails?.id || entry.proofId),
+                  proofSource: isEntryGallery ? 'gallery' : (entry.proofSource || 'photo_proof'),
                 },
               ]
             : [];
@@ -1287,7 +1475,7 @@ export function EsarfCardView({
                   proofItem={pr}
                   index={pIdx}
                   total={proofsToRender.length}
-                  onPress={() => openProofModal(pr.proofUrl, pr)}
+                  onPress={(itemDetails) => openProofModal(pr.proofUrl, pr, itemDetails)}
                 />
               ))}
             </View>
@@ -1306,20 +1494,51 @@ export function EsarfCardView({
           <View style={styles.proofModalBackdrop}>
             <View style={styles.proofModalCard}>
               <View style={styles.proofModalHeader}>
-                <View style={{ flex: 1, marginRight: 8 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Camera size={16} color="#0284c7" strokeWidth={2.2} />
-                    <Text style={styles.proofModalTitle}>
-                      Attached Proof{activeModalProof && entry.proofs && entry.proofs.length > 1 ? ` #${(entry.proofs.findIndex(p => p.proofUrl === activeModalProof.proofUrl)) + 1 || 1}` : ''} (Request #{entry.index})
-                    </Text>
-                  </View>
-                  {activeModalProof?.proofTime || proofDetails ? (
-                    <Text style={styles.proofModalSubtitle} numberOfLines={1}>
-                      {activeModalProof?.proofTime || (proofDetails ? `${proofDetails.dateFormatted} • ${proofDetails.timeDigits} ${proofDetails.timePeriod}` : '')}
-                      {activeModalProof?.proofLocation ? ` • ${activeModalProof.proofLocation}` : proofDetails?.employeeName ? ` • ${proofDetails.employeeName}` : ''}
-                    </Text>
-                  ) : null}
-                </View>
+                {(() => {
+                  const isModalGallery =
+                    activeModalProof?.proofSource === 'gallery' ||
+                    activeModalDetails?.source === 'gallery' ||
+                    (!activeModalProof?.proofTime &&
+                      !activeModalProof?.proofLocation &&
+                      !activeModalProof?.proofId &&
+                      (!activeModalDetails || (!activeModalDetails.timeDigits && !activeModalDetails.locationText)));
+
+                  const modalDetails = isModalGallery
+                    ? null
+                    : (activeModalDetails || ((entry.proofs && entry.proofs.length > 1) ? null : proofDetails));
+
+                  const photoIndex = activeModalProof && entry.proofs && entry.proofs.length > 1
+                    ? (entry.proofs.findIndex((p) => p.proofUrl === activeModalProof.proofUrl) + 1) || 1
+                    : 1;
+
+                  return (
+                    <View style={{ flex: 1, marginRight: 8 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Camera size={16} color="#0284c7" strokeWidth={2.2} />
+                        <Text style={styles.proofModalTitle}>
+                          {isModalGallery
+                            ? `Gallery Photo${entry.proofs && entry.proofs.length > 1 ? ` #${photoIndex}` : ''} (Request #${entry.index})`
+                            : `Attached Proof${entry.proofs && entry.proofs.length > 1 ? ` #${photoIndex}` : ''} (Request #${entry.index})`}
+                        </Text>
+                      </View>
+                      {!isModalGallery && (activeModalProof?.proofTime || modalDetails) ? (
+                        <Text style={styles.proofModalSubtitle} numberOfLines={1}>
+                          {activeModalProof?.proofTime ||
+                            (modalDetails?.dateFormatted && modalDetails?.timeDigits
+                              ? `${modalDetails.dateFormatted} • ${modalDetails.timeDigits} ${modalDetails.timePeriod}`
+                              : '')}
+                          {activeModalProof?.proofLocation
+                            ? ` • ${activeModalProof.proofLocation}`
+                            : modalDetails?.locationText
+                            ? ` • ${modalDetails.locationText}`
+                            : modalDetails?.employeeName
+                            ? ` • ${modalDetails.employeeName}`
+                            : ''}
+                        </Text>
+                      ) : null}
+                    </View>
+                  );
+                })()}
                 <Pressable
                   onPress={() => setPreviewProofUrl(null)}
                   style={styles.proofModalCloseBtn}
@@ -1371,31 +1590,45 @@ export function EsarfCardView({
                 )}
 
                 {/* Watermark Overlay (Bottom-Left) */}
-                {!modalLoading && !modalError && proofDetails ? (
-                  <>
-                    <View style={styles.proofWatermarkGradient} pointerEvents="none" />
-                    <View style={styles.proofWatermarkContainer} pointerEvents="none">
-                      <View style={styles.proofWatermarkTimeRow}>
-                        <Text style={styles.proofWatermarkTime}>
-                          {proofDetails.timeDigits}
-                          <Text style={styles.proofWatermarkPeriod}> {proofDetails.timePeriod}</Text>
-                        </Text>
-                        <View style={styles.proofWatermarkDivider} />
-                        <View style={styles.proofWatermarkDateCol}>
-                          <Text style={styles.proofWatermarkDate}>{proofDetails.dateFormatted}</Text>
-                          <Text style={styles.proofWatermarkDay}>{proofDetails.dayFormatted}</Text>
-                        </View>
-                      </View>
-                      {proofDetails.locationText ? (
-                        <View style={styles.proofWatermarkLocationRow}>
-                          <Text style={styles.proofWatermarkLocation} numberOfLines={3}>
-                            {proofDetails.locationText}
+                {(() => {
+                  const isModalGallery =
+                    activeModalProof?.proofSource === 'gallery' ||
+                    activeModalDetails?.source === 'gallery' ||
+                    (!activeModalProof?.proofTime &&
+                      !activeModalProof?.proofLocation &&
+                      !activeModalProof?.proofId &&
+                      (!activeModalDetails || (!activeModalDetails.timeDigits && !activeModalDetails.locationText)));
+
+                  if (isModalGallery) return null;
+                  const modalDetails = activeModalDetails || ((entry.proofs && entry.proofs.length > 1) ? null : proofDetails);
+                  if (modalLoading || modalError || !modalDetails) return null;
+                  if (!modalDetails.timeDigits && !modalDetails.locationText) return null;
+                  return (
+                    <>
+                      <View style={styles.proofWatermarkGradient} pointerEvents="none" />
+                      <View style={styles.proofWatermarkContainer} pointerEvents="none">
+                        <View style={styles.proofWatermarkTimeRow}>
+                          <Text style={styles.proofWatermarkTime}>
+                            {modalDetails.timeDigits}
+                            <Text style={styles.proofWatermarkPeriod}> {modalDetails.timePeriod}</Text>
                           </Text>
+                          <View style={styles.proofWatermarkDivider} />
+                          <View style={styles.proofWatermarkDateCol}>
+                            <Text style={styles.proofWatermarkDate}>{modalDetails.dateFormatted}</Text>
+                            <Text style={styles.proofWatermarkDay}>{modalDetails.dayFormatted}</Text>
+                          </View>
                         </View>
-                      ) : null}
-                    </View>
-                  </>
-                ) : null}
+                        {modalDetails.locationText ? (
+                          <View style={styles.proofWatermarkLocationRow}>
+                            <Text style={styles.proofWatermarkLocation} numberOfLines={3}>
+                              {modalDetails.locationText}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    </>
+                  );
+                })()}
               </View>
 
               <View style={styles.proofModalFooter}>

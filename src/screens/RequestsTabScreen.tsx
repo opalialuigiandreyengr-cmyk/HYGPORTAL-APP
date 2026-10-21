@@ -1,28 +1,45 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, AppState, type AppStateStatus, Modal, PanResponder, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, AppState, type AppStateStatus, DeviceEventEmitter, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
-import { CalendarDays, Clock3, Eye, FileText, Funnel, Pencil, RefreshCcw, Search, Trash2, Users, X } from 'lucide-react-native';
+import { AlertTriangle, CalendarDays, Camera, Check, Clock3, Eye, FileText, Funnel, Lock, Pencil, Plus, RefreshCcw, Search, Trash2, Users, X } from 'lucide-react-native';
 
 import { colors, fontWeights, spacing, radius } from '../theme';
 import { getSafeBottomInset, getScreenBottomPadding } from '../utils/safeArea';
 import { Avatar } from '../components/Avatar';
 import { TopBar } from '../components/TopBar';
-import { deleteMyPendingRequest, loadMyRequests, loadMyRequestsCached, type MyRequest } from '../services/requests';
+import {
+  attachScheduledOtPhotoProof,
+  deleteMyPendingRequest,
+  isUUID,
+  loadMyRequests,
+  loadMyRequestsCached,
+  type MyRequest,
+} from '../services/requests';
+import {
+  isScheduledOtAwaitingProof,
+  isScheduledOtReadyForProof,
+  isScheduledOtRequest,
+  formatScheduledOtStatusMessage,
+} from '../utils/scheduledOt';
+import { PhotoProofPickerModal, type SelectedProofAttachment } from '../components/PhotoProofPickerModal';
+import { formatTimeDisplay } from '../utils/dateTime';
 import { syncAllOfflineItems } from '../services/offlineQueue';
-import { isAppOnline } from '../services/network';
+import { isAppOnline, useNetworkStatus } from '../services/network';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { DeleteConfirmationModal } from '../components/DeleteConfirmationModal';
 import { isAutoApprovedBirthdayGrant } from '../services/birthdayLeave';
+import { resolveApproverLevel } from '../services/positions';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import {
   EsarfCardView,
   EsarfRequestInfoPanel,
   formatUnifiedRequestCode,
   formatUnifiedRequestType,
+  getDirectProofImageUrl,
   parseEsarfEntries,
   type ParsedEsarfEntry,
 } from '../components/EsarfDetailsView';
@@ -93,9 +110,9 @@ export function RequestsTabScreen({
   const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [requestToDelete, setRequestToDelete] = useState<{ item: MyRequest; sequence: number } | null>(null);
-  const [swipedCardId, setSwipedCardId] = useState<string | null>(null);
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
   const insets = useSafeAreaInsets();
+  const { isOnline } = useNetworkStatus();
 
   async function handleEditRequest(item: MyRequest) {
     if (!onEditRequest) return;
@@ -122,47 +139,63 @@ export function RequestsTabScreen({
   function handleDeleteRequest(item: MyRequest, sequence?: number) {
     const statusKey = normalizeStatus(item.status, item);
     if (statusKey !== 'pending') return;
-    if (!canDeleteRequest(item)) {
-      const msg = 'This ESARF request has already received an approval in the timeline and can no longer be deleted.';
+    if (!canDeleteRequest(item, isOnline)) {
+      const msg = !isOnline || !isAppOnline()
+        ? 'Deleting requests is only available in online mode once requests are synced.'
+        : isOfflineUnsyncedRequest(item)
+          ? 'This offline request has not been synced online yet. Requests can only be deleted once synced online.'
+          : 'This ESARF request has already received an approval in the timeline and can no longer be deleted.';
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
         window.alert(msg);
       } else {
         Alert.alert('Cannot Delete Request', msg);
       }
       return;
+    }
+    if (selectedRequest) {
+      setSelectedRequest(null);
     }
     setRequestToDelete({ item, sequence: sequence ?? 1 });
   }
 
   async function handleConfirmDelete() {
     if (!requestToDelete) return;
-    const isPerk = isPerkRequest(requestToDelete.item);
-    await executeDelete(requestToDelete.item, isPerk);
+    const req = requestToDelete.item;
+    const isPerk = isPerkRequest(req);
+    setRequestToDelete(null);
+    setTimeout(() => {
+      void executeDelete(req, isPerk);
+    }, 80);
   }
 
   function handleCancelDelete() {
     setRequestToDelete(null);
-    setSwipedCardId(null);
   }
 
   async function executeDelete(item: MyRequest, isPerk: boolean) {
-    if (!canDeleteRequest(item)) {
-      const msg = 'This ESARF request has already received an approval in the timeline and can no longer be deleted.';
-      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        window.alert(msg);
-      } else {
-        Alert.alert('Cannot Delete Request', msg);
-      }
-      return;
-    }
-
     const targetId = item.request_id;
-    // Immediately dismiss modal and swiped card so screen never freezes or locks touch
+    // Immediately dismiss modal and details sheet so screen never freezes or locks touch
     setRequestToDelete(null);
-    setSwipedCardId(null);
     if (selectedRequest?.item.request_id === targetId) {
       setSelectedRequest(null);
     }
+
+    if (!canDeleteRequest(item, isOnline)) {
+      const msg = !isOnline || !isAppOnline()
+        ? 'Deleting requests is only available in online mode once requests are synced.'
+        : isOfflineUnsyncedRequest(item)
+          ? 'This offline request has not been synced online yet. Requests can only be deleted once synced online.'
+          : 'This ESARF request has already received an approval in the timeline and can no longer be deleted.';
+      setTimeout(() => {
+        if (Platform.OS === 'web' && typeof window !== 'undefined') {
+          window.alert(msg);
+        } else {
+          Alert.alert('Cannot Delete Request', msg);
+        }
+      }, 150);
+      return;
+    }
+
     setDeletingId(targetId);
 
     // Optimistically remove from list immediately for 0-lag UI feedback
@@ -170,29 +203,43 @@ export function RequestsTabScreen({
     setItems((prev) => prev.filter((r) => r.request_id !== targetId));
 
     try {
-      const lockInfo = await checkApproverActiveViewing(targetId);
-      if (lockInfo.isLocked) {
-        setItems(previousItems);
-        setActiveLockInfo(lockInfo);
-        return;
+      if (isAppOnline() && isUUID(targetId)) {
+        const lockInfo = await checkApproverActiveViewing(targetId);
+        if (lockInfo.isLocked) {
+          setItems(previousItems);
+          setActiveLockInfo(lockInfo);
+          return;
+        }
       }
 
       await deleteMyPendingRequest(targetId, isPerk);
-      await refresh(true);
+      clearEsarfEntriesCache();
+
+      if (isAppOnline()) {
+        void refreshSilently();
+      } else {
+        const cached = await loadMyRequestsCached();
+        if (cached && cached.length) {
+          setItems(cached);
+        }
+      }
     } catch (error) {
       setItems(previousItems);
       const msg = error instanceof Error ? error.message : 'Unable to delete request.';
-      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        window.alert(msg);
-      } else {
-        Alert.alert('Delete Failed', msg);
-      }
+      setTimeout(() => {
+        if (Platform.OS === 'web' && typeof window !== 'undefined') {
+          window.alert(msg);
+        } else {
+          Alert.alert('Delete Failed', msg);
+        }
+      }, 150);
     } finally {
       setDeletingId(null);
     }
   }
 
   async function refresh(forceRefresh = true) {
+    clearEsarfEntriesCache();
     setIsLoading(true);
     setStatus('Loading...');
     try {
@@ -218,7 +265,7 @@ export function RequestsTabScreen({
     setIsPullRefreshing(true);
     try {
       if (isAppOnline()) {
-        await syncAllOfflineItems().catch(() => {});
+        await syncAllOfflineItems().catch(() => { });
       }
       await refresh(true);
     } finally {
@@ -226,19 +273,14 @@ export function RequestsTabScreen({
     }
   };
 
-  const handleSwipeOpen = useCallback((id: string) => {
-    setSwipedCardId(id);
-  }, []);
 
-  const handleSwipeClose = useCallback((id: string) => {
-    setSwipedCardId((curr) => (curr === id ? null : curr));
-  }, []);
 
   const handleView = useCallback((item: MyRequest, sequence: number) => {
     setSelectedRequest({ item, sequence });
   }, []);
 
   const handleEdit = useCallback((item: MyRequest) => {
+    clearEsarfEntriesCache();
     void handleEditRequest(item);
   }, [onEditRequest]);
 
@@ -248,9 +290,18 @@ export function RequestsTabScreen({
 
   async function refreshSilently() {
     try {
-      const requests = await loadMyRequests(false);
+      const requests = await loadMyRequests(true);
+      clearEsarfEntriesCache();
       setItems(requests);
       setStatus(requests.length ? '' : 'No requests yet.');
+      setSelectedRequest((curr) => {
+        if (!curr) return null;
+        const fresh = requests.find((it) => it.request_id === curr.item.request_id);
+        if (fresh) {
+          return { ...curr, item: fresh };
+        }
+        return curr;
+      });
     } catch {
       // Keep current items on silent error
     }
@@ -338,10 +389,61 @@ export function RequestsTabScreen({
       realtimeChannel.subscribe();
     }
 
+    // 5. Listen for offline request queue / cache updates
+    const requestsUpdatedSub = DeviceEventEmitter.addListener('my_requests_updated', async () => {
+      clearEsarfEntriesCache();
+      const cached = await loadMyRequestsCached();
+      if (active && cached) {
+        setItems(cached);
+        setStatus(cached.length ? '' : 'No requests yet.');
+
+        setSelectedRequest((curr) => {
+          if (!curr) return null;
+          const fresh = cached.find((it) => it.request_id === curr.item.request_id);
+          if (fresh) {
+            return { ...curr, item: fresh };
+          }
+          return curr;
+        });
+      }
+      if (active && isAppOnline()) {
+        void refreshSilently();
+      }
+    });
+
+    const reqSyncedSub = DeviceEventEmitter.addListener('offline_request_synced', ({ oldId, newId }: { oldId: string; newId: string }) => {
+      if (!active) return;
+      setItems((prev) =>
+        prev.map((it) => (it.request_id === oldId ? { ...it, request_id: newId, status: 'pending' } : it)),
+      );
+      setSelectedRequest((curr) => {
+        if (!curr || curr.item.request_id !== oldId) return curr;
+        return {
+          ...curr,
+          item: {
+            ...curr.item,
+            request_id: newId,
+            status: 'pending',
+          },
+        };
+      });
+    });
+
+    const reqSyncedOnlineSub = DeviceEventEmitter.addListener('requests_synced_online', () => {
+      if (!active) return;
+      clearEsarfEntriesCache();
+      if (isAppOnline()) {
+        void refreshSilently();
+      }
+    });
+
     return () => {
       active = false;
       appStateSub.remove();
       clearInterval(pollInterval);
+      requestsUpdatedSub.remove();
+      reqSyncedSub.remove();
+      reqSyncedOnlineSub.remove();
       if (realtimeChannel) {
         void supabase.removeChannel(realtimeChannel);
       }
@@ -350,11 +452,12 @@ export function RequestsTabScreen({
 
   const counts = useMemo(() => {
     const categoryItems = activeCategory === 'all'
-      ? items
-      : items.filter((item) => requestCategory(item) === activeCategory);
+      ? items.filter(Boolean)
+      : items.filter((item) => Boolean(item) && requestCategory(item) === activeCategory);
 
     return categoryItems.reduce(
       (totals, item) => {
+        if (!item) return totals;
         totals.all += 1;
         const statusKey = normalizeStatus(item.status, item);
         if (statusKey === 'validated') totals.validated += 1;
@@ -368,8 +471,9 @@ export function RequestsTabScreen({
   }, [activeCategory, items]);
 
   const categoryCounts = useMemo(() => {
-    return items.reduce(
+    return items.filter(Boolean).reduce(
       (totals, item) => {
+        if (!item) return totals;
         totals.all += 1;
         totals[requestCategory(item)] += 1;
         return totals;
@@ -384,6 +488,7 @@ export function RequestsTabScreen({
     const toTime = parseFilterDate(dateTo, true);
 
     return items.filter((item) => {
+      if (!item) return false;
       const statusKey = normalizeStatus(item.status, item);
       if (activeStatus !== 'all' && statusKey !== activeStatus) return false;
       if (activeCategory !== 'all' && requestCategory(item) !== activeCategory) return false;
@@ -468,6 +573,7 @@ export function RequestsTabScreen({
     <View style={styles.root}>
       <StatusBar style="dark" />
       <TopBar
+        showNetworkStatus
         name={profile?.fullName}
         username={profile?.username}
         photoUrl={profile?.photoUrl}
@@ -587,12 +693,10 @@ export function RequestsTabScreen({
               profile={profile}
               sequence={sequence}
               isDeleting={deletingId === item.request_id}
-              isSwipedOpen={swipedCardId === item.request_id}
-              onSwipeOpen={handleSwipeOpen}
-              onSwipeClose={handleSwipeClose}
+              isOnline={isOnline}
               onView={handleView}
               onEdit={onEditRequest ? handleEdit : undefined}
-              onDelete={handleDelete}
+              onDelete={undefined}
             />
           );
         })}
@@ -615,7 +719,7 @@ export function RequestsTabScreen({
             <Pressable
               disabled={currentPage >= pageCount}
               style={[styles.paginationButton, currentPage >= pageCount ? styles.paginationButtonDisabled : null]}
-              onPress={() => setPage((value) => Math.min(pageCount, value + 1))}
+              onPress={() => setPage((value) => Math.max(pageCount, value + 1))}
             >
               <Text style={styles.paginationButtonText}>Next</Text>
             </Pressable>
@@ -637,9 +741,9 @@ export function RequestsTabScreen({
         request={
           selectedRequest
             ? {
-                ...selectedRequest,
-                item: items.find((it) => it.request_id === selectedRequest.item.request_id) || selectedRequest.item,
-              }
+              ...selectedRequest,
+              item: items.find((it) => it.request_id === selectedRequest.item.request_id) || selectedRequest.item,
+            }
             : null
         }
         profile={profile}
@@ -650,11 +754,11 @@ export function RequestsTabScreen({
             ? (req) => void handleEditRequest(req)
             : undefined
         }
-        onDelete={
-          selectedRequest && canDeleteRequest(selectedRequest.item)
-            ? (req) => handleDeleteRequest(req, selectedRequest.sequence)
-            : undefined
-        }
+        onDelete={undefined}
+        onProofAttached={async () => {
+          setSelectedRequest(null);
+          await refresh(true);
+        }}
       />
 
       <DeleteConfirmationModal
@@ -681,9 +785,7 @@ const RequestCard = memo(function RequestCard({
   profile,
   sequence,
   isDeleting,
-  isSwipedOpen,
-  onSwipeOpen,
-  onSwipeClose,
+  isOnline = true,
   onView,
   onEdit,
   onDelete,
@@ -692,239 +794,113 @@ const RequestCard = memo(function RequestCard({
   profile: EmployeeProfileSummary | null;
   sequence: number;
   isDeleting?: boolean;
-  isSwipedOpen?: boolean;
-  onSwipeOpen?: (id: string) => void;
-  onSwipeClose?: (id: string) => void;
+  isOnline?: boolean;
   onView: (item: MyRequest, sequence: number) => void;
   onEdit?: (item: MyRequest) => void;
   onDelete?: (item: MyRequest, sequence?: number) => void;
 }) {
   const statusKey = normalizeStatus(item.status, item);
-  const isPending = statusKey === 'pending';
   const requestDate = getRequestDate(item);
   const displayName = formatEmployeeDisplayName(profile);
   const department = formatProfileWorkUnit(profile);
   const isPerk = isPerkRequest(item);
   const canEdit = canEditRequest(item);
-  const canDelete = canDeleteRequest(item);
-
-  const translateX = useRef(new Animated.Value(0)).current;
-  const isOpenRef = useRef(false);
-  const SWIPE_WIDTH = 84;
-
-  const onDeleteRef = useRef(onDelete);
-  onDeleteRef.current = onDelete;
-  const onSwipeOpenRef = useRef(onSwipeOpen);
-  onSwipeOpenRef.current = onSwipeOpen;
-  const onSwipeCloseRef = useRef(onSwipeClose);
-  onSwipeCloseRef.current = onSwipeClose;
-
-  useEffect(() => {
-    if (!isSwipedOpen && isOpenRef.current) {
-      isOpenRef.current = false;
-      Animated.spring(translateX, {
-        toValue: 0,
-        bounciness: 4,
-        useNativeDriver: true,
-      }).start();
-    }
-  }, [isSwipedOpen]);
-
-  const panResponder = useMemo(() => {
-    if (!isPending || !Boolean(canDelete && onDelete)) {
-      return null;
-    }
-
-    return PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onStartShouldSetPanResponderCapture: () => false,
-      onMoveShouldSetPanResponder: (_, gestureState) => {
-        const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.5;
-        if (isOpenRef.current) {
-          return isHorizontal && Math.abs(gestureState.dx) > 6;
-        }
-        return isHorizontal && gestureState.dx < -10;
-      },
-      onMoveShouldSetPanResponderCapture: (_, gestureState) => {
-        const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.5;
-        if (isOpenRef.current) {
-          return isHorizontal && Math.abs(gestureState.dx) > 6;
-        }
-        return isHorizontal && gestureState.dx < -10;
-      },
-      onPanResponderMove: (_, gestureState) => {
-        const startX = isOpenRef.current ? -SWIPE_WIDTH : 0;
-        let newX = startX + gestureState.dx;
-        if (newX > 0) {
-          newX = 0;
-        }
-        if (newX < -SWIPE_WIDTH) {
-          newX = -SWIPE_WIDTH + (newX + SWIPE_WIDTH) * 0.25;
-        }
-        translateX.setValue(newX);
-      },
-      onPanResponderRelease: (_, gestureState) => {
-        const startX = isOpenRef.current ? -SWIPE_WIDTH : 0;
-        const totalX = startX + gestureState.dx;
-        const isFlickLeft = gestureState.vx < -0.4;
-        const isFlickRight = gestureState.vx > 0.4;
-        const shouldBeOpen = (totalX < -35 && !isFlickRight) || isFlickLeft;
-
-        if (shouldBeOpen) {
-          isOpenRef.current = true;
-          onSwipeOpenRef.current?.(item.request_id);
-          Animated.spring(translateX, {
-            toValue: -SWIPE_WIDTH,
-            bounciness: 4,
-            useNativeDriver: true,
-          }).start(() => {
-            onDeleteRef.current?.(item, sequence);
-          });
-        } else {
-          isOpenRef.current = false;
-          onSwipeCloseRef.current?.(item.request_id);
-          Animated.spring(translateX, {
-            toValue: 0,
-            bounciness: 4,
-            useNativeDriver: true,
-          }).start();
-        }
-      },
-      onPanResponderTerminationRequest: () => false,
-      onPanResponderTerminate: () => {
-        isOpenRef.current = false;
-        onSwipeCloseRef.current?.(item.request_id);
-        Animated.spring(translateX, {
-          toValue: 0,
-          bounciness: 4,
-          useNativeDriver: true,
-        }).start();
-      },
-    });
-  }, [isPending, Boolean(canDelete && onDelete), item, sequence]);
+  const canDelete = canDeleteRequest(item, isOnline);
 
   return (
     <View style={styles.cardOuter}>
-      {isPending && canDelete && onDelete ? (
-        <View style={styles.swipeDeleteActionBehind}>
-          <Pressable
-            style={styles.swipeDeleteBtn}
-            onPress={() => {
-              onDelete(item, sequence);
-            }}
-            accessibilityLabel="Delete request"
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <View style={styles.swipeDeleteIconBox}>
-              <Trash2 size={20} color="#ffffff" strokeWidth={2.4} />
-            </View>
-            <Text style={styles.swipeDeleteBtnText}>Delete</Text>
-          </Pressable>
+      <View style={[styles.card, isDeleting ? { opacity: 0.6 } : null]}>
+        <View style={styles.avatar}>
+          <Avatar name={displayName} photoUrl={profile?.photoUrl} size={35} textSize={13} />
         </View>
-      ) : null}
 
-      <Animated.View
-        style={[
-          styles.cardSlideWrapper,
-          { transform: [{ translateX }] },
-        ]}
-        {...(panResponder ? panResponder.panHandlers : {})}
-      >
-        <View style={styles.cardAccent} />
-        <View style={[styles.card, isDeleting ? { opacity: 0.6 } : null]}>
-          <View style={styles.avatar}>
-            <Avatar name={displayName} photoUrl={profile?.photoUrl} size={35} textSize={13} />
+        <View style={styles.cardContent}>
+          <View style={styles.cardTopRow}>
+            <View style={styles.cardTitleBlock}>
+              <Text style={styles.cardCode} numberOfLines={1}>
+                {formatRequestCode(item, sequence)}
+              </Text>
+              <Text style={styles.cardName} numberOfLines={1}>
+                {displayName}
+              </Text>
+              <Text style={styles.cardDept}>{department}</Text>
+            </View>
+            <View style={styles.cardMeta}>
+              <Text style={[styles.statusPill, statusPillStyle(statusKey, item)]} numberOfLines={1}>
+                {renderStatusPillContent(item)}
+              </Text>
+              <View style={styles.metaLine}>
+                <CalendarDays size={14} color={colors.muted} strokeWidth={2.2} />
+                <Text style={styles.metaText} numberOfLines={1}>
+                  {formatCompactDate(requestDate)}
+                </Text>
+              </View>
+              <View style={styles.metaLine}>
+                <Clock3 size={14} color={colors.muted} strokeWidth={2.2} />
+                <Text style={styles.metaText} numberOfLines={1}>
+                  {formatCompactTime(item.submitted_at || item.time_from)}
+                </Text>
+              </View>
+            </View>
           </View>
 
-          <View style={styles.cardContent}>
-            <View style={styles.cardTopRow}>
-              <View style={styles.cardTitleBlock}>
-                <Text style={styles.cardCode} numberOfLines={1}>
-                  {formatRequestCode(item, sequence)}
-                </Text>
-                <Text style={styles.cardName} numberOfLines={1}>
-                  {displayName}
-                </Text>
-                <Text style={styles.cardDept}>{department}</Text>
-              </View>
-              <View style={styles.cardMeta}>
-                <Text style={[styles.statusPill, statusPillStyle(statusKey, item)]} numberOfLines={1}>
-                  {renderStatusPillContent(item)}
-                </Text>
-                <View style={styles.metaLine}>
-                  <CalendarDays size={14} color={colors.muted} strokeWidth={2.2} />
-                  <Text style={styles.metaText} numberOfLines={1}>
-                    {formatCompactDate(requestDate)}
-                  </Text>
-                </View>
-                <View style={styles.metaLine}>
-                  <Clock3 size={14} color={colors.muted} strokeWidth={2.2} />
-                  <Text style={styles.metaText} numberOfLines={1}>
-                    {formatCompactTime(item.submitted_at || item.time_from)}
-                  </Text>
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.cardBottomRow}>
-              <View style={styles.typePill}>
-                <Text style={styles.typePillText} numberOfLines={1} ellipsizeMode="tail">
-                  {formatRequestType(item)}
-                </Text>
-              </View>
-              {statusKey === 'pending' ? (
+          {isScheduledOtAwaitingProof(item) ? (
+            <View
+              style={[
+                styles.cardOtBadge,
+                isScheduledOtReadyForProof(item) ? styles.cardOtBadgeReady : styles.cardOtBadgeLocked,
+              ]}
+            >
+              {isScheduledOtReadyForProof(item) ? (
                 <>
-                  {!isPerk && canEdit && onEdit ? (
-                    <Pressable
-                      style={styles.editButton}
-                      onPress={() => onEdit(item)}
-                      accessibilityLabel="Edit request"
-                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                    >
-                      <Pencil size={14} color="#92400e" strokeWidth={2.3} />
-                      <Text style={styles.editText}>Edit</Text>
-                    </Pressable>
-                  ) : null}
-                  {canDelete && onDelete ? (
-                    <Pressable
-                      disabled={isDeleting}
-                      style={[styles.deleteButton, isDeleting ? { opacity: 0.6 } : null]}
-                      onPress={() => onDelete(item, sequence)}
-                      accessibilityLabel="Delete request"
-                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                    >
-                      {isDeleting ? (
-                        <ActivityIndicator size="small" color={colors.semantic.danger} />
-                      ) : (
-                        <Trash2 size={14} color={colors.semantic.danger} strokeWidth={2.3} />
-                      )}
-                    </Pressable>
-                  ) : null}
+                  <Camera size={13} color="#b45309" strokeWidth={2.3} />
+                  <Text style={styles.cardOtBadgeTextReady}>Attach Photo Proof Required</Text>
                 </>
-              ) : null}
-              <Pressable style={styles.viewButton} onPress={() => onView(item, sequence)}>
-                <Eye size={15} color={colors.text} strokeWidth={2.3} />
-                <Text style={styles.viewText}>View</Text>
-              </Pressable>
+              ) : (
+                <>
+                  <Lock size={13} color="#1d4ed8" strokeWidth={2.3} />
+                  <Text style={styles.cardOtBadgeTextLocked}>
+                    Attach proof opens on schedule ({formatCompactDate(item.date_from || item.submitted_at)})
+                  </Text>
+                </>
+              )}
             </View>
+          ) : null}
+
+          <View style={styles.cardBottomRow}>
+            <View style={styles.typePill}>
+              <Text style={styles.typePillText} numberOfLines={1} ellipsizeMode="tail">
+                {formatRequestType(item)}
+              </Text>
+            </View>
+            {statusKey === 'pending' ? (
+              <>
+                {!isPerk && canEdit && onEdit ? (
+                  <Pressable
+                    style={styles.editButton}
+                    onPress={() => onEdit(item)}
+                    accessibilityLabel="Edit request"
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <Pencil size={14} color="#92400e" strokeWidth={2.3} />
+                    <Text style={styles.editText}>Edit</Text>
+                  </Pressable>
+                ) : null}
+                {/* Delete button temporarily removed */}
+              </>
+            ) : null}
+            <Pressable
+              style={styles.viewButton}
+              onPress={() => onView(item, sequence)}
+              accessibilityLabel="View request"
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+            >
+              <Eye size={15} color={colors.text} strokeWidth={2.3} />
+              <Text style={styles.viewText}>View</Text>
+            </Pressable>
           </View>
         </View>
-
-        {isSwipedOpen ? (
-          <Pressable
-            style={styles.swipedCardOverlay}
-            onPress={() => {
-              isOpenRef.current = false;
-              onSwipeClose?.(item.request_id);
-              Animated.spring(translateX, {
-                toValue: 0,
-                bounciness: 4,
-                useNativeDriver: true,
-              }).start();
-            }}
-          />
-        ) : null}
-      </Animated.View>
+      </View>
     </View>
   );
 });
@@ -936,6 +912,7 @@ function RequestDetailsSheet({
   onClose,
   onEdit,
   onDelete,
+  onProofAttached,
 }: {
   request: { item: MyRequest; sequence: number } | null;
   profile: EmployeeProfileSummary | null;
@@ -943,13 +920,28 @@ function RequestDetailsSheet({
   onClose: () => void;
   onEdit?: (request: MyRequest) => void;
   onDelete?: (request: MyRequest) => void;
+  onProofAttached?: () => void | Promise<void>;
 }) {
   const insets = useSafeAreaInsets();
   const footerBottomPadding = getSafeBottomInset(insets.bottom, Platform.OS === 'ios' ? 24 : spacing.md);
 
-  if (!request) return null;
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  const { item, sequence } = request;
+  useEffect(() => {
+    if (!request) {
+      setShowDeleteConfirm(false);
+    }
+  }, [request]);
+
+  const lastRequestRef = useRef(request);
+  if (request) {
+    lastRequestRef.current = request;
+  }
+  const displayRequest = request || lastRequestRef.current;
+
+  if (!displayRequest) return null;
+
+  const { item, sequence } = displayRequest;
   const displayName = formatEmployeeDisplayName(profile);
   const department = formatProfileWorkUnit(profile);
   const isLeave = item.request_type_code === 'leave';
@@ -983,7 +975,7 @@ function RequestDetailsSheet({
   ];
 
   return (
-    <Modal transparent animationType="slide" visible onRequestClose={onClose}>
+    <Modal transparent animationType="slide" visible={Boolean(request)} onRequestClose={onClose}>
       <View style={styles.sheetBackdrop}>
         <Pressable style={styles.sheetDismissArea} onPress={onClose} />
         <View style={styles.detailsSheet}>
@@ -1116,6 +1108,13 @@ function RequestDetailsSheet({
                 {getCachedEsarfEntries(item).map((entry) => (
                   <EsarfCardView key={entry.index} entry={entry} timelineRows={timelineRows} />
                 ))}
+                {isScheduledOtAwaitingProof(item) ? (
+                  <ScheduledOtPhotoProofCard
+                    item={item}
+                    profile={profile}
+                    onProofAttached={onProofAttached}
+                  />
+                ) : null}
                 {rejectedReason ? (
                   <View style={styles.rejectedReasonBox}>
                     <Text style={styles.rejectedReasonLabel}>Rejected reason</Text>
@@ -1145,24 +1144,7 @@ function RequestDetailsSheet({
                     <Text style={styles.sheetEditText}>Edit Request</Text>
                   </Pressable>
                 ) : null}
-                {onDelete ? (
-                  <Pressable
-                    disabled={isDeleting}
-                    style={[styles.sheetDeleteButton, isDeleting ? { opacity: 0.6 } : null]}
-                    onPress={() => {
-                      const itemToDelete = item;
-                      onClose();
-                      if (onDelete) {
-                        setTimeout(() => {
-                          onDelete(itemToDelete);
-                        }, 50);
-                      }
-                    }}
-                  >
-                    <Trash2 size={15} color={colors.semantic.danger} strokeWidth={2.4} />
-                    <Text style={styles.sheetDeleteText}>{isDeleting ? 'Deleting...' : 'Delete Request'}</Text>
-                  </Pressable>
-                ) : null}
+                {/* Delete button temporarily removed */}
               </>
             ) : null}
             <Pressable style={styles.sheetCloseButton} onPress={onClose}>
@@ -1170,8 +1152,239 @@ function RequestDetailsSheet({
             </Pressable>
           </View>
         </View>
+
+        {showDeleteConfirm ? (
+          <DeleteConfirmationModal
+            visible={showDeleteConfirm}
+            request={item}
+            sequence={sequence}
+            isDeleting={isDeleting}
+            useModal={false}
+            onConfirm={() => {
+              setShowDeleteConfirm(false);
+              const target = item;
+              onClose();
+              if (onDelete) {
+                setTimeout(() => {
+                  onDelete(target);
+                }, 100);
+              }
+            }}
+            onCancel={() => setShowDeleteConfirm(false)}
+          />
+        ) : null}
       </View>
     </Modal>
+  );
+}
+
+function ScheduledOtPhotoProofCard({
+  item,
+  profile,
+  onProofAttached,
+}: {
+  item: MyRequest;
+  profile: EmployeeProfileSummary | null;
+  onProofAttached?: () => void | Promise<void>;
+}) {
+  const [selectedProofs, setSelectedProofs] = useState<SelectedProofAttachment[]>([]);
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const isReady = isScheduledOtReadyForProof(item);
+  const statusMessage = formatScheduledOtStatusMessage(item);
+
+  const userInfo = useMemo(() => ({
+    resolvedEmpId: profile?.employeeId,
+    resolvedName: profile?.fullName,
+    resolvedEmail: profile?.email,
+    resolvedStore: profile?.storeName,
+    resolvedAuthId: profile?.profileId,
+  }), [profile]);
+
+  async function handleSubmitProof() {
+    if (selectedProofs.length === 0) {
+      const msg = 'Please select at least 1 photo proof to attach before submitting.';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(msg);
+      } else {
+        Alert.alert('Photo Proof Required', msg);
+      }
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      await attachScheduledOtPhotoProof({
+        requestId: item.request_id,
+        proofs: selectedProofs,
+      });
+
+      const successMsg = 'Photo proof attached successfully! Your scheduled OT request has been forwarded to your approver(s).';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(successMsg);
+      } else {
+        Alert.alert('Proof Attached', successMsg);
+      }
+
+      if (onProofAttached) {
+        await onProofAttached();
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || 'Failed to attach photo proof. Please try again.';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(errMsg);
+      } else {
+        Alert.alert('Submission Failed', errMsg);
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  function handleRemoveProof(index: number) {
+    setSelectedProofs((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  const unlockDate = formatCompactDate(item.date_from || item.submitted_at);
+
+  return (
+    <View style={[styles.scheduledOtProofCard, !isReady ? styles.scheduledOtProofCardDisabled : null]}>
+      <View style={styles.scheduledOtProofHeaderRow}>
+        <View style={styles.scheduledOtProofHeaderTitleRow}>
+          <Camera
+            size={16}
+            color={!isReady ? '#64748b' : selectedProofs.length > 0 ? '#15803d' : '#2563eb'}
+            strokeWidth={2.2}
+            style={{ marginTop: 2 }}
+          />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <View style={styles.scheduledOtProofTitleCountRow}>
+              <Text style={[styles.scheduledOtProofSectionTitle, !isReady ? styles.scheduledOtTextDisabled : null]}>
+                Photo Proof
+              </Text>
+              <Text style={styles.scheduledOtProofSectionCount}>
+                ({selectedProofs.length}/3)
+              </Text>
+            </View>
+            <Text style={styles.scheduledOtProofSectionSubtitle} numberOfLines={1}>
+              Attach up to 3 Photo Proofs
+            </Text>
+          </View>
+        </View>
+
+        <View
+          style={[
+            styles.scheduledOtReqBadge,
+            !isReady
+              ? styles.scheduledOtReqBadgeOptional
+              : selectedProofs.length > 0
+                ? styles.scheduledOtReqBadgeSuccess
+                : styles.scheduledOtReqBadgeRequired,
+          ]}
+        >
+          {selectedProofs.length > 0 ? (
+            <Check size={11} color="#15803d" strokeWidth={2.8} />
+          ) : null}
+          <Text
+            style={[
+              styles.scheduledOtReqBadgeText,
+              !isReady
+                ? styles.scheduledOtReqBadgeTextOptional
+                : selectedProofs.length > 0
+                  ? styles.scheduledOtReqBadgeTextSuccess
+                  : styles.scheduledOtReqBadgeTextRequired,
+            ]}
+          >
+            {!isReady ? 'Optional' : selectedProofs.length > 0 ? `${selectedProofs.length} Attached` : '1 Required'}
+          </Text>
+        </View>
+      </View>
+
+      {!isReady ? (
+        <View style={styles.scheduledOtLockedButton}>
+          <Lock size={15} color="#ffffff" strokeWidth={2.2} />
+          <Text style={styles.scheduledOtLockedButtonText}>
+            Proof attachment unlocks on {unlockDate}
+          </Text>
+        </View>
+      ) : (
+        <View style={{ marginTop: 4 }}>
+          {selectedProofs.length > 0 ? (
+            <View style={styles.scheduledOtThumbnailRow}>
+              {selectedProofs.map((proof, idx) => (
+                <View key={proof.uri + idx} style={styles.scheduledOtThumbWrap}>
+                  {Platform.OS === 'web' ? (
+                    React.createElement('img', {
+                      src: getDirectProofImageUrl(proof.uri),
+                      referrerPolicy: 'no-referrer',
+                      style: { width: 64, height: 64, borderRadius: 10, objectFit: 'cover' },
+                    })
+                  ) : (
+                    <Image
+                      source={{ uri: getDirectProofImageUrl(proof.uri) }}
+                      style={styles.scheduledOtThumbImg}
+                      resizeMode="cover"
+                    />
+                  )}
+                  <Pressable
+                    style={styles.scheduledOtThumbRemoveBtn}
+                    onPress={() => handleRemoveProof(idx)}
+                    hitSlop={6}
+                  >
+                    <X size={12} color="#ffffff" strokeWidth={3} />
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          ) : null}
+
+          <View style={styles.scheduledOtActionRow}>
+            <Pressable
+              style={styles.scheduledOtPrimaryBtn}
+              onPress={() => setIsPickerOpen(true)}
+              disabled={isSubmitting}
+            >
+              <Camera size={15} color="#ffffff" strokeWidth={2.2} />
+              <Text style={styles.scheduledOtPrimaryBtnText}>
+                {selectedProofs.length > 0
+                  ? `Manage Proofs (${selectedProofs.length}/3)`
+                  : 'Attach Photo Proof (1 Required)'}
+              </Text>
+            </Pressable>
+
+            {selectedProofs.length > 0 ? (
+              <Pressable
+                style={[styles.scheduledOtSubmitBtn, isSubmitting ? { opacity: 0.7 } : null]}
+                onPress={handleSubmitProof}
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <>
+                    <Check size={16} color="#ffffff" strokeWidth={2.4} />
+                    <Text style={styles.scheduledOtSubmitBtnText}>Submit Proof & Forward Request</Text>
+                  </>
+                )}
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      )}
+
+      {isPickerOpen ? (
+        <PhotoProofPickerModal
+          visible={isPickerOpen}
+          onClose={() => setIsPickerOpen(false)}
+          selectedProofs={selectedProofs}
+          onSelectProofs={(proofs) => setSelectedProofs(proofs)}
+          userInfo={userInfo}
+          title="Attach Photo Proof for Scheduled OT"
+          subtitle="Select up to 3 photos from your Photo Log or upload from Gallery"
+          maxSlots={3}
+        />
+      ) : null}
+    </View>
   );
 }
 
@@ -1270,8 +1483,26 @@ function timelineDotStyle(tone: 'warning' | 'success' | 'danger' | 'muted') {
 
 const esarfEntriesCache = new Map<string, ParsedEsarfEntry[]>();
 
+export function clearEsarfEntriesCache() {
+  esarfEntriesCache.clear();
+}
+
 function getCachedEsarfEntries(item: MyRequest): ParsedEsarfEntry[] {
-  const key = `${item.request_id || ''}:${item.reason || ''}`;
+  const key = [
+    item.request_id || '',
+    item.status || '',
+    item.time_schedule || '',
+    item.day_off || '',
+    item.payroll_class || '',
+    item.date_from || '',
+    item.date_to || '',
+    item.time_from || '',
+    item.time_to || '',
+    item.total_hours ?? '',
+    item.transaction_type || '',
+    item.reason || '',
+  ].join('|');
+
   let entries = esarfEntriesCache.get(key);
   if (!entries) {
     entries = parseEsarfEntries(item);
@@ -1297,6 +1528,14 @@ function normalizeStatus(status: string, item?: MyRequest): StatusFilter {
     return 'approved';
   }
   const value = (status || '').toLowerCase().trim();
+  // Scheduled OT awaiting proof or in pre_approved status:
+  // Must map to 'pending' so it appears in 'All' and 'Pending' tabs, NOT 'approved'!
+  if (item && isScheduledOtAwaitingProof(item)) {
+    return 'pending';
+  }
+  if (value.includes('pre_approved') || value.includes('pre-approved')) {
+    return 'pending';
+  }
   if (value.includes('validat')) return 'validated';
   if (value.includes('approved')) return 'approved';
   if (item?.final_approved_at && !value.includes('reject') && !value.includes('denied')) return 'approved';
@@ -1318,6 +1557,9 @@ function normalizeStatus(status: string, item?: MyRequest): StatusFilter {
 }
 
 function statusLabel(item: MyRequest): string {
+  if (isScheduledOtAwaitingProof(item) || (item.status || '').toLowerCase().includes('pre_approved') || (item.status || '').toLowerCase().includes('pre-approved')) {
+    return 'PRE-APPROVED';
+  }
   if (isPartialApproval(item)) {
     const entries = getCachedEsarfEntries(item);
     const approvedCount = entries.filter((e) => !e.isRejected).length;
@@ -1356,6 +1598,9 @@ function renderStatusPillContent(item: MyRequest) {
 }
 
 function statusPillStyle(status: StatusFilter | 'partial', item?: MyRequest) {
+  if (item && (isScheduledOtAwaitingProof(item) || (item.status || '').toLowerCase().includes('pre_approved') || (item.status || '').toLowerCase().includes('pre-approved'))) {
+    return { backgroundColor: '#eff6ff', borderColor: '#93c5fd', borderWidth: 1, color: '#1d4ed8' };
+  }
   if (item && isPartialApproval(item)) {
     return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
   }
@@ -1414,6 +1659,9 @@ function hasApprovedTimelineStatus(item: MyRequest): boolean {
 }
 
 function canEditRequest(item: MyRequest): boolean {
+  if (isScheduledOtAwaitingProof(item)) {
+    return true;
+  }
   const statusKey = normalizeStatus(item.status, item);
   if (statusKey !== 'pending') return false;
   if (isPerkRequest(item)) return false;
@@ -1424,14 +1672,22 @@ function canEditRequest(item: MyRequest): boolean {
   return true;
 }
 
-function canDeleteRequest(item: MyRequest): boolean {
-  const statusKey = normalizeStatus(item.status, item);
-  if (statusKey !== 'pending') return false;
-  // If ESARF has at least one approved status in the timeline, it cannot be deleted
-  if (isEsarfRequest(item) && hasApprovedTimelineStatus(item)) {
-    return false;
+function isOfflineUnsyncedRequest(item?: MyRequest | null): boolean {
+  if (!item) return false;
+  const id = item.request_id || '';
+  if (id.startsWith('offline_') || id.includes('local') || !isUUID(id)) {
+    return true;
   }
-  return true;
+  const statusLower = (item.status || '').toLowerCase();
+  if (statusLower.includes('offline') || statusLower.includes('pending sync')) {
+    return true;
+  }
+  return false;
+}
+
+function canDeleteRequest(_item: MyRequest, _isOnline = true): boolean {
+  // Temporarily removed delete capability on requests
+  return false;
 }
 
 function formatEmployeeDisplayName(profile: EmployeeProfileSummary | null) {
@@ -1590,27 +1846,30 @@ function approvalTimeline(item: MyRequest) {
   }
 
   const fallback = [1, 2];
-  const summary = (item.approval_summary ?? []).slice(0, fallback.length);
+  const summary = (item.approval_summary && item.approval_summary.length > 0)
+    ? item.approval_summary
+    : [];
   const rows: { label: string; status: string; actedAt: string | null }[] = summary.length
     ? summary.map((step) => {
-        const isAutoApproved =
-          step.approver_name === 'HYG Portal System' ||
-          step.remarks?.toLowerCase().includes('auto-approved') ||
-          item.reason?.toLowerCase().includes('auto-approved');
-        const statusText = isAutoApproved
-          ? 'Auto-Approved'
-          : `L${step.required_level} • ${approvalStepStatus(step.status)}`;
-        return {
-          label: approvalRoleLabel(step),
-          status: statusText,
-          actedAt: step.acted_at,
-        };
-      })
+      const isAutoApproved =
+        step.approver_name === 'HYG Portal System' ||
+        step.remarks?.toLowerCase().includes('auto-approved') ||
+        item.reason?.toLowerCase().includes('auto-approved');
+      const levelNum = resolveApproverLevel(step);
+      const statusText = isAutoApproved
+        ? 'Auto-Approved'
+        : `L${levelNum} • ${approvalStepStatus(step.status)}`;
+      return {
+        label: approvalRoleLabel(step),
+        status: statusText,
+        actedAt: step.acted_at,
+      };
+    })
     : fallback.map((level) => ({
-        label: fallbackApprovalRoleLabel(level),
-        status: `L${level} • ${level === 1 ? 'Pending to approve' : 'Not yet processed'}`,
-        actedAt: null,
-      }));
+      label: fallbackApprovalRoleLabel(level),
+      status: `L${level} • ${level === 1 ? 'Pending to approve' : 'Not yet processed'}`,
+      actedAt: null,
+    }));
 
   while (rows.length < fallback.length) {
     const level = fallback[rows.length];
@@ -1630,7 +1889,8 @@ function approvalRoleLabel(step: MyRequest['approval_summary'][number]) {
   const skippedReason = normalizeDisplayValue(step.skipped_reason);
   if (skippedReason) return skippedReason;
 
-  return `Level ${step.required_level} Approver`;
+  const levelNum = resolveApproverLevel(step);
+  return `Level ${levelNum} Approver`;
 }
 
 function fallbackApprovalRoleLabel(level: number) {
@@ -2470,73 +2730,16 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   cardOuter: {
-    position: 'relative',
     marginBottom: spacing.sm,
-  },
-  cardSlideWrapper: {
-    position: 'relative',
-    paddingLeft: 4,
-    backgroundColor: 'transparent',
-    ...(Platform.OS === 'web' ? ({ touchAction: 'pan-y' } as any) : {}),
-  },
-  swipedCardOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 20,
-    backgroundColor: 'transparent',
-  },
-  swipeDeleteActionBehind: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: 4,
-    right: 0,
-    borderRadius: radius.md,
-    backgroundColor: '#dc2626',
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  swipeDeleteBtn: {
-    width: 84,
-    height: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    backgroundColor: '#dc2626',
-  },
-  swipeDeleteIconBox: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  swipeDeleteBtnText: {
-    color: '#ffffff',
-    fontSize: 11,
-    fontWeight: fontWeights.heavy,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  cardAccent: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 4,
-    borderTopLeftRadius: radius.md,
-    borderBottomLeftRadius: radius.md,
-    backgroundColor: colors.primary,
   },
   card: {
     backgroundColor: colors.surface,
     borderRadius: radius.md,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.primary,
+    borderTopWidth: 0,
+    borderRightWidth: 0,
+    borderBottomWidth: 0,
     paddingHorizontal: spacing.md,
     paddingVertical: 12,
     flexDirection: 'row',
@@ -2720,5 +2923,208 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: fontWeights.bold,
     color: colors.semantic.danger,
+  },
+  cardOtBadge: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  cardOtBadgeReady: {
+    backgroundColor: '#fffbeb',
+    borderColor: '#fde68a',
+  },
+  cardOtBadgeLocked: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#bfdbfe',
+  },
+  cardOtBadgeTextReady: {
+    fontSize: 12,
+    fontWeight: fontWeights.bold,
+    color: '#b45309',
+  },
+  cardOtBadgeTextLocked: {
+    fontSize: 12,
+    fontWeight: fontWeights.medium,
+    color: '#1d4ed8',
+  },
+  scheduledOtProofCard: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    marginBottom: spacing.xs,
+    padding: 12,
+    backgroundColor: '#f8fafc',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  scheduledOtProofCardDisabled: {
+    opacity: 0.65,
+  },
+  scheduledOtProofHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 10,
+  },
+  scheduledOtProofHeaderTitleRow: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 7,
+  },
+  scheduledOtProofSectionTitle: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+  },
+  scheduledOtTextDisabled: {
+    color: '#334155',
+  },
+  scheduledOtProofTitleCountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  scheduledOtProofSectionCount: {
+    fontSize: 12,
+    fontWeight: fontWeights.semibold,
+    color: '#64748b',
+  },
+  scheduledOtProofSectionSubtitle: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 1,
+    lineHeight: 15,
+  },
+  scheduledOtReqBadge: {
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  scheduledOtReqBadgeOptional: {
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  scheduledOtReqBadgeText: {
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+  },
+  scheduledOtReqBadgeTextOptional: {
+    color: '#64748b',
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+  },
+  scheduledOtReqBadgeRequired: {
+    backgroundColor: '#fee2e2',
+  },
+  scheduledOtReqBadgeTextRequired: {
+    color: '#dc2626',
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+  },
+  scheduledOtReqBadgeSuccess: {
+    backgroundColor: '#dcfce7',
+  },
+  scheduledOtReqBadgeTextSuccess: {
+    color: '#15803d',
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+  },
+  scheduledOtLockedButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#0f172a',
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+  },
+  scheduledOtLockedButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: fontWeights.semibold,
+  },
+  scheduledOtPrimaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#0f172a',
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+  },
+  scheduledOtPrimaryBtnText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: fontWeights.semibold,
+  },
+  scheduledOtThumbnailRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 8,
+  },
+  scheduledOtThumbWrap: {
+    position: 'relative',
+    width: 64,
+    height: 64,
+  },
+  scheduledOtThumbImg: {
+    width: 64,
+    height: 64,
+    borderRadius: 10,
+    backgroundColor: '#e2e8f0',
+  },
+  scheduledOtThumbRemoveBtn: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#dc2626',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#ffffff',
+  },
+  scheduledOtActionRow: {
+    flexDirection: 'column',
+    gap: 8,
+    marginTop: 2,
+  },
+  scheduledOtSubmitBtn: {
+    minHeight: 42,
+    borderRadius: 8,
+    backgroundColor: '#059669',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: spacing.md,
+    shadowColor: '#059669',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  scheduledOtSubmitBtnText: {
+    fontSize: 13.5,
+    fontWeight: fontWeights.heavy,
+    color: '#ffffff',
   },
 });

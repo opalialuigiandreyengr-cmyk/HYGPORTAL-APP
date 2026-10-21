@@ -6,6 +6,7 @@ import { getScreenBottomPadding } from '../utils/safeArea';
 import {
   ArrowRight,
   BadgePercent,
+  Briefcase,
   CalendarDays,
   CheckCircle2,
   ChevronRight,
@@ -58,6 +59,7 @@ type Props = {
   onApplyEsarf?: () => void;
   onRequestLeave?: () => void;
   onApplyPerks?: () => void;
+  onFileTravelOrder?: () => void;
   onPhotoProof?: () => void;
   onPhotoLog?: () => void;
   onActivityLog?: () => void;
@@ -83,6 +85,7 @@ export function DashboardScreen({
   onApplyEsarf,
   onRequestLeave,
   onApplyPerks,
+  onFileTravelOrder,
   onPhotoProof,
   onPhotoLog,
   onActivityLog,
@@ -137,7 +140,7 @@ export function DashboardScreen({
     setIsPullRefreshing(true);
     try {
       if (isAppOnline()) {
-        await syncAllOfflineItems().catch(() => {});
+        await syncAllOfflineItems().catch(() => { });
       }
       await Promise.allSettled([
         Promise.resolve(onRefreshDashboard()),
@@ -397,6 +400,7 @@ export function DashboardScreen({
     <View style={styles.root}>
       <StatusBar style="dark" />
       <TopBar
+        showNetworkStatus
         name={employeeName}
         username={profile?.username ?? userEmail}
         photoUrl={photoUrl}
@@ -441,19 +445,28 @@ export function DashboardScreen({
 
         <View style={styles.quickActionRow}>
           <DashboardQuickAction
-            icon={<FileText size={18} color={colors.brand.ink} strokeWidth={2.7} />}
-            label="Apply ESARF"
+            icon={<FileText size={16} color={colors.brand.ink} strokeWidth={2.7} />}
+            label={"Apply\nESARF"}
+            accessibilityLabel="Apply ESARF"
             onPress={onApplyEsarf}
           />
           <DashboardQuickAction
-            icon={<CalendarDays size={18} color={colors.brand.ink} strokeWidth={2.7} />}
-            label="Request Leave"
+            icon={<CalendarDays size={16} color={colors.brand.ink} strokeWidth={2.7} />}
+            label={"Request\nLeave"}
+            accessibilityLabel="Request Leave"
             onPress={onRequestLeave}
           />
           <DashboardQuickAction
-            icon={<Tag size={18} color={colors.brand.ink} strokeWidth={2.7} />}
-            label="Apply Perks"
+            icon={<Tag size={16} color={colors.brand.ink} strokeWidth={2.7} />}
+            label={"Apply\nPerks"}
+            accessibilityLabel="Apply Perks"
             onPress={onApplyPerks}
+          />
+          <DashboardQuickAction
+            icon={<Briefcase size={16} color={colors.brand.ink} strokeWidth={2.7} />}
+            label={"File Travel\nOrder"}
+            accessibilityLabel="File Travel Order"
+            onPress={onFileTravelOrder}
           />
         </View>
 
@@ -561,10 +574,12 @@ function isBirthdayToday(birthDateStr?: string | null): boolean {
 function DashboardQuickAction({
   icon,
   label,
+  accessibilityLabel,
   onPress,
 }: {
   icon: ReactNode;
   label: string;
+  accessibilityLabel?: string;
   onPress?: () => void;
 }) {
   return (
@@ -576,6 +591,8 @@ function DashboardQuickAction({
       ]}
       onPress={onPress}
       disabled={!onPress}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || label.replace('\n', ' ')}
       hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
     >
       <View style={styles.quickActionIcon} pointerEvents="none">{icon}</View>
@@ -1007,22 +1024,22 @@ const styles = StyleSheet.create({
   quickActionRow: {
     flexDirection: 'row',
     flexWrap: 'nowrap',
-    gap: spacing.xs,
+    gap: 6,
     marginBottom: spacing.sm,
   },
   quickActionButton: {
     flex: 1,
     minWidth: 0,
-    minHeight: 72,
+    minHeight: 74,
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: '#facc15',
     backgroundColor: '#fffbeb',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 6,
-    paddingVertical: spacing.sm,
-    gap: 6,
+    paddingHorizontal: 4,
+    paddingVertical: 8,
+    gap: 4,
   },
   quickActionPressed: {
     opacity: 0.82,
@@ -1032,19 +1049,21 @@ const styles = StyleSheet.create({
     opacity: 0.52,
   },
   quickActionIcon: {
-    width: 34,
-    height: 34,
+    width: 32,
+    height: 32,
     borderRadius: 8,
     backgroundColor: colors.brand.gold,
     alignItems: 'center',
     justifyContent: 'center',
   },
   quickActionLabel: {
+    minHeight: 30,
     color: colors.brand.ink,
     fontSize: 12,
     lineHeight: 15,
     fontWeight: fontWeights.heavy,
     textAlign: 'center',
+    textAlignVertical: 'center',
   },
   profileCompletionCard: {
     borderRadius: radius.md,
