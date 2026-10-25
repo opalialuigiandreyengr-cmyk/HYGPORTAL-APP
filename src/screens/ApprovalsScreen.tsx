@@ -50,14 +50,18 @@ import {
   isRequestEditable,
   parseEsarfEntries,
 } from '../components/EsarfDetailsView';
+import { formatDateInput, stripSecondsFromTimeString } from '../utils/dateTime';
+import { isScheduledOtRequest, isScheduledTransaction } from '../utils/scheduledOt';
+import { parseTimeToMinutes } from '../utils/requestCalculations';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
-type CategoryFilter = 'all' | 'esarf' | 'leave';
+type CategoryFilter = 'all' | 'esarf' | 'leave' | 'travel_order';
 
 const categoryTabs: { key: CategoryFilter; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'esarf', label: 'ESARF' },
   { key: 'leave', label: 'Leave' },
+  { key: 'travel_order', label: 'Travel Order' },
 ];
 const pageSize = 15;
 
@@ -271,11 +275,14 @@ export function ApprovalsScreen({
             if (itemDept !== selectedDepartment.toLowerCase()) return totals;
           }
           totals.all += 1;
-          totals[approvalCategory(item)] += 1;
+          const cat = approvalCategory(item);
+          if (totals[cat] !== undefined) {
+            totals[cat] += 1;
+          }
         }
         return totals;
       },
-      { all: 0, esarf: 0, leave: 0 },
+      { all: 0, esarf: 0, leave: 0, travel_order: 0 },
     );
   }, [items, selectedDepartment]);
 
@@ -288,11 +295,14 @@ export function ApprovalsScreen({
             if (itemDept !== selectedDepartment.toLowerCase()) return totals;
           }
           totals.all += 1;
-          totals[approvalCategory(item)] += 1;
+          const cat = approvalCategory(item);
+          if (totals[cat] !== undefined) {
+            totals[cat] += 1;
+          }
         }
         return totals;
       },
-      { all: 0, esarf: 0, leave: 0 },
+      { all: 0, esarf: 0, leave: 0, travel_order: 0 },
     );
   }, [approvedItems, selectedDepartment]);
 
@@ -395,7 +405,8 @@ export function ApprovalsScreen({
     setStatus('Approving request...');
     try {
       const isLeave = item.request_type_code === 'leave';
-      const entries = !isLeave ? parseEsarfEntries(item) : [];
+      const isTravel = isTravelOrderApproval(item);
+      const entries = !isLeave && !isTravel ? parseEsarfEntries(item) : [];
       const isEditable = isRequestEditable(item, entries);
       const hasHoursAdjustment = isEditable && Object.keys(adjustedHoursMap).length > 0;
 
@@ -487,7 +498,8 @@ export function ApprovalsScreen({
     adjustedHoursMap: Record<number, string> = {},
   ) {
     const isLeave = item.request_type_code === 'leave';
-    const entries = !isLeave ? parseEsarfEntries(item) : [];
+    const isTravel = isTravelOrderApproval(item);
+    const entries = !isLeave && !isTravel ? parseEsarfEntries(item) : [];
     const isEditable = isRequestEditable(item, entries);
     const hasAdjustment = isEditable && Object.keys(adjustedHoursMap).some((idxStr) => {
       const entry = entries.find((e) => e.index === Number(idxStr));
@@ -726,7 +738,12 @@ export function ApprovalsScreen({
             </View>
           ) : null}
 
-          <View style={styles.categoryRow}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.categoryRowContent}
+            style={styles.categoryScroll}
+          >
             {categoryTabs.map((tab) => {
               const active = activeCategory === tab.key;
               return (
@@ -741,14 +758,14 @@ export function ApprovalsScreen({
                     </Text>
                     <View style={[styles.categoryCountBadge, active ? styles.categoryCountBadgeActive : null]}>
                       <Text style={[styles.categoryCountText, active ? styles.categoryCountTextActive : null]}>
-                        {activeCategoryCounts[tab.key]}
+                        {activeCategoryCounts[tab.key] ?? 0}
                       </Text>
                     </View>
                   </View>
                 </Pressable>
               );
             })}
-          </View>
+          </ScrollView>
         </View>
 
         {status ? <Text style={styles.status}>{status}</Text> : null}
@@ -850,6 +867,62 @@ export function ApprovalsScreen({
   );
 }
 
+function isPreApprovedApproval(item?: PendingApproval | null): boolean {
+  if (!item) return false;
+  const rawStatus = (item.status || item.request_status || '').toLowerCase().trim();
+  if (rawStatus.includes('pre_approved') || rawStatus.includes('pre-approved')) {
+    return true;
+  }
+
+  const trans =
+    item.transaction_type ||
+    item.request_type_code ||
+    '';
+  const reason = item.reason || '';
+
+  // If request contains an event/activity tag and is OT or Offset
+  if (isScheduledTransaction(trans) && /\[Event:\s*[^\]]+\]/i.test(reason)) {
+    return true;
+  }
+
+  // Check multi-entry ESARF
+  if (reason.includes('[Entry ')) {
+    const entries = parseEsarfEntries(item);
+    if (entries.some((e) => Boolean(e.eventName) && isScheduledTransaction(e.transactionLabel))) {
+      return true;
+    }
+  }
+
+  // Scheduled OT or Offset (future schedule or applied ahead of time)
+  if (isScheduledTransaction(trans)) {
+    if (isScheduledOtRequest(item)) {
+      return true;
+    }
+
+    // Check if it was submitted ahead of time relative to submitted_at
+    if (item.date_from && item.submitted_at) {
+      try {
+        const submittedDateStr = formatDateInput(new Date(item.submitted_at));
+        if (item.date_from > submittedDateStr) {
+          return true;
+        }
+        if (item.date_from === submittedDateStr && item.time_from) {
+          const submittedTime = new Date(item.submitted_at);
+          const submittedMins = submittedTime.getHours() * 60 + submittedTime.getMinutes();
+          const fromMins = parseTimeToMinutes(item.time_from);
+          if (fromMins !== null && fromMins > submittedMins) {
+            return true;
+          }
+        }
+      } catch {
+        // ignore date parse errors
+      }
+    }
+  }
+
+  return false;
+}
+
 function ApprovalCard({
   item,
   profile,
@@ -863,8 +936,10 @@ function ApprovalCard({
 }) {
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
   const department = item.department_name || profile?.departmentName || profile?.storeName || 'Department';
-  const isEsarf = item.request_type_code !== 'leave' && item.request_type_code !== 'discount' && item.request_type_code !== 'charge';
-  const requestDate = isEsarf ? (item.submitted_at || item.date_from) : item.request_type_code === 'leave' ? item.start_date : item.date_from;
+  const isTravel = isTravelOrderApproval(item);
+  const isEsarf = !isTravel && item.request_type_code !== 'leave' && item.request_type_code !== 'discount' && item.request_type_code !== 'charge';
+  const requestDate = isTravel ? (item.date_from || item.start_date || item.submitted_at) : isEsarf ? (item.submitted_at || item.date_from) : item.request_type_code === 'leave' ? item.start_date : item.date_from;
+  const isPreApproved = isPreApprovedApproval(item);
 
   return (
     <View style={styles.cardOuter}>
@@ -886,8 +961,14 @@ function ApprovalCard({
               <Text style={styles.cardDept}>{department}</Text>
             </View>
             <View style={styles.cardMeta}>
-              <Text style={[styles.statusPill, styles.statusPending]} numberOfLines={1}>
-                PENDING
+              <Text
+                style={[
+                  styles.statusPill,
+                  isPreApproved ? styles.statusPreApproved : styles.statusPending,
+                ]}
+                numberOfLines={1}
+              >
+                {isPreApproved ? 'PRE-APPROVED' : 'PENDING'}
               </Text>
               <View style={styles.metaLine}>
                 <CalendarDays size={14} color={colors.muted} strokeWidth={2.2} />
@@ -932,8 +1013,9 @@ function ApprovedCard({
 }) {
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
   const department = item.department_name || profile?.departmentName || profile?.storeName || 'Department';
-  const isEsarf = item.request_type_code !== 'leave' && item.request_type_code !== 'discount' && item.request_type_code !== 'charge';
-  const requestDate = isEsarf ? (item.submitted_at || item.date_from) : item.request_type_code === 'leave' ? item.start_date : item.date_from;
+  const isTravel = isTravelOrderApproval(item);
+  const isEsarf = !isTravel && item.request_type_code !== 'leave' && item.request_type_code !== 'discount' && item.request_type_code !== 'charge';
+  const requestDate = isTravel ? (item.date_from || item.start_date || item.submitted_at) : isEsarf ? (item.submitted_at || item.date_from) : item.request_type_code === 'leave' ? item.start_date : item.date_from;
 
   return (
     <View style={styles.cardOuter}>
@@ -1004,10 +1086,12 @@ function ApprovalDetailsSheet({
   const item = approval?.item ?? null;
   const sequence = approval?.sequence ?? 0;
   const isLeave = item?.request_type_code === 'leave';
+  const isTravel = isTravelOrderApproval(item);
+  const isPreApproved = isPreApprovedApproval(item);
 
   const esarfEntries = useMemo(() => {
-    return item && !isLeave ? parseEsarfEntries(item) : [];
-  }, [item, isLeave]);
+    return item && !isLeave && !isTravel ? parseEsarfEntries(item) : [];
+  }, [item, isLeave, isTravel]);
 
   const isEditable = useMemo(() => {
     return isRequestEditable(item, esarfEntries);
@@ -1159,7 +1243,14 @@ function ApprovalDetailsSheet({
                 <Text style={styles.sheetTitle}>{formatApprovalType(item)}</Text>
                 <View style={styles.sheetCodeRow}>
                   <Text style={styles.sheetCode}>{formatApprovalCode(item, sequence)}</Text>
-                  <Text style={[styles.sheetStatusPill, styles.statusPending]}>PENDING</Text>
+                  <Text
+                    style={[
+                      styles.sheetStatusPill,
+                      isPreApproved ? styles.statusPreApproved : styles.statusPending,
+                    ]}
+                  >
+                    {isPreApproved ? 'PRE-APPROVED' : 'PENDING'}
+                  </Text>
                 </View>
               </View>
               <Pressable style={styles.sheetIconClose} onPress={onClose}>
@@ -1196,6 +1287,23 @@ function ApprovalDetailsSheet({
                   <DetailRow label="Paid / Unpaid" value={`${item.paid_days ?? 0}d / ${item.unpaid_days ?? 0}d`} />
                 </View>
               </>
+            ) : isTravel ? (
+              <>
+                <View style={styles.sectionTitleRow}>
+                  <FileText size={15} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.sectionTitle}>Request Information</Text>
+                </View>
+                <View style={styles.detailsList}>
+                  <DetailRow label="Transaction Type" value="Official Travel Order" />
+                  <DetailRow label="Inclusive Dates" value={compactRange(item.date_from, item.date_to)} />
+                  {item.time_from ? (
+                    <DetailRow
+                      label="Departure / Return Time"
+                      value={`${formatCompactTime(item.time_from)}${item.time_to ? ` - ${formatCompactTime(item.time_to)}` : ''}`}
+                    />
+                  ) : null}
+                </View>
+              </>
             ) : (
               <EsarfRequestInfoPanel
                 transactionType={formatApprovalType(item)}
@@ -1225,6 +1333,57 @@ function ApprovalDetailsSheet({
                     <Text style={styles.panelTitle}>Reason / Details</Text>
                   </View>
                   <Text style={styles.sheetReasonText}>{item.reason || 'No reason provided.'}</Text>
+                </View>
+
+                <View style={styles.timelineHeader}>
+                  <Users size={15} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.panelTitle}>Approval Timeline</Text>
+                </View>
+                <View style={styles.timelineBlock}>
+                  {timelineRows.map((step, index) => (
+                    <TimelineItem
+                      key={`${item.request_id}-${step.title}-${index}`}
+                      title={step.title}
+                      subtitle={step.subtitle}
+                      date={step.date}
+                      time={step.time}
+                      tone={step.tone ?? 'muted'}
+                      isLast={index === timelineRows.length - 1}
+                    />
+                  ))}
+                </View>
+              </>
+            ) : isTravel ? (
+              <>
+                <View style={styles.rangePanel}>
+                  <View style={styles.panelTitleRow}>
+                    <CalendarDays size={15} color={colors.muted} strokeWidth={2.2} />
+                    <Text style={styles.panelTitle}>Travel Itinerary</Text>
+                  </View>
+                  <View style={styles.rangeGrid}>
+                    <DetailItem label="Departure Date" value={formatSheetDate(item.date_from)} />
+                    <DetailItem label="Return Date" value={formatSheetDate(item.date_to || item.date_from)} />
+                    {item.time_from ? (
+                      <DetailItem
+                        label="Departure Time"
+                        value={formatCompactTime(item.time_from)}
+                      />
+                    ) : null}
+                    {item.time_to ? (
+                      <DetailItem
+                        label="Return Time"
+                        value={formatCompactTime(item.time_to)}
+                      />
+                    ) : null}
+                  </View>
+                </View>
+
+                <View style={styles.reasonBlock}>
+                  <View style={styles.panelTitleRow}>
+                    <FileText size={15} color={colors.muted} strokeWidth={2.2} />
+                    <Text style={styles.panelTitle}>Purpose & Directive Details</Text>
+                  </View>
+                  <Text style={styles.sheetReasonText}>{item.reason || 'Official Travel Order directive.'}</Text>
                 </View>
 
                 <View style={styles.timelineHeader}>
@@ -1406,10 +1565,11 @@ function ApprovedDetailsSheet({
   const item = approval?.item ?? null;
   const sequence = approval?.sequence ?? 0;
   const isLeave = item?.request_type_code === 'leave';
+  const isTravel = isTravelOrderApproval(item);
 
   const esarfEntries = useMemo(() => {
-    return item && !isLeave ? parseEsarfEntries(item) : [];
-  }, [item, isLeave]);
+    return item && !isLeave && !isTravel ? parseEsarfEntries(item) : [];
+  }, [item, isLeave, isTravel]);
 
   if (!approval || !item) return null;
 
@@ -1478,6 +1638,23 @@ function ApprovedDetailsSheet({
                   <DetailRow label="Paid / Unpaid" value={`${item.paid_days ?? 0}d / ${item.unpaid_days ?? 0}d`} />
                 </View>
               </>
+            ) : isTravel ? (
+              <>
+                <View style={styles.sectionTitleRow}>
+                  <FileText size={15} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.sectionTitle}>Request Information</Text>
+                </View>
+                <View style={styles.detailsList}>
+                  <DetailRow label="Transaction Type" value="Official Travel Order" />
+                  <DetailRow label="Inclusive Dates" value={compactRange(item.date_from, item.date_to)} />
+                  {item.time_from ? (
+                    <DetailRow
+                      label="Departure / Return Time"
+                      value={`${formatCompactTime(item.time_from)}${item.time_to ? ` - ${formatCompactTime(item.time_to)}` : ''}`}
+                    />
+                  ) : null}
+                </View>
+              </>
             ) : (
               <EsarfRequestInfoPanel
                 timeSchedule={item.time_schedule}
@@ -1506,6 +1683,57 @@ function ApprovedDetailsSheet({
                     <Text style={styles.panelTitle}>Reason / Details</Text>
                   </View>
                   <Text style={styles.sheetReasonText}>{item.reason || 'No reason provided.'}</Text>
+                </View>
+
+                <View style={styles.timelineHeader}>
+                  <Users size={15} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.panelTitle}>Approval Timeline</Text>
+                </View>
+                <View style={styles.timelineBlock}>
+                  {timelineRows.map((step, index) => (
+                    <TimelineItem
+                      key={`${item.request_id}-${step.title}-${index}`}
+                      title={step.title}
+                      subtitle={step.subtitle}
+                      date={step.date}
+                      time={step.time}
+                      tone={step.tone ?? 'muted'}
+                      isLast={index === timelineRows.length - 1}
+                    />
+                  ))}
+                </View>
+              </>
+            ) : isTravel ? (
+              <>
+                <View style={styles.rangePanel}>
+                  <View style={styles.panelTitleRow}>
+                    <CalendarDays size={15} color={colors.muted} strokeWidth={2.2} />
+                    <Text style={styles.panelTitle}>Travel Itinerary</Text>
+                  </View>
+                  <View style={styles.rangeGrid}>
+                    <DetailItem label="Departure Date" value={formatSheetDate(item.date_from)} />
+                    <DetailItem label="Return Date" value={formatSheetDate(item.date_to || item.date_from)} />
+                    {item.time_from ? (
+                      <DetailItem
+                        label="Departure Time"
+                        value={formatCompactTime(item.time_from)}
+                      />
+                    ) : null}
+                    {item.time_to ? (
+                      <DetailItem
+                        label="Return Time"
+                        value={formatCompactTime(item.time_to)}
+                      />
+                    ) : null}
+                  </View>
+                </View>
+
+                <View style={styles.reasonBlock}>
+                  <View style={styles.panelTitleRow}>
+                    <FileText size={15} color={colors.muted} strokeWidth={2.2} />
+                    <Text style={styles.panelTitle}>Purpose & Directive Details</Text>
+                  </View>
+                  <Text style={styles.sheetReasonText}>{item.reason || 'Official Travel Order directive.'}</Text>
                 </View>
 
                 <View style={styles.timelineHeader}>
@@ -1627,13 +1855,47 @@ function timelineDotStyle(tone?: 'warning' | 'success' | 'danger' | 'muted' | st
   return { borderColor: colors.border, backgroundColor: colors.border };
 }
 
+export function isTravelOrderApproval(item: PendingApproval | ApprovedApproval | null | undefined): boolean {
+  if (!item) return false;
+  const code = (item.request_type_code || '').toLowerCase().trim();
+  if (
+    code === 'travel_order' ||
+    code === 'travel' ||
+    code === 'official_travel' ||
+    code === 'official_travel_order' ||
+    code === 'to'
+  ) {
+    return true;
+  }
+  const name = (item.request_type_name || '').toLowerCase();
+  if (name.includes('travel order') || name.includes('official travel')) {
+    return true;
+  }
+  const trans = (item.transaction_type || '').toLowerCase();
+  if (trans.includes('travel order') || trans.includes('official travel')) {
+    return true;
+  }
+  return false;
+}
+
 function isVisibleApproval(item: PendingApproval | ApprovedApproval) {
-  return approvalCategory(item) === 'esarf' || approvalCategory(item) === 'leave';
+  const cat = approvalCategory(item);
+  return cat === 'esarf' || cat === 'leave' || cat === 'travel_order';
 }
 
 function approvalCategory(item: PendingApproval | ApprovedApproval): CategoryFilter {
+  if (isTravelOrderApproval(item)) return 'travel_order';
   if (item.request_type_code === 'leave') return 'leave';
   return 'esarf';
+}
+
+function compactRange(start?: string | null, end?: string | null) {
+  const startText = formatSheetDate(start);
+  const endText = formatSheetDate(end);
+  if (startText === 'N/A' && endText === 'N/A') return 'N/A';
+  if (startText === endText || endText === 'N/A') return startText;
+  if (startText === 'N/A') return endText;
+  return `${startText} - ${endText}`;
 }
 
 function formatApprovalCode(item: PendingApproval | ApprovedApproval, sequence: number) {
@@ -1772,17 +2034,7 @@ function formatSheetDate(value?: string | null) {
 
 function formatCompactTime(value?: string | null) {
   if (!value) return 'N/A';
-  if (/^\d{2}:\d{2}/.test(value)) {
-    const [hoursRaw, minutes] = value.split(':');
-    const hours = Number(hoursRaw);
-    const suffix = hours >= 12 ? 'PM' : 'AM';
-    const displayHour = hours % 12 || 12;
-    return `${displayHour}:${minutes} ${suffix}`;
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  return stripSecondsFromTimeString(value);
 }
 
 const styles = StyleSheet.create({
@@ -2042,13 +2294,21 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.semibold,
     color: colors.text,
   },
+  categoryScroll: {
+    paddingVertical: 2,
+  },
+  categoryRowContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingRight: 4,
+  },
   categoryRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
   categoryChip: {
-    flex: 1,
     minHeight: 34,
     borderRadius: radius.sm,
     borderWidth: 1,
@@ -2056,7 +2316,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: spacing.sm,
+    paddingHorizontal: 10,
+    flexShrink: 0,
   },
   categoryChipActive: {
     borderColor: colors.primary,
@@ -2242,27 +2503,33 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   cardMeta: {
-    width: 116,
+    width: 125,
     flexShrink: 0,
     alignItems: 'flex-end',
     gap: 3,
   },
   statusPill: {
-    maxWidth: 116,
-    fontSize: 13,
-    lineHeight: 16,
+    maxWidth: 135,
+    fontSize: 11,
+    lineHeight: 15,
     fontWeight: fontWeights.bold,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     borderRadius: 999,
     overflow: 'hidden',
-    textTransform: 'capitalize',
+    textTransform: 'uppercase',
   },
   statusPending: {
     backgroundColor: '#fef3c7',
     borderColor: '#fde68a',
     borderWidth: 1,
     color: '#92400e',
+  },
+  statusPreApproved: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#93c5fd',
+    borderWidth: 1,
+    color: '#1d4ed8',
   },
   statusApproved: {
     backgroundColor: '#dcfce7',
@@ -2274,7 +2541,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    width: 116,
+    width: 125,
     justifyContent: 'flex-end',
   },
   metaText: {
@@ -2396,7 +2663,7 @@ const styles = StyleSheet.create({
     color: colors.muted,
   },
   sheetStatusPill: {
-    maxWidth: 120,
+    maxWidth: 140,
     borderRadius: 999,
     overflow: 'hidden',
     paddingHorizontal: spacing.sm,

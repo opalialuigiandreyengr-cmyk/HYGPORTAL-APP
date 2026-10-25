@@ -150,7 +150,7 @@ import { getSafeBottomInset, getScreenBottomPadding } from './src/utils/safeArea
 type PortalTab = 'home' | 'requests' | 'approvals' | 'notifications' | 'perks' | 'profile' | 'settings' | 'rewards' | 'my_team' | 'tutorials';
 type PublicScreen = 'login' | 'create_profile' | 'register_account';
 type AdminScreen = 'home' | 'authority' | 'departments' | 'routes' | 'approvers' | 'clusters';
-type QuickRequestScreen = 'assistant' | 'apply_esarf' | 'request_leave' | 'apply_discount' | 'file_travel_order' | 'photo_proof' | 'photo_log';
+type QuickRequestScreen = 'assistant' | 'apply_esarf' | 'apply_pre_approved_ot_offset' | 'request_leave' | 'apply_discount' | 'file_travel_order' | 'photo_proof' | 'photo_log';
 const SUPER_ADMIN_EMAIL = 'hygportal@gmail.com';
 const hygLogo = hygPortalLogo;
 const hygCoinsImage = require('./assets/hygcoins.png');
@@ -497,9 +497,13 @@ export default function App() {
     const refreshDashSub = DeviceEventEmitter.addListener('refresh_dashboard', () => {
       void refreshDashboard(true);
     });
+    const myRequestsSub = DeviceEventEmitter.addListener('my_requests_updated', () => {
+      void refreshDashboard(true);
+    });
     return () => {
       profileOnlineSub.remove();
       refreshDashSub.remove();
+      myRequestsSub.remove();
     };
   }, [signedInUser]);
 
@@ -861,7 +865,16 @@ export default function App() {
     if (request.request_type_code === 'leave') {
       setActiveQuickRequestScreen('request_leave');
     } else {
-      setActiveQuickRequestScreen('apply_esarf');
+      const trans = (request.transaction_type || request.request_type_code || '').toLowerCase();
+      const isOtOrOffset = trans.includes('ot') || trans.includes('offset') || request.request_type_code === 'overtime' || request.request_type_code === 'offset_earn';
+      const today = formatDateInput(new Date());
+      const isFuture = (request.date_from || '') > today;
+      const isPreApprovedStatus = (request.status || '').toLowerCase().includes('pre_approved') || (request.status || '').toLowerCase().includes('pre-approved');
+      if (isPreApprovedStatus || (isFuture && isOtOrOffset)) {
+        setActiveQuickRequestScreen('apply_pre_approved_ot_offset');
+      } else {
+        setActiveQuickRequestScreen('apply_esarf');
+      }
     }
   }
 
@@ -1372,6 +1385,7 @@ export default function App() {
           onOpenMyTeam={openMyTeam}
           onOpenRewards={openRewards}
           onEditRequest={openEditRequest}
+          onFileTravelOrder={() => openQuickRequest('file_travel_order')}
           refreshTrigger={requestsRefreshKey}
           pointsBalance={dashboardSummary.hyg_points_balance}
           onSignOut={signOut}
@@ -1713,6 +1727,7 @@ export default function App() {
           onNotifications={openNotifications}
           onHelpTutorials={openTutorials}
           onApplyEsarf={() => openQuickRequest('apply_esarf')}
+          onApplyPreApprovedOtOffset={() => openQuickRequest('apply_pre_approved_ot_offset')}
           onRequestLeave={() => openQuickRequest('request_leave')}
           onApplyPerks={() => openQuickRequest('apply_discount')}
           onFileTravelOrder={() => openQuickRequest('file_travel_order')}
@@ -1757,6 +1772,7 @@ export default function App() {
 
         <SlideOverlayContainer visible={activeQuickRequestScreen === 'apply_esarf'}>
           <ApplyEsarfScreen
+            mode="esarf"
             name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
             username={currentUsername}
             photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
@@ -1773,6 +1789,41 @@ export default function App() {
             profileDepartmentName={profileResult?.status === 'linked' ? profileResult.profile.departmentName : null}
             profileStoreName={profileResult?.status === 'linked' ? profileResult.profile.storeName : null}
             initialDraft={assistantDraft?.intent === 'draft_esarf_request' ? assistantDraft : null}
+            editingRequest={editingRequest}
+            notificationCount={notificationUnreadCount}
+            onAssistant={openAssistant}
+            onNotifications={openNotifications}
+            onBack={closeQuickRequest}
+            onToast={setAppToast}
+            onRefresh={refreshDashboard}
+            onSubmitted={async () => {
+              closeQuickRequest();
+              setActiveTab('requests');
+              setRequestsRefreshKey((k) => k + 1);
+              await refreshDashboard();
+            }}
+          />
+        </SlideOverlayContainer>
+
+        <SlideOverlayContainer visible={activeQuickRequestScreen === 'apply_pre_approved_ot_offset'}>
+          <ApplyEsarfScreen
+            mode="pre_approved_ot_offset"
+            name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
+            username={currentUsername}
+            photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}
+            employeeId={profileResult?.status === 'linked' ? profileResult.profile.employeeId : (signedInUser?.id ?? null)}
+            employeeName={profileResult?.status === 'linked' ? profileResult.profile.fullName : (signedInUser?.email ?? 'Employee')}
+            userEmail={signedInUser?.email ?? null}
+            authUserId={signedInUser?.id ?? null}
+            offsetBalance={dashboardSummary.offset_balance}
+            profilePayrollClass={profileResult?.status === 'linked' ? profileResult.profile.payrollClass : null}
+            profileDateHired={profileResult?.status === 'linked' ? profileResult.profile.dateHired : null}
+            profileEmployeeType={profileResult?.status === 'linked' ? profileResult.profile.employeeType : null}
+            profileSchedule={profileResult?.status === 'linked' ? profileResult.profile.timeSchedule : null}
+            profileDayOff={profileResult?.status === 'linked' ? profileResult.profile.dayOff : null}
+            profileDepartmentName={profileResult?.status === 'linked' ? profileResult.profile.departmentName : null}
+            profileStoreName={profileResult?.status === 'linked' ? profileResult.profile.storeName : null}
+            initialDraft={null}
             editingRequest={editingRequest}
             notificationCount={notificationUnreadCount}
             onAssistant={openAssistant}
@@ -1858,6 +1909,11 @@ export default function App() {
             onBack={closeQuickRequest}
             onToast={setAppToast}
             onRefresh={refreshDashboard}
+            onSubmitted={async () => {
+              closeQuickRequest();
+              setRequestsRefreshKey((k) => k + 1);
+              await refreshDashboard();
+            }}
           />
         </SlideOverlayContainer>
 

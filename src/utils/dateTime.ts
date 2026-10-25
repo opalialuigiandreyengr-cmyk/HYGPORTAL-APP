@@ -34,8 +34,24 @@ export function formatTimeInput(date: Date) {
   return `${hour}:${minute}:${second}`;
 }
 
-export function formatTimeDisplay(value: string, includeSeconds: boolean = false) {
-  const parts = value.split(':').map(Number);
+export function formatTimeDisplay(value?: string | null, includeSeconds: boolean = false) {
+  if (!value) return '';
+  const clean = value.trim();
+
+  // If already in 12-hour AM/PM format (e.g. "05:00:00 PM" or "5:00:00 PM" or "05:00 PM" or "5:00 PM")
+  const ampmMatch = clean.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)$/i);
+  if (ampmMatch) {
+    const hour = parseInt(ampmMatch[1], 10);
+    const minStr = ampmMatch[2];
+    const secStr = ampmMatch[3];
+    const period = ampmMatch[4].toUpperCase();
+    if (includeSeconds && secStr !== undefined) {
+      return `${hour}:${minStr}:${secStr} ${period}`;
+    }
+    return `${hour}:${minStr} ${period}`;
+  }
+
+  const parts = clean.split(':').map(Number);
   const rawHour = parts[0];
   const rawMinute = parts[1];
   const rawSecond = parts.length > 2 ? parts[2] : undefined;
@@ -50,6 +66,30 @@ export function formatTimeDisplay(value: string, includeSeconds: boolean = false
     return `${hour}:${minStr}:${secStr} ${period}`;
   }
   return `${hour}:${minStr} ${period}`;
+}
+
+export function stripSecondsFromTimeString(value?: string | null): string {
+  if (!value || value === '--' || value === '--:--' || value === 'N/A') return value || '--';
+  const clean = value.trim();
+
+  // Handle ranges like "08:00:00 - 17:00:00" or "8:00:00 AM - 5:00:00 PM"
+  if (clean.includes(' - ') || clean.includes('–') || clean.includes('—')) {
+    const parts = clean.split(/\s*[-–—]\s*/);
+    if (parts.length === 2) {
+      return `${stripSecondsFromTimeString(parts[0])} - ${stripSecondsFromTimeString(parts[1])}`;
+    }
+  }
+
+  // Handle ISO or full datetime strings
+  if (clean.includes('T') || /^\d{4}-\d{2}-\d{2}/.test(clean)) {
+    const normalized = clean.replace(' ', 'T');
+    const date = new Date(normalized);
+    if (!Number.isNaN(date.getTime())) {
+      return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(date);
+    }
+  }
+
+  return formatTimeDisplay(clean, false);
 }
 
 export function calculateLeaveDays(

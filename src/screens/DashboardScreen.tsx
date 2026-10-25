@@ -38,6 +38,7 @@ import {
 import { formatUnifiedRequestType } from '../components/EsarfDetailsView';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { formatDateInput, hasCompletedOneYearOfService } from '../utils/dateTime';
+import { isScheduledOtRequest } from '../utils/scheduledOt';
 import { supabase } from '../lib/supabase';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
@@ -57,6 +58,7 @@ type Props = {
   onNotifications?: () => void;
   onHelpTutorials?: () => void;
   onApplyEsarf?: () => void;
+  onApplyPreApprovedOtOffset?: () => void;
   onRequestLeave?: () => void;
   onApplyPerks?: () => void;
   onFileTravelOrder?: () => void;
@@ -83,6 +85,7 @@ export function DashboardScreen({
   onNotifications,
   onHelpTutorials,
   onApplyEsarf,
+  onApplyPreApprovedOtOffset,
   onRequestLeave,
   onApplyPerks,
   onFileTravelOrder,
@@ -451,6 +454,12 @@ export function DashboardScreen({
             onPress={onApplyEsarf}
           />
           <DashboardQuickAction
+            icon={<Clock3 size={16} color={colors.brand.ink} strokeWidth={2.7} />}
+            label={"Pre-approved\nOT/Offset"}
+            accessibilityLabel="Apply Pre-approved OT/Offset"
+            onPress={onApplyPreApprovedOtOffset}
+          />
+          <DashboardQuickAction
             icon={<CalendarDays size={16} color={colors.brand.ink} strokeWidth={2.7} />}
             label={"Request\nLeave"}
             accessibilityLabel="Request Leave"
@@ -792,7 +801,25 @@ function ProgressBar({
 }
 
 function ActivityRow({ request }: { request: MyRequest }) {
-  const statusTone = getActivityStatusTone(request.status);
+  const statusTone = getActivityStatusTone(request);
+
+  const pillStyle =
+    statusTone === 'approved'
+      ? styles.statusApproved
+      : statusTone === 'rejected'
+      ? styles.statusRejected
+      : statusTone === 'pre_approved'
+      ? styles.statusPreApproved
+      : styles.statusPending;
+
+  const textStyle =
+    statusTone === 'approved'
+      ? styles.statusApprovedText
+      : statusTone === 'rejected'
+      ? styles.statusRejectedText
+      : statusTone === 'pre_approved'
+      ? styles.statusPreApprovedText
+      : styles.statusPendingText;
 
   return (
     <View style={styles.activityRow}>
@@ -803,9 +830,9 @@ function ActivityRow({ request }: { request: MyRequest }) {
         <Text style={styles.activityTitle} numberOfLines={1}>{formatActivityType(request)}</Text>
         <Text style={styles.activityMeta} numberOfLines={1}>{formatActivityDate(request.submitted_at)}</Text>
       </View>
-      <View style={[styles.statusPill, statusTone === 'approved' ? styles.statusApproved : statusTone === 'rejected' ? styles.statusRejected : styles.statusPending]}>
-        <Text style={[styles.statusPillText, statusTone === 'approved' ? styles.statusApprovedText : statusTone === 'rejected' ? styles.statusRejectedText : styles.statusPendingText]}>
-          {formatStatus(request.status)}
+      <View style={[styles.statusPill, pillStyle]}>
+        <Text style={[styles.statusPillText, textStyle]}>
+          {formatStatus(request)}
         </Text>
       </View>
     </View>
@@ -959,17 +986,48 @@ function formatActivityDate(value: string | null) {
   });
 }
 
-function formatStatus(status: string) {
-  return status.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+function isPreApprovedRequest(request?: MyRequest | null): boolean {
+  if (!request) return false;
+  const rawStatus = (request.status || '').toLowerCase().trim();
+  if (
+    rawStatus === 'approved' ||
+    rawStatus.includes('validat') ||
+    rawStatus === 'rejected' ||
+    rawStatus === 'cancelled' ||
+    rawStatus.includes('reject') ||
+    rawStatus.includes('denied')
+  ) {
+    return false;
+  }
+  if (request.final_approved_at && !rawStatus.includes('reject') && !rawStatus.includes('denied')) {
+    return false;
+  }
+  if (rawStatus.includes('pre_approved') || rawStatus.includes('pre-approved')) {
+    return true;
+  }
+  return isScheduledOtRequest(request);
 }
 
-function getActivityStatusTone(status: string) {
-  const lower = (status || '').toLowerCase();
+function formatStatus(request: MyRequest) {
+  if (isPreApprovedRequest(request)) {
+    return 'Pre-Approved';
+  }
+  return (request.status || 'Pending').replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function getActivityStatusTone(request: MyRequest): 'approved' | 'rejected' | 'pre_approved' | 'pending' {
+  const lower = (request.status || '').toLowerCase().trim();
   if (lower === 'approved' || lower.includes('validat')) {
     return 'approved';
   }
-  if (lower === 'rejected' || lower === 'cancelled') {
+  if (request.final_approved_at && !lower.includes('reject') && !lower.includes('denied')) {
+    return 'approved';
+  }
+  if (lower === 'rejected' || lower === 'cancelled' || lower.includes('reject') || lower.includes('denied')) {
     return 'rejected';
+  }
+  if (isPreApprovedRequest(request)) {
+    return 'pre_approved';
   }
   return 'pending';
 }
@@ -1024,7 +1082,7 @@ const styles = StyleSheet.create({
   quickActionRow: {
     flexDirection: 'row',
     flexWrap: 'nowrap',
-    gap: 6,
+    gap: 4,
     marginBottom: spacing.sm,
   },
   quickActionButton: {
@@ -1037,9 +1095,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#fffbeb',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 4,
-    paddingVertical: 8,
-    gap: 4,
+    paddingHorizontal: 2,
+    paddingVertical: 7,
+    gap: 3,
   },
   quickActionPressed: {
     opacity: 0.82,
@@ -1049,18 +1107,18 @@ const styles = StyleSheet.create({
     opacity: 0.52,
   },
   quickActionIcon: {
-    width: 32,
-    height: 32,
+    width: 30,
+    height: 30,
     borderRadius: 8,
     backgroundColor: colors.brand.gold,
     alignItems: 'center',
     justifyContent: 'center',
   },
   quickActionLabel: {
-    minHeight: 30,
+    minHeight: 28,
     color: colors.brand.ink,
-    fontSize: 12,
-    lineHeight: 15,
+    fontSize: 10.5,
+    lineHeight: 13,
     fontWeight: fontWeights.heavy,
     textAlign: 'center',
     textAlignVertical: 'center',
@@ -1338,12 +1396,23 @@ const styles = StyleSheet.create({
   },
   statusPending: {
     backgroundColor: '#fef3c7',
+    borderWidth: 1,
+    borderColor: '#fde68a',
   },
   statusApproved: {
     backgroundColor: '#dcfce7',
+    borderWidth: 1,
+    borderColor: '#86efac',
   },
   statusRejected: {
     backgroundColor: '#fee2e2',
+    borderWidth: 1,
+    borderColor: '#fca5a5',
+  },
+  statusPreApproved: {
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#93c5fd',
   },
   statusPillText: {
     fontSize: 10,
@@ -1359,6 +1428,9 @@ const styles = StyleSheet.create({
   },
   statusRejectedText: {
     color: '#991b1b',
+  },
+  statusPreApprovedText: {
+    color: '#1d4ed8',
   },
   emptyActivity: {
     minHeight: 76,

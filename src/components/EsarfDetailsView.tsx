@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, Pressable, TextInput, Image, Modal, Linking, Ac
 import { CalendarDays, Camera, Check, Clock3, Edit3, ExternalLink, Eye, FileText, Image as ImageIcon, MapPin, Users, X } from 'lucide-react-native';
 import { colors, radius, fontWeights, spacing } from '../theme';
 import { computeWorkedMinutes, computeOffsetOvertimeHours, isFioOrObOnly } from '../utils/requestCalculations';
-import { parseEsarfDateRangeStringToYMD } from '../utils/dateTime';
+import { parseEsarfDateRangeStringToYMD, stripSecondsFromTimeString } from '../utils/dateTime';
 import { fetchPhotoProofDetails, type PhotoProofItem } from '../services/photoProof';
 import { isAppOnline } from '../services/network';
 
@@ -65,6 +65,7 @@ export type ParsedEsarfEntry = {
   proofId?: string;
   proofSource?: 'photo_proof' | 'gallery' | 'camera';
   proofs?: ParsedEsarfProof[];
+  eventName?: string;
 };
 
 export function parseProofsFromReasonText(text?: string | null): ParsedEsarfProof[] {
@@ -299,6 +300,14 @@ export function formatUnifiedRequestCode(
     prefix = 'LEAVE';
   } else if (typeCode === 'discount' || typeCode === 'charge') {
     prefix = 'PERK';
+  } else if (
+    typeCode === 'travel' ||
+    typeCode === 'travel_order' ||
+    typeCode === 'official_travel' ||
+    typeCode === 'official_travel_order' ||
+    typeCode === 'to'
+  ) {
+    prefix = 'TO';
   }
 
   const dateVal = item.submitted_at || item.date_from || item.start_date || item.created_at;
@@ -319,6 +328,7 @@ function normalizeTransactionToken(token: string): string {
   if (lower.includes('failure to punch') || lower === 'fio') return 'FIO';
   if (lower === 'use_offset' || lower === 'use offset') return 'Use Offset';
   if (lower.includes('offset')) return 'Offset';
+  if (lower.includes('travel order') || lower.includes('official travel')) return 'Travel Order';
 
   return cleaned;
 }
@@ -343,6 +353,21 @@ export function formatUnifiedRequestType(
   }
   if (item.request_type_code === 'discount') return 'Employee Discount';
   if (item.request_type_code === 'charge') return 'Employee Charge';
+  if (
+    item.request_type_code === 'travel_order' ||
+    item.request_type_code === 'travel' ||
+    item.request_type_code === 'official_travel' ||
+    item.request_type_code === 'to'
+  ) {
+    return 'Official Travel Order';
+  }
+  if (
+    item.transaction_type &&
+    (item.transaction_type.toLowerCase().includes('travel order') ||
+      item.transaction_type.toLowerCase().includes('official travel'))
+  ) {
+    return 'Official Travel Order';
+  }
 
   const rawTokens: string[] = [];
 
@@ -396,11 +421,40 @@ export function parseEsarfEntries(item: {
 
     blocks.forEach((block, idx) => {
       const fullText = `[Entry ${block.trim()}`;
-      const match = fullText.match(/^\[Entry\s+(\d+)\]\s*\(([^)]+)\)\s*(.*?)(?:\s*\(([^)]+)\))?:\s*([\s\S]*)$/);
+
+      // 1. Primary pattern: match entry with hours in parentheses, e.g.:
+      // [Entry 1] (OT) 10/26-26/26 6:00 AM-9:00 PM (6.00 hrs): Reason
+      let match = fullText.match(/^\[Entry\s+(\d+)\]\s*\(([^)]+)\)\s*(.*?)\s*\(([^)]*hrs?)\):\s*([\s\S]*)$/i);
+      let entryNum = idx + 1;
+      let transactionLabel = '';
+      let dateTimeChunk = '';
+      let hoursStr = '';
+      let rawReasonText = '';
 
       if (match) {
-        const entryNum = parseInt(match[1], 10) || idx + 1;
-        let transactionLabel = match[2].trim();
+        entryNum = parseInt(match[1], 10) || idx + 1;
+        transactionLabel = match[2].trim();
+        dateTimeChunk = match[3].trim();
+        hoursStr = match[4].replace(/hrs?/i, '').trim();
+        rawReasonText = match[5].trim();
+      } else {
+        // 2. Fallback pattern for entries without hours (e.g. FIO/OB):
+        // [Entry 1] (OB) 10/26-26/26 8:00 AM-5:00 PM: Reason
+        // Require whitespace after separator colon to avoid splitting on time colons (HH:MM)
+        const fallbackMatch =
+          fullText.match(/^\[Entry\s+(\d+)\]\s*\(([^)]+)\)\s*(.*?):\s+([\s\S]*)$/i) ||
+          fullText.match(/^\[Entry\s+(\d+)\]\s*\(([^)]+)\)\s*(.*?):\s*([\s\S]*)$/i);
+        if (fallbackMatch) {
+          entryNum = parseInt(fallbackMatch[1], 10) || idx + 1;
+          transactionLabel = fallbackMatch[2].trim();
+          dateTimeChunk = fallbackMatch[3].trim();
+          hoursStr = '';
+          rawReasonText = fallbackMatch[4].trim();
+          match = fallbackMatch;
+        }
+      }
+
+      if (match) {
         if (blocks.length === 1 && item.transaction_type && item.transaction_type.trim()) {
           const tokens = item.transaction_type.split(/[,/]+/).map((s) => normalizeTransactionToken(s)).filter(Boolean);
           transactionLabel = tokens.length > 0 ? Array.from(new Set(tokens)).join(' / ') : item.transaction_type.trim();
@@ -410,9 +464,68 @@ export function parseEsarfEntries(item: {
             transactionLabel = Array.from(new Set(tokens)).join(' / ');
           }
         }
-        const dateTimeChunk = match[3].trim();
-        const hoursStr = match[4] ? match[4].replace(/hrs?/i, '').trim() : '';
-        const rawReasonText = match[5].trim();
+
+        let dateStr = '';
+        let timeFromStr = '';
+        let timeToStr = '';
+
+        const chunkParts = dateTimeChunk.split(/\s+/);
+        if (chunkParts.length >= 2) {
+          dateStr = chunkParts[0];
+          const timeRest = chunkParts.slice(1).join(' ').trim();
+          const timeSplit = timeRest.split(/\s*-\s*/);
+          if (timeSplit.length >= 2) {
+            timeFromStr = stripSecondsFromTimeString(timeSplit[0].trim());
+            timeToStr = stripSecondsFromTimeString(timeSplit[1].trim());
+          } else {
+            timeFromStr = stripSecondsFromTimeString(timeRest);
+          }
+        } else {
+          dateStr = dateTimeChunk;
+        }
+
+        // Auto-heal if time or hours were displaced into the reason field
+        const displacedTimeMatch = rawReasonText.match(
+          /^(\d{2}(?::\d{2})?\s*(?:AM|PM)?)\s*-\s*(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)\s*(?:\(([\d.]+)\s*hrs?\))?:\s*([\s\S]*)$/i
+        );
+        if (displacedTimeMatch) {
+          if (!timeFromStr || /^\d{1,2}$/.test(timeFromStr)) {
+            timeFromStr = timeFromStr ? `${timeFromStr}:${displacedTimeMatch[1]}` : displacedTimeMatch[1];
+          }
+          if (!timeToStr || timeToStr === '--') {
+            timeToStr = displacedTimeMatch[2];
+          }
+          if (!hoursStr || hoursStr === '0' || hoursStr === '0.00') {
+            if (displacedTimeMatch[3]) {
+              hoursStr = displacedTimeMatch[3];
+            }
+          }
+          rawReasonText = displacedTimeMatch[4].trim();
+        }
+
+        timeFromStr = stripSecondsFromTimeString(timeFromStr);
+        timeToStr = stripSecondsFromTimeString(timeToStr);
+
+        // Fallback calculation for totalHours if missing or 0 but times are known
+        if (
+          (!hoursStr || hoursStr === '0' || hoursStr === '0.00') &&
+          timeFromStr &&
+          timeToStr &&
+          timeFromStr !== '--' &&
+          timeToStr !== '--'
+        ) {
+          const fromM = parseTimeStringToMinutes(timeFromStr);
+          const toM = parseTimeStringToMinutes(timeToStr);
+          if (fromM !== null && toM !== null) {
+            let diff = toM - fromM;
+            if (diff < 0) diff += 24 * 60;
+            const computed = diff / 60;
+            if (computed > 0) {
+              hoursStr = computed.toFixed(2);
+            }
+          }
+        }
+
         const isEntryRejected = fullText.includes('[REJECTED]') || fullText.toLowerCase().includes('status: rejected');
 
         const actualMatch = rawReasonText.match(/\[Actual:\s*([\d.]+)\s*hrs?\]/i);
@@ -425,6 +538,9 @@ export function parseEsarfEntries(item: {
         let proofId: string | undefined = parsedProofsList[0]?.proofId;
         let proofSource: 'photo_proof' | 'gallery' | 'camera' | undefined = parsedProofsList[0]?.proofSource;
 
+        const eventMatch = rawReasonText.match(/\[Event:\s*([^\]]+)\]/i);
+        const parsedEventName = eventMatch ? eventMatch[1].trim() : undefined;
+
         let cleanReasonText = rawReasonText
           .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
           .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
@@ -432,28 +548,13 @@ export function parseEsarfEntries(item: {
           .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+          .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
           .trim();
 
-        let dateStr = '';
-        let timeFromStr = '';
-        let timeToStr = '';
-
-        const chunkParts = dateTimeChunk.split(/\s+/);
-        if (chunkParts.length >= 3) {
-          dateStr = chunkParts[0];
-          const timeRest = chunkParts.slice(1).join(' ');
-          const timeSplit = timeRest.split(/\s*-\s*/);
-          if (timeSplit.length >= 2) {
-            timeFromStr = timeSplit[0].trim();
-            timeToStr = timeSplit[1].trim();
-          } else {
-            timeFromStr = timeRest;
-          }
-        } else if (chunkParts.length === 2) {
-          dateStr = chunkParts[0];
-          timeFromStr = chunkParts[1];
-        } else {
-          dateStr = dateTimeChunk;
+        if (parsedEventName) {
+          const escaped = parsedEventName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const repeated = new RegExp(`(?:Event:\\s*)?${escaped}\\s*(?:Event:\\s*)?${escaped}`, 'gi');
+          cleanReasonText = cleanReasonText.replace(repeated, `Event: ${parsedEventName}`).trim();
         }
 
         const isEntryOffset =
@@ -495,6 +596,7 @@ export function parseEsarfEntries(item: {
           totalHours: hoursStr || '0',
           actualHours: actualHoursStr,
           reason: cleanReasonText || 'No reason provided.',
+          eventName: parsedEventName,
           isRejected: isEntryRejected,
           proofUrl,
           proofTime,
@@ -514,17 +616,7 @@ export function parseEsarfEntries(item: {
   // Fallback for single entry or legacy format
   const dateStr = formatEsarfDateRange(item.date_from, item.date_to);
   const formatTime = (t?: string | null) => {
-    if (!t) return '--:--';
-    const parts = t.split(':');
-    if (parts.length < 2) return t;
-    let h = parseInt(parts[0], 10);
-    const m = parts[1];
-    const ampm = h >= 12 ? 'PM' : 'AM';
-    h = h % 12 || 12;
-    if (parts.length >= 3 && parts[2]) {
-      return `${String(h).padStart(2, '0')}:${m}:${parts[2]} ${ampm}`;
-    }
-    return `${String(h).padStart(2, '0')}:${m} ${ampm}`;
+    return stripSecondsFromTimeString(t);
   };
 
   const actualMatch = rawReason.match(/\[Actual:\s*([\d.]+)\s*hrs?\]/i);
@@ -537,14 +629,24 @@ export function parseEsarfEntries(item: {
   let proofId: string | undefined = parsedProofsList[0]?.proofId;
   let proofSource: 'photo_proof' | 'gallery' | 'camera' | undefined = parsedProofsList[0]?.proofSource;
 
-  const cleanReason = rawReason
+  const eventMatch = rawReason.match(/\[Event:\s*([^\]]+)\]/i);
+  const parsedEventName = eventMatch ? eventMatch[1].trim() : undefined;
+
+  let cleanReason = rawReason
     .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
     .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+    .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
     .trim();
+
+  if (parsedEventName) {
+    const escaped = parsedEventName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const repeated = new RegExp(`(?:Event:\\s*)?${escaped}\\s*(?:Event:\\s*)?${escaped}`, 'gi');
+    cleanReason = cleanReason.replace(repeated, `Event: ${parsedEventName}`).trim();
+  }
 
   const timeFromStr = formatTime(item.time_from);
   const timeToStr = formatTime(item.time_to);
@@ -594,6 +696,7 @@ export function parseEsarfEntries(item: {
       totalHours,
       actualHours: actualHoursStr,
       reason: cleanReason || 'No reason provided.',
+      eventName: parsedEventName,
       isRejected: rawReason.includes('[REJECTED]'),
       proofUrl,
       proofTime,
@@ -1419,12 +1522,12 @@ export function EsarfCardView({
       <View style={styles.gridRow}>
         <View style={styles.gridCol}>
           <Text style={styles.gridLabel}>Time From</Text>
-          <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>{entry.timeFromStr}</Text>
+          <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>{stripSecondsFromTimeString(entry.timeFromStr)}</Text>
         </View>
 
         <View style={styles.gridCol}>
           <Text style={styles.gridLabel}>Time To</Text>
-          <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>{entry.timeToStr}</Text>
+          <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>{stripSecondsFromTimeString(entry.timeToStr)}</Text>
         </View>
       </View>
 

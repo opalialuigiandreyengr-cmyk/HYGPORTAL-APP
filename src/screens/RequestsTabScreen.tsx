@@ -25,7 +25,7 @@ import {
   formatScheduledOtStatusMessage,
 } from '../utils/scheduledOt';
 import { PhotoProofPickerModal, type SelectedProofAttachment } from '../components/PhotoProofPickerModal';
-import { formatTimeDisplay } from '../utils/dateTime';
+import { formatTimeDisplay, stripSecondsFromTimeString } from '../utils/dateTime';
 import { syncAllOfflineItems } from '../services/offlineQueue';
 import { isAppOnline, useNetworkStatus } from '../services/network';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
@@ -46,7 +46,7 @@ import {
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
 type StatusFilter = 'all' | 'pending' | 'approved' | 'validated' | 'rejected';
-type CategoryFilter = 'all' | 'esarf' | 'leave' | 'perks';
+type CategoryFilter = 'all' | 'esarf' | 'leave' | 'travel_order' | 'perks';
 
 const statusTabs: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -60,6 +60,7 @@ const categoryTabs: { key: CategoryFilter; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'esarf', label: 'ESARF' },
   { key: 'leave', label: 'Leave' },
+  { key: 'travel_order', label: 'Travel Order' },
   { key: 'perks', label: 'Perks' },
 ];
 const pageSize = 15;
@@ -75,6 +76,7 @@ type Props = {
   onOpenMyTeam?: () => void;
   onOpenRewards?: () => void;
   onEditRequest?: (request: MyRequest) => void;
+  onFileTravelOrder?: () => void;
   refreshTrigger?: number;
   pointsBalance?: number;
   onSignOut?: () => void | Promise<void>;
@@ -91,6 +93,7 @@ export function RequestsTabScreen({
   onOpenMyTeam,
   onOpenRewards,
   onEditRequest,
+  onFileTravelOrder,
   refreshTrigger,
   pointsBalance = 0,
   onSignOut,
@@ -475,10 +478,13 @@ export function RequestsTabScreen({
       (totals, item) => {
         if (!item) return totals;
         totals.all += 1;
-        totals[requestCategory(item)] += 1;
+        const cat = requestCategory(item);
+        if (totals[cat] !== undefined) {
+          totals[cat] += 1;
+        }
         return totals;
       },
-      { all: 0, esarf: 0, leave: 0, perks: 0 },
+      { all: 0, esarf: 0, leave: 0, travel_order: 0, perks: 0 },
     );
   }, [items]);
 
@@ -640,7 +646,12 @@ export function RequestsTabScreen({
             </Pressable>
           </View>
 
-          <View style={styles.categoryRow}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.categoryRowContent}
+            style={styles.categoryScroll}
+          >
             {categoryTabs.map((tab) => {
               const active = activeCategory === tab.key;
               return (
@@ -655,14 +666,14 @@ export function RequestsTabScreen({
                     </Text>
                     <View style={[styles.categoryCountBadge, active ? styles.categoryCountBadgeActive : null]}>
                       <Text style={[styles.categoryCountText, active ? styles.categoryCountTextActive : null]}>
-                        {categoryCounts[tab.key]}
+                        {categoryCounts[tab.key] ?? 0}
                       </Text>
                     </View>
                   </View>
                 </Pressable>
               );
             })}
-          </View>
+          </ScrollView>
         </View>
 
         <View style={styles.tabsCard}>
@@ -682,7 +693,38 @@ export function RequestsTabScreen({
           })}
         </View>
 
-        {status ? <Text style={styles.status}>{status}</Text> : null}
+        {status && status !== 'No requests yet.' ? <Text style={styles.status}>{status}</Text> : null}
+
+        {filteredItems.length === 0 && !isLoading ? (
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyTitle}>
+              {activeCategory === 'travel_order'
+                ? 'No Travel Orders'
+                : activeCategory === 'leave'
+                ? 'No Leave Requests'
+                : activeCategory === 'esarf'
+                ? 'No ESARF Requests'
+                : activeCategory === 'perks'
+                ? 'No Perk Requests'
+                : 'No Requests Found'}
+            </Text>
+            <Text style={styles.emptySubtitle}>
+              {activeCategory === 'travel_order'
+                ? 'You have not submitted any official travel order requests yet.'
+                : query
+                ? `No requests match "${query}".`
+                : activeStatus !== 'all'
+                ? `No ${activeStatus} requests found.`
+                : 'You have no requests in this category.'}
+            </Text>
+            {activeCategory === 'travel_order' && onFileTravelOrder ? (
+              <Pressable style={styles.emptyActionBtn} onPress={onFileTravelOrder}>
+                <Plus size={16} color="#ffffff" strokeWidth={2.4} />
+                <Text style={styles.emptyActionBtnText}>File Travel Order</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
 
         {paginatedItems.map((item, index) => {
           const sequence = (currentPage - 1) * pageSize + index + 1;
@@ -946,6 +988,7 @@ function RequestDetailsSheet({
   const department = formatProfileWorkUnit(profile);
   const isLeave = item.request_type_code === 'leave';
   const isPerk = isPerkRequest(item);
+  const isTravel = isTravelOrderRequest(item);
   const rejectedReason = getRejectedReason(item);
   const currentStatusDate = item.final_approved_at || item.rejected_at || item.submitted_at;
   const itemStatusKey = normalizeStatus(item.status, item);
@@ -1030,6 +1073,21 @@ function RequestDetailsSheet({
                   )}
                 </View>
               </>
+            ) : isTravel ? (
+              <>
+                <SectionTitle icon="file" title="Request Information" />
+                <View style={styles.detailsList}>
+                  <DetailRow icon="file" label="Transaction Type" value="Official Travel Order" />
+                  <DetailRow icon="calendar" label="Travel Dates" value={compactRange(item.date_from, item.date_to)} />
+                  {item.time_from ? (
+                    <DetailRow
+                      icon="clock"
+                      label="Departure / Return Time"
+                      value={`${formatCompactTime(item.time_from)}${item.time_to ? ` - ${formatCompactTime(item.time_to)}` : ''}`}
+                    />
+                  ) : null}
+                </View>
+              </>
             ) : (
               <EsarfRequestInfoPanel
                 transactionType={formatRequestType(item)}
@@ -1076,6 +1134,63 @@ function RequestDetailsSheet({
                     <Text style={styles.panelTitle}>Reason / Details</Text>
                   </View>
                   <Text style={styles.reasonText}>{item.reason || 'No reason provided.'}</Text>
+                  {rejectedReason ? (
+                    <View style={styles.rejectedReasonBox}>
+                      <Text style={styles.rejectedReasonLabel}>Rejected reason</Text>
+                      <Text style={styles.rejectedReasonText}>{rejectedReason}</Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                <View style={styles.timelineHeader}>
+                  <Users size={15} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.panelTitle}>Approval Timeline</Text>
+                </View>
+                <View style={styles.timelineBlock}>
+                  {timelineRows.map((step, index) => (
+                    <TimelineItem
+                      key={`${item.request_id}-${step.title}-${index}`}
+                      title={step.title}
+                      subtitle={step.subtitle}
+                      date={step.date}
+                      time={step.time}
+                      tone={step.tone}
+                      isLast={index === timelineRows.length - 1}
+                    />
+                  ))}
+                </View>
+              </>
+            ) : isTravel ? (
+              <>
+                <View style={styles.rangePanel}>
+                  <View style={styles.panelTitleRow}>
+                    <CalendarDays size={15} color={colors.muted} strokeWidth={2.2} />
+                    <Text style={styles.panelTitle}>Travel Itinerary</Text>
+                  </View>
+                  <View style={styles.rangeGrid}>
+                    <DetailItem label="Departure Date" value={formatSheetDate(item.date_from)} />
+                    <DetailItem label="Return Date" value={formatSheetDate(item.date_to || item.date_from)} />
+                    {item.time_from ? (
+                      <DetailItem
+                        label="Departure Time"
+                        value={formatCompactTime(item.time_from)}
+                      />
+                    ) : null}
+                    {item.time_to ? (
+                      <DetailItem
+                        label="Return Time"
+                        value={formatCompactTime(item.time_to)}
+                      />
+                    ) : null}
+                  </View>
+                </View>
+
+                <View style={styles.reasonBlock}>
+                  <View style={styles.panelTitleRow}>
+                    <FileText size={15} color={colors.muted} strokeWidth={2.2} />
+                    <Text style={styles.panelTitle}>Purpose & Directive Details</Text>
+                  </View>
+                  <Text style={styles.reasonText}>{item.reason || 'Official Travel Order directive.'}</Text>
                   {rejectedReason ? (
                     <View style={styles.rejectedReasonBox}>
                       <Text style={styles.rejectedReasonLabel}>Rejected reason</Text>
@@ -1489,6 +1604,7 @@ export function clearEsarfEntriesCache() {
 
 function getCachedEsarfEntries(item: MyRequest): ParsedEsarfEntry[] {
   const key = [
+    'v3',
     item.request_id || '',
     item.status || '',
     item.time_schedule || '',
@@ -1533,7 +1649,7 @@ function normalizeStatus(status: string, item?: MyRequest): StatusFilter {
   if (item && isScheduledOtAwaitingProof(item)) {
     return 'pending';
   }
-  if (value.includes('pre_approved') || value.includes('pre-approved')) {
+  if (value.includes('pre_approved') || value.includes('pre-approved') || (item && isScheduledOtRequest(item))) {
     return 'pending';
   }
   if (value.includes('validat')) return 'validated';
@@ -1557,7 +1673,23 @@ function normalizeStatus(status: string, item?: MyRequest): StatusFilter {
 }
 
 function statusLabel(item: MyRequest): string {
-  if (isScheduledOtAwaitingProof(item) || (item.status || '').toLowerCase().includes('pre_approved') || (item.status || '').toLowerCase().includes('pre-approved')) {
+  const rawStatus = (item.status || '').trim();
+  const lower = rawStatus.toLowerCase();
+
+  // If final approved or rejected, display those first
+  if (lower === 'approved' || (item?.final_approved_at && !lower.includes('reject') && !lower.includes('denied'))) {
+    return 'APPROVED';
+  }
+  if (lower === 'rejected' || lower.includes('reject') || lower.includes('denied')) {
+    return 'REJECTED';
+  }
+
+  if (
+    isScheduledOtAwaitingProof(item) ||
+    lower.includes('pre_approved') ||
+    lower.includes('pre-approved') ||
+    isScheduledOtRequest(item)
+  ) {
     return 'PRE-APPROVED';
   }
   if (isPartialApproval(item)) {
@@ -1565,8 +1697,6 @@ function statusLabel(item: MyRequest): string {
     const approvedCount = entries.filter((e) => !e.isRejected).length;
     return `${approvedCount}/${entries.length} APPROVED`;
   }
-  const rawStatus = (item.status || '').trim();
-  const lower = rawStatus.toLowerCase();
 
   // If validated in database, display as is ("VALIDATED")
   if (lower.includes('validat')) {
@@ -1598,13 +1728,22 @@ function renderStatusPillContent(item: MyRequest) {
 }
 
 function statusPillStyle(status: StatusFilter | 'partial', item?: MyRequest) {
-  if (item && (isScheduledOtAwaitingProof(item) || (item.status || '').toLowerCase().includes('pre_approved') || (item.status || '').toLowerCase().includes('pre-approved'))) {
+  const rawStatus = (item?.status || '').toLowerCase();
+  const isFinalDone = rawStatus === 'approved' || rawStatus.includes('reject') || Boolean(item?.final_approved_at);
+
+  if (
+    item &&
+    !isFinalDone &&
+    (isScheduledOtAwaitingProof(item) ||
+      rawStatus.includes('pre_approved') ||
+      rawStatus.includes('pre-approved') ||
+      isScheduledOtRequest(item))
+  ) {
     return { backgroundColor: '#eff6ff', borderColor: '#93c5fd', borderWidth: 1, color: '#1d4ed8' };
   }
   if (item && isPartialApproval(item)) {
     return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
   }
-  const rawStatus = (item?.status || '').toLowerCase();
   if (status === 'validated' || rawStatus.includes('validat')) {
     return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
   }
@@ -1636,7 +1775,31 @@ function formatRequestType(item: MyRequest) {
   return formatUnifiedRequestType(item);
 }
 
+export function isTravelOrderRequest(item: MyRequest | null | undefined): boolean {
+  if (!item) return false;
+  const code = (item.request_type_code || '').toLowerCase().trim();
+  if (
+    code === 'travel_order' ||
+    code === 'travel' ||
+    code === 'official_travel' ||
+    code === 'official_travel_order' ||
+    code === 'to'
+  ) {
+    return true;
+  }
+  const name = (item.request_type_name || '').toLowerCase();
+  if (name.includes('travel order') || name.includes('official travel')) {
+    return true;
+  }
+  const trans = (item.transaction_type || '').toLowerCase();
+  if (trans.includes('travel order') || trans.includes('official travel')) {
+    return true;
+  }
+  return false;
+}
+
 function requestCategory(item: MyRequest): CategoryFilter {
+  if (isTravelOrderRequest(item)) return 'travel_order';
   if (isPerkRequest(item)) return 'perks';
   return item.request_type_code === 'leave' ? 'leave' : 'esarf';
 }
@@ -1646,7 +1809,7 @@ function isPerkRequest(item: MyRequest) {
 }
 
 function isEsarfRequest(item: MyRequest): boolean {
-  return !isPerkRequest(item) && item.request_type_code !== 'leave';
+  return !isPerkRequest(item) && item.request_type_code !== 'leave' && !isTravelOrderRequest(item);
 }
 
 function hasApprovedTimelineStatus(item: MyRequest): boolean {
@@ -1720,7 +1883,9 @@ function normalizeDepartmentName(value?: string | null) {
 
 function getRequestDate(item: MyRequest) {
   let rawDate: string | null;
-  if (isEsarfRequest(item)) {
+  if (isTravelOrderRequest(item)) {
+    rawDate = item.date_from || item.start_date || item.submitted_at;
+  } else if (isEsarfRequest(item)) {
     rawDate = item.submitted_at || item.date_from;
   } else if (item.request_type_code === 'leave') {
     rawDate = item.start_date || item.date_from || item.submitted_at;
@@ -1786,13 +1951,14 @@ function compactRange(start: string | null, end: string | null) {
 function formatCompactTime(value: string | null) {
   if (!value) return '--:--';
   const trimmed = value.trim();
-  if (/^\d{2}:\d{2}/.test(trimmed)) return trimmed.slice(0, 5);
-  const normalized = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(trimmed)
-    ? trimmed.replace(' ', 'T')
-    : trimmed;
-  const date = new Date(normalized);
-  if (Number.isNaN(date.getTime())) return '--:--';
-  return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(date);
+  if (trimmed.includes('T') || /^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+    const normalized = trimmed.replace(' ', 'T');
+    const date = new Date(normalized);
+    if (!Number.isNaN(date.getTime())) {
+      return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(date);
+    }
+  }
+  return stripSecondsFromTimeString(trimmed);
 }
 
 function formatSheetTime(value: string | null) {
@@ -2040,6 +2206,15 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.semibold,
     color: colors.border,
   },
+  categoryScroll: {
+    marginTop: spacing.sm,
+  },
+  categoryRowContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingRight: 4,
+  },
   categoryRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2047,7 +2222,6 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   categoryChip: {
-    flex: 1,
     minHeight: 34,
     borderRadius: radius.sm,
     borderWidth: 1,
@@ -2055,7 +2229,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: spacing.sm,
+    paddingHorizontal: 10,
+    flexShrink: 0,
   },
   categoryChipActive: {
     borderColor: colors.primary,
@@ -2097,6 +2272,45 @@ const styles = StyleSheet.create({
   },
   categoryCountTextActive: {
     color: colors.surface,
+  },
+  emptyContainer: {
+    backgroundColor: '#ffffff',
+    borderRadius: radius.md,
+    padding: spacing.xl,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: spacing.xs,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: fontWeights.bold,
+    color: colors.text,
+    marginBottom: 6,
+  },
+  emptySubtitle: {
+    fontSize: 13,
+    color: colors.muted,
+    textAlign: 'center',
+    maxWidth: 290,
+    lineHeight: 18,
+  },
+  emptyActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: spacing.md,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
+  },
+  emptyActionBtnText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
   },
   modalBackdrop: {
     flex: 1,

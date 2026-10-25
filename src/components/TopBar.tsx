@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, DeviceEventEmitter, Easing, Image, Linking, Modal, Platform, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Bell, ChartNoAxesColumnIncreasing, Check, ChevronLeft, ChevronRight, CircleHelp, ExternalLink, Info, LogOut, Menu, MessageCircle, RefreshCw, Settings, ShieldCheck, Sparkles, UsersRound, Wifi, WifiOff, X } from 'lucide-react-native';
+import { Bell, CalendarDays, ChartNoAxesColumnIncreasing, Check, ChevronLeft, ChevronRight, CircleHelp, ExternalLink, Info, LogOut, Menu, MessageCircle, RefreshCw, Settings, ShieldCheck, Sparkles, UsersRound, Wifi, WifiOff, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getSafeBottomInset } from '../utils/safeArea';
 
@@ -24,6 +24,7 @@ type Props = {
   notificationCount?: number;
   onNotifications?: () => void;
   onHelpTutorials?: () => void;
+  onOpenEvents?: () => void;
   onMessages?: () => void;
   onAvatar?: () => void;
   onOpenProfile?: () => void;
@@ -51,6 +52,7 @@ export function TopBar({
   showNetworkStatus = false,
   onNotifications,
   onHelpTutorials,
+  onOpenEvents,
   onAvatar,
   onOpenProfile,
   onOpenSettings,
@@ -605,6 +607,14 @@ export function TopBar({
                 label="My Team"
                 value="Team schedules and members"
                 onPress={() => openSidebarAction(onOpenMyTeam)}
+              />
+            ) : null}
+            {onOpenEvents ? (
+              <SidebarRow
+                icon={<CalendarDays size={20} color={colors.primary} strokeWidth={2.6} />}
+                label="Events and Activities"
+                value="Upcoming events & activities"
+                onPress={() => openSidebarAction(onOpenEvents)}
               />
             ) : null}
             {onHelpTutorials ? (

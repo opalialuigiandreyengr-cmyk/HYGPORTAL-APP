@@ -1,6 +1,7 @@
 import { DeviceEventEmitter } from 'react-native';
 import { ensureFreshSession, supabase } from '../lib/supabase';
 import { getCacheJSON, removeCacheItem, setCacheJSON } from '../lib/localCache';
+import { isScheduledOtRequest } from '../utils/scheduledOt';
 
 export type RequestApprovalSummary = {
   step_order: number;
@@ -123,7 +124,11 @@ export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]>
   items = items.map((req) => {
     const rawLower = (req.status || '').toLowerCase().trim();
     // If pre-approved scheduled OT, preserve it
-    if (rawLower.includes('pre_approved') || rawLower.includes('pre-approved')) {
+    if (
+      rawLower.includes('pre_approved') ||
+      rawLower.includes('pre-approved') ||
+      ((rawLower === 'pending' || rawLower === 'submitted' || rawLower === 'waiting') && isScheduledOtRequest(req))
+    ) {
       return { ...req, status: 'pre_approved' };
     }
     // If validated in database, preserve it
@@ -196,6 +201,18 @@ export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]>
         items = [offItem, ...items];
       }
     }
+
+    // Preserve local travel orders until backend official travel order migration is deployed
+    const localTravelItems = cached.filter(
+      (item) =>
+        item.request_id?.startsWith('travel_') ||
+        item.request_type_code === 'travel_order',
+    );
+    for (const travItem of localTravelItems) {
+      if (!items.some((serverItem) => serverItem.request_id === travItem.request_id)) {
+        items = [travItem, ...items];
+      }
+    }
   }
 
     await setCacheJSON(cacheKey, items);
@@ -217,6 +234,85 @@ export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]>
 export async function loadMyRequestsCached() {
   const cacheKey = 'my_requests_v1';
   return (await getCacheJSON<MyRequest[]>(cacheKey)) ?? [];
+}
+
+export type SubmitLocalTravelOrderPayload = {
+  employeeName?: string | null;
+  employeeId?: string | null;
+  destinationStores: string[];
+  departureDate: string;
+  returnDate: string;
+  departureTime?: string | null;
+  returnTime?: string | null;
+  transportMode?: string | null;
+  plateNo?: string | null;
+  purposeOfTravel?: string | null;
+  purposeDetails?: string | null;
+  transportBudget?: number;
+  mealBudget?: number;
+  emergencyBudget?: number;
+  costCenterCode?: string | null;
+  chargeToStore?: string | null;
+  submittedAt?: string;
+};
+
+export async function submitLocalTravelOrder(payload: SubmitLocalTravelOrderPayload): Promise<MyRequest> {
+  const reqId = `travel_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const submittedAt = payload.submittedAt || new Date().toISOString();
+  const destinations = payload.destinationStores?.length ? payload.destinationStores.join(', ') : 'Not specified';
+  const purpose = payload.purposeOfTravel || 'Official Travel';
+  const purposeDetailStr = payload.purposeDetails ? ` (${payload.purposeDetails})` : '';
+  const transportStr = payload.transportMode ? ` | Transport: ${payload.transportMode}${payload.plateNo ? ` [${payload.plateNo}]` : ''}` : '';
+  const budgetTotal = (payload.transportBudget || 0) + (payload.mealBudget || 0) + (payload.emergencyBudget || 0);
+  const budgetStr = budgetTotal > 0 ? ` | Budget: PHP ${budgetTotal.toLocaleString()}` : '';
+
+  const newTravelReq: MyRequest = {
+    request_id: reqId,
+    request_type_code: 'travel_order',
+    request_type_name: 'Official Travel Order',
+    status: 'pending',
+    submitted_at: submittedAt,
+    final_approved_at: null,
+    rejected_at: null,
+    rejected_reason: null,
+    date_from: payload.departureDate,
+    date_to: payload.returnDate,
+    time_from: payload.departureTime || null,
+    time_to: payload.returnTime || null,
+    time_schedule: null,
+    day_off: null,
+    payroll_class: null,
+    transaction_type: 'Travel Order',
+    total_hours: null,
+    leave_type: null,
+    leave_category: null,
+    start_date: payload.departureDate,
+    end_date: payload.returnDate,
+    total_days: null,
+    paid_days: null,
+    unpaid_days: null,
+    reason: `Destination: ${destinations} | Purpose: ${purpose}${purposeDetailStr}${transportStr}${budgetStr}`,
+    approval_summary: [
+      {
+        step_order: 1,
+        required_level: 2,
+        status: 'pending',
+        acted_at: null,
+        remarks: null,
+        skipped_reason: null,
+        approver_name: 'Immediate Supervisor / Manager',
+        approver_employee_no: null,
+      },
+    ],
+  };
+
+  const cacheKey = 'my_requests_v1';
+  const cached = (await getCacheJSON<MyRequest[]>(cacheKey)) || [];
+  const updated = [newTravelReq, ...cached.filter((r) => r.request_id !== reqId)];
+  await setCacheJSON(cacheKey, updated);
+  invalidateRequestsCache();
+  DeviceEventEmitter.emit('my_requests_updated');
+  return newTravelReq;
 }
 
 
@@ -661,7 +757,6 @@ export async function attachScheduledOtPhotoProof({ requestId, proofs }: AttachS
       .from('requests')
       .update({
         status: 'pending',
-        reason: updatedReason,
         updated_at: new Date().toISOString(),
       })
       .eq('id', requestId);

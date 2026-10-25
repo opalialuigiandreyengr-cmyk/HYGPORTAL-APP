@@ -8,6 +8,7 @@ type DateRangePickerModalProps = {
   initialStartDate?: string; // YYYY-MM-DD
   initialEndDate?: string;   // YYYY-MM-DD
   allowFutureDates?: boolean;
+  minDate?: string;          // YYYY-MM-DD
   maxRangeDays?: number;
   onApply: (startDate: string, endDate: string) => void;
   onClose: () => void;
@@ -46,6 +47,7 @@ export function DateRangePickerModal({
   initialStartDate = '',
   initialEndDate = '',
   allowFutureDates = false,
+  minDate,
   maxRangeDays,
   onApply,
   onClose,
@@ -55,9 +57,14 @@ export function DateRangePickerModal({
   const maxYear = allowFutureDates ? todayObj.getFullYear() + 2 : todayObj.getFullYear();
   const maxMonth = allowFutureDates ? 11 : todayObj.getMonth();
 
+  const minDateObj = useMemo(() => (minDate ? parseYMD(minDate) : null), [minDate]);
+  const minYear = minDateObj ? minDateObj.getFullYear() : 2020;
+  const minMonth = minDateObj ? minDateObj.getMonth() : 0;
+
   const initialDateObj = parseYMD(initialStartDate) || todayObj;
   const [currentYear, setCurrentYear] = useState(initialDateObj.getFullYear());
   const [currentMonth, setCurrentMonth] = useState(initialDateObj.getMonth());
+  const isAtMinMonth = Boolean(minDateObj && (currentYear < minYear || (currentYear === minYear && currentMonth <= minMonth)));
 
   const [startDateStr, setStartDateStr] = useState(initialStartDate);
   const [endDateStr, setEndDateStr] = useState(initialEndDate);
@@ -114,6 +121,7 @@ export function DateRangePickerModal({
   if (!visible) return null;
 
   const handlePrevMonth = () => {
+    if (isAtMinMonth) return;
     if (currentMonth === 0) {
       setCurrentMonth(11);
       setCurrentYear((y) => y - 1);
@@ -134,8 +142,9 @@ export function DateRangePickerModal({
 
   const handleDaySelect = (dateStr: string) => {
     setWarningMsg('');
-    // Only past or current days can be selected if future dates not allowed
+    // Restrict dates based on allowFutureDates and minDate
     if (!allowFutureDates && dateStr > todayStr) return;
+    if (minDate && dateStr < minDate) return;
 
     if (maxRangeDays === 1) {
       setStartDateStr(dateStr);
@@ -271,8 +280,12 @@ export function DateRangePickerModal({
               <Text style={styles.rangeSubtext}>{getRangeDisplay()}</Text>
             </View>
             <View style={styles.navButtons}>
-              <Pressable style={styles.navBtn} onPress={handlePrevMonth}>
-                <ChevronLeft size={18} color="#0f172a" />
+              <Pressable
+                disabled={isAtMinMonth}
+                style={[styles.navBtn, isAtMinMonth ? styles.navBtnDisabled : null]}
+                onPress={handlePrevMonth}
+              >
+                <ChevronLeft size={18} color={isAtMinMonth ? '#cbd5e1' : '#0f172a'} />
               </Pressable>
               <Pressable
                 disabled={isAtMaxMonth}
@@ -304,7 +317,8 @@ export function DateRangePickerModal({
           <View style={styles.grid}>
             {daysInMonth.map((item, idx) => {
               const isFuture = item.dateStr > todayStr;
-              const isFutureDisabled = !allowFutureDates && isFuture;
+              const isPastDisabled = Boolean(minDate && item.dateStr < minDate);
+              const isDateDisabled = (!allowFutureDates && isFuture) || isPastDisabled;
               const isStart = item.dateStr === startDateStr;
               const isEnd = item.dateStr === endDateStr;
               const isInRange =
@@ -317,7 +331,7 @@ export function DateRangePickerModal({
               return (
                 <Pressable
                   key={`${item.dateStr}-${idx}`}
-                  disabled={isFutureDisabled}
+                  disabled={isDateDisabled}
                   style={[
                     styles.dayCell,
                     isInRange ? styles.inRangeCell : null,
@@ -336,7 +350,7 @@ export function DateRangePickerModal({
                       style={[
                         styles.dayText,
                         !item.isCurrentMonth ? styles.dimmedText : null,
-                        isFutureDisabled ? styles.futureDayText : null,
+                        isDateDisabled ? styles.futureDayText : null,
                         isToday && !isStart && !isEnd ? styles.todayText : null,
                         isStart || isEnd ? styles.activeDayText : null,
                       ]}

@@ -1,5 +1,6 @@
 import { ensureFreshSession, supabase } from '../lib/supabase';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
+import { loadMyRequestsCached } from './requests';
 
 
 export type DashboardSummary = {
@@ -29,6 +30,7 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
   let hygPointsBalance = cached?.hyg_points_balance ?? 0;
   let leaveBalanceRow: any = { data: null, error: null };
   let offsetBalanceRow: any = { data: null, error: null };
+  let requestsCountRow: any = { data: null, count: null, error: null };
 
   try {
     if (!empId && currentUserId) {
@@ -40,7 +42,7 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
       empId = userProfile?.employee_id ?? undefined;
     }
 
-    const [rpcRes, pointsBal, leaveBal, offsetBal] = await Promise.all([
+    const [rpcRes, pointsBal, leaveBal, offsetBal, reqCountRes] = await Promise.all([
       supabase.rpc('get_my_dashboard_summary'),
       loadHygPointsBalance(currentUserId, empId),
       empId
@@ -57,12 +59,20 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
             .eq('employee_id', empId)
             .maybeSingle<{ balance_hours: number | null }>()
         : Promise.resolve({ data: null, error: null }),
+      empId
+        ? supabase
+            .from('requests')
+            .select('id', { count: 'exact', head: true })
+            .eq('submitted_by_employee_id', empId)
+            .in('status', ['pending', 'pre_approved', 'submitted', 'waiting'])
+        : Promise.resolve({ data: null, count: null, error: null }),
     ]);
 
     rpcResult = rpcRes;
     hygPointsBalance = pointsBal;
     leaveBalanceRow = leaveBal;
     offsetBalanceRow = offsetBal;
+    requestsCountRow = reqCountRes;
   } catch (netErr) {
     console.log('[Dashboard] Network fetch failed (offline), returning cached summary:', netErr);
     if (cached) {
@@ -108,8 +118,43 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
     offsetBalance = Number(first?.offset_balance ?? 0);
   }
 
+  // Real-time pending & pre-approved requests count
+  let pendingRequests = 0;
+  const cachedRequests = await loadMyRequestsCached().catch(() => []);
+  const offlinePendingCount = cachedRequests.filter(
+    (r) =>
+      r.request_id?.startsWith('offline_') ||
+      (r.status || '').toLowerCase().includes('offline'),
+  ).length;
+
+  const cachedPendingAndPreApproved = cachedRequests.filter((r) => {
+    const s = (r.status || '').toLowerCase().trim();
+    if (s === 'approved' || s === 'validated' || s.includes('reject') || s.includes('denied') || s === 'cancelled') {
+      return false;
+    }
+    if (r.final_approved_at && !s.includes('reject') && !s.includes('denied')) {
+      return false;
+    }
+    return (
+      s === 'pending' ||
+      s.includes('pre_approved') ||
+      s.includes('pre-approved') ||
+      s.includes('offline') ||
+      s === 'submitted' ||
+      s === 'waiting'
+    );
+  }).length;
+
+  if (requestsCountRow?.count !== null && requestsCountRow?.count !== undefined && !requestsCountRow?.error) {
+    pendingRequests = Math.max(Number(requestsCountRow.count) + offlinePendingCount, cachedPendingAndPreApproved);
+  } else if (first?.pending_requests !== undefined && first?.pending_requests !== null) {
+    pendingRequests = Math.max(Number(first.pending_requests) + offlinePendingCount, cachedPendingAndPreApproved);
+  } else {
+    pendingRequests = cachedPendingAndPreApproved;
+  }
+
   const summary = {
-    pending_requests: Number(first?.pending_requests ?? 0),
+    pending_requests: pendingRequests,
     pending_approvals: Number(first?.pending_approvals ?? 0),
     offset_balance: offsetBalance,
     leave_credit_remaining: leaveCreditRemaining,

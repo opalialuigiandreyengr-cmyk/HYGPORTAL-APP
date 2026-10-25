@@ -144,18 +144,6 @@ export async function loadPendingApprovals(forceRefresh = false): Promise<Pendin
         pending_step_id: raw.pending_step_id || raw.step_id,
       })) as PendingApproval[];
 
-      // Exclude pre-approved scheduled OT requests awaiting photo proof from approvers' queue
-      items = items.filter((it) => {
-        const rawStatus = (it.status || '').toLowerCase();
-        if (rawStatus.includes('pre_approved') || rawStatus.includes('pre-approved')) {
-          return false;
-        }
-        if (isScheduledOtAwaitingProof(it)) {
-          return false;
-        }
-        return true;
-      });
-
       // Guard: if server returns empty list but we have cached approvals, verify user session before overwriting
       if (items.length === 0 && cached && cached.length > 0) {
         const { data: checkSession } = await supabase.auth.getSession();

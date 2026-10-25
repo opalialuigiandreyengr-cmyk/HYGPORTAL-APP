@@ -33,10 +33,13 @@ import {
   Image as ImageIcon,
   Images,
   ListChecks,
+  Lock,
   MapPin,
   Plus,
   Repeat,
   RotateCcw,
+  Search,
+  Sparkles,
   Trash2,
   Upload,
   WifiOff,
@@ -57,6 +60,7 @@ import {
 
 import { TopBar } from '../components/TopBar';
 import { WebNativeDateInput } from '../components/WebNativeDateInput';
+import { loadActiveEventsActivities, isEventPassedOrDone, type PortalEventActivity } from '../services/eventsActivities';
 import { dayOffOptions, payrollClassOptions, scheduleOptions } from '../constants/requestOptions';
 import { supabase } from '../lib/supabase';
 import type { AssistantDraft } from '../services/assistant';
@@ -99,7 +103,12 @@ import {
   parseEsarfDateRangeStringToYMD,
   timeStringToDate,
 } from '../utils/dateTime';
-import { isScheduledOtEntry } from '../utils/scheduledOt';
+import {
+  isScheduledOtEntry,
+  isOffsetTransaction,
+  isOvertimeTransaction,
+  isScheduledTransaction,
+} from '../utils/scheduledOt';
 
 export type EsarfAttachment = {
   uri: string;
@@ -121,6 +130,8 @@ export type EsarfEntry = {
   reason: string;
   proof?: EsarfAttachment | null;
   proofs?: EsarfAttachment[];
+  eventId?: string;
+  eventName?: string;
 };
 
 export function getEntryProofs(entry?: EsarfEntry | null): EsarfAttachment[] {
@@ -318,6 +329,7 @@ export function ApplyEsarfScreen({
   notificationCount,
   onNotifications,
   onRefresh,
+  mode = 'esarf',
 }: {
   name?: string | null;
   username?: string | null;
@@ -343,7 +355,9 @@ export function ApplyEsarfScreen({
   notificationCount?: number;
   onNotifications?: () => void;
   onRefresh?: () => void | Promise<void>;
+  mode?: 'esarf' | 'pre_approved_ot_offset';
 }) {
+  const isPreApprovedMode = mode === 'pre_approved_ot_offset';
   const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const network = useNetworkStatus();
@@ -381,13 +395,23 @@ export function ApplyEsarfScreen({
   const initialTimeFrom = editingRequest?.time_from ?? initialDraft?.fields.timeFrom ?? '';
   const initialTimeTo = editingRequest?.time_to ?? initialDraft?.fields.timeTo ?? '';
   const rawInitialReason = editingRequest?.reason ?? initialDraft?.fields.reason ?? '';
-  const initialReason = rawInitialReason
-    .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
-    .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
-    .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
-    .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
-    .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
-    .trim();
+  const initialReason = (() => {
+    let cleaned = rawInitialReason
+      .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
+      .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
+      .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
+      .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
+      .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
+      .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+      .replace(/\[Event:\s*([^\]]+)\]\s*/gi, (_match, ev) => {
+        // If the remaining text already has the event title, don't keep it
+        return '';
+      })
+      .trim();
+    // Clean repeated "Event: <Title> Event: <Title>" or duplicate event strings
+    cleaned = cleaned.replace(/(Event:\s*[^:\n]+?)\s+\1/gi, '$1').trim();
+    return cleaned;
+  })();
   const [schedule, setSchedule] = useState(initialSchedule);
   const [dayOff, setDayOff] = useState(initialDayOff);
   const [payrollClass, setPayrollClass] = useState(initialPayrollClass);
@@ -497,18 +521,32 @@ export function ApplyEsarfScreen({
             dateTo: dTo,
             timeFrom: parsedTimeFrom || editingRequest.time_from || '',
             timeTo: parsedTimeTo || editingRequest.time_to || '',
-            reason: p.reason || editingRequest.reason || '',
+            reason: (p.reason || editingRequest.reason || '')
+              .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
+              .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+              .trim(),
+            eventName: p.eventName,
             proof: entryProofs[0] || null,
             proofs: entryProofs,
           };
         });
       }
     }
-    const defaultKey = parseTransactionStringToKeys(
-      editingRequest?.transaction_type,
-      editingRequest?.request_type_code,
-    );
-    const initialTransKey = defaultKey || initialTransactions[0] || '';
+    const defaultKey = editingRequest
+      ? parseTransactionStringToKeys(editingRequest.transaction_type, editingRequest.request_type_code)
+      : '';
+    const initialTransKey = isPreApprovedMode
+      ? (defaultKey === 'ot' || defaultKey === 'offset'
+          ? defaultKey
+          : initialTransactions[0] === 'offset'
+            ? 'offset'
+            : 'ot')
+      : defaultKey || initialTransactions[0] || '';
     const isInitialUseOffset = initialTransKey.includes('use_offset');
     const fallbackProofs = parseProofsFromRawReason(editingRequest?.reason || '', initialDateFrom);
     return [
@@ -533,6 +571,85 @@ export function ApplyEsarfScreen({
   const [activeTransactionSelectIndex, setActiveTransactionSelectIndex] = useState<number | null>(null);
   const [activeDateChoiceIndex, setActiveDateChoiceIndex] = useState<number | null>(null);
   const [activeScrollableTimePicker, setActiveScrollableTimePicker] = useState<{ index: number; field: 'time_from' | 'time_to' } | null>(null);
+  const [availableEvents, setAvailableEvents] = useState<PortalEventActivity[]>([]);
+  const [activeEventModalIndex, setActiveEventModalIndex] = useState<number | null>(null);
+  const [eventSearchQuery, setEventSearchQuery] = useState('');
+
+  useEffect(() => {
+    let isMounted = true;
+    loadActiveEventsActivities()
+      .then((items) => {
+        if (isMounted) setAvailableEvents(items);
+      })
+      .catch((err) => console.warn('Error loading active events:', err));
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  function handleSelectEvent(index: number, event: PortalEventActivity) {
+    if (!isPreApprovedMode && !isEventPassedOrDone(event)) {
+      const msg = 'In Apply ESARF, you cannot select events or activities ahead of time. You can only select events that have already passed or ended. For upcoming events, please use Apply Pre-approved OT/Offset.';
+      if (onToast) {
+        onToast({ tone: 'warning', title: 'Event Not Yet Ended', message: msg });
+      } else {
+        platformAlert('Event Not Yet Ended', msg);
+      }
+      return;
+    }
+    if (isPreApprovedMode && isEventPassedOrDone(event)) {
+      const msg = 'This event or activity has already passed. For past events, please file using regular Apply ESARF.';
+      if (onToast) {
+        onToast({ tone: 'warning', title: 'Event Already Passed', message: msg });
+      } else {
+        platformAlert('Event Already Passed', msg);
+      }
+      return;
+    }
+
+    setEntries((prev) => {
+      const next = [...prev];
+      const current = next[index];
+      if (!current) return prev;
+      const cleanCurrentReason = (current.reason || '')
+        .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+        .replace(/(Event:\s*[^:\n]+?)\s+\1/gi, '$1')
+        .trim();
+      next[index] = {
+        ...current,
+        eventId: event.id,
+        eventName: event.title,
+        dateFrom: event.event_date || current.dateFrom,
+        dateTo: event.end_date || event.event_date || current.dateTo,
+        timeFrom: event.time_from || current.timeFrom,
+        timeTo: event.time_to || current.timeTo,
+        reason: cleanCurrentReason ? cleanCurrentReason : `${event.type}: ${event.title}`,
+      };
+      return next;
+    });
+    setValidationErrors((cur) => ({
+      ...cur,
+      [`entry_${index}_dateFrom`]: undefined,
+      [`entry_${index}_dateTo`]: undefined,
+      [`entry_${index}_timeFrom`]: undefined,
+      [`entry_${index}_timeTo`]: undefined,
+    }));
+    setActiveEventModalIndex(null);
+  }
+
+  function handleClearEvent(index: number) {
+    setEntries((prev) => {
+      const next = [...prev];
+      const current = next[index];
+      if (!current) return prev;
+      next[index] = {
+        ...current,
+        eventId: undefined,
+        eventName: undefined,
+      };
+      return next;
+    });
+  }
 
   const [activeSelect, setActiveSelect] = useState<'schedule' | 'day_off' | 'payroll_class' | null>(null);
   const [isCustomScheduleOpen, setIsCustomScheduleOpen] = useState(false);
@@ -919,7 +1036,16 @@ export function ApplyEsarfScreen({
               dateTo: dTo,
               timeFrom: parsedTimeFrom || editingRequest.time_from || '',
               timeTo: parsedTimeTo || editingRequest.time_to || '',
-              reason: p.reason || editingRequest.reason || '',
+              reason: (p.reason || editingRequest.reason || '')
+                .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
+                .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
+                .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
+                .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
+                .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
+                .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+                .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+                .trim(),
+              eventName: p.eventName,
               proof: entryProofs[0] || null,
               proofs: entryProofs,
             };
@@ -931,6 +1057,8 @@ export function ApplyEsarfScreen({
         const dFrom = editingRequest.date_from || '';
         const dTo = isEntryUseOffset ? dFrom : (editingRequest.date_to || dFrom);
         const fallbackProofs = parseProofsFromRawReason(editingRequest.reason || '', dFrom);
+        const eventMatch = (editingRequest.reason || '').match(/\[Event:\s*([^\]]+)\]/i);
+        const singleEventName = eventMatch ? eventMatch[1].trim() : undefined;
         setEntries([
           {
             id: '1',
@@ -945,7 +1073,10 @@ export function ApplyEsarfScreen({
               .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
               .trim(),
+            eventName: singleEventName,
             proof: fallbackProofs[0] || null,
             proofs: fallbackProofs,
           },
@@ -1039,7 +1170,7 @@ export function ApplyEsarfScreen({
       ...prev,
       {
         id: String(Date.now()),
-        transaction: isLastUseOffset ? 'use_offset' : '',
+        transaction: isPreApprovedMode ? 'ot' : (isLastUseOffset ? 'use_offset' : ''),
         dateFrom: defaultDate,
         dateTo: defaultDate,
         timeFrom: '',
@@ -1497,11 +1628,15 @@ export function ApplyEsarfScreen({
         } else if (diff > 1) {
           errors[`entry_${i}_dateTo`] = `Request #${num}: ESARF date range can only be for a single day or two consecutive days (e.g., overnight overtime).`;
         }
-        const hasOt = transKeys.includes('ot');
-        const hasUseOffset = transKeys.includes('use_offset');
         const todayStr = formatDateInput(new Date());
-        if ((entry.dateFrom > todayStr || entry.dateTo > todayStr) && !hasOt && !hasUseOffset) {
-          errors[`entry_${i}_dateFrom`] = `Request #${num}: Future dates are only permitted for Overtime (OT) or Use Offset Balance requests.`;
+        if (isPreApprovedMode) {
+          if (entry.dateFrom && entry.dateFrom < todayStr) {
+            errors[`entry_${i}_dateFrom`] = `Request #${num}: Pre-approved OT/Offset must be scheduled for today or a future date.`;
+          }
+        } else {
+          if (entry.dateFrom > todayStr || entry.dateTo > todayStr) {
+            errors[`entry_${i}_dateFrom`] = `Request #${num}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT or Offset ahead of time, please use Apply Pre-approved OT/Offset.`;
+          }
         }
       }
       if (!entry.timeFrom) errors[`entry_${i}_timeFrom`] = `Request #${num}: Time From is required.`;
@@ -1532,7 +1667,7 @@ export function ApplyEsarfScreen({
 
       // Photo proof requirement for FIO transaction only (1 required, 2 optional)
       const isScheduledOt = isScheduledOtEntry(entry);
-      const needsProof = !isScheduledOt && isProofRequiredForTransactions(entry.transaction);
+      const needsProof = !isPreApprovedMode && !isScheduledOt && isProofRequiredForTransactions(entry.transaction);
       const entryProofs = getEntryProofs(entry);
       if (needsProof && entryProofs.length === 0) {
         errors[`entry_${i}_proof`] = `Request #${num}: At least 1 photo proof is required for Failure to Punch In/Out (FIO).`;
@@ -1687,20 +1822,44 @@ export function ApplyEsarfScreen({
           return tags;
         };
 
-        const cleanReasonText = (text: string) => {
+        const cleanReasonText = (text: string, eventName?: string) => {
           if (!text) return '';
           let cleaned = text.trim();
-          const match = cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)\s*.*?\([^)]*\):\s*([\s\S]*)$/i)
+          const match = cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)\s*.*?\([^)]*hrs?\):\s*([\s\S]*)$/i)
+            || cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)\s*.*?:\s+([\s\S]*)$/i)
             || cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)[^:]*:\s*([\s\S]*)$/i);
           if (match) cleaned = match[1].trim();
-          return cleaned
+
+          const displaced = cleaned.match(
+            /^\d{2}(?::\d{2})?\s*(?:AM|PM)?\s*-\s*\d{1,2}:\d{2}\s*(?:AM|PM)?\s*(?:\([\d.]+\s*hrs?\))?:\s*([\s\S]*)$/i
+          );
+          if (displaced) {
+            cleaned = displaced[1].trim();
+          }
+          cleaned = cleaned
             .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
             .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+            .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
             .trim();
+          if (eventName && eventName.trim()) {
+            const escaped = eventName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const repeated = new RegExp(`(?:Event:\\s*)?${escaped}\\s*(?:Event:\\s*)?${escaped}`, 'gi');
+            cleaned = cleaned.replace(repeated, `Event: ${eventName.trim()}`).trim();
+          }
+          return cleaned;
+        };
+
+        const getEventTag = (reasonText: string, eventName?: string) => {
+          if (!eventName || !eventName.trim()) return '';
+          const trimmed = eventName.trim();
+          if (reasonText.toLowerCase().includes(trimmed.toLowerCase())) {
+            return '';
+          }
+          return ` [Event: ${trimmed}]`;
         };
 
         let combinedReason: string;
@@ -1710,8 +1869,10 @@ export function ApplyEsarfScreen({
           const isOffset = keys.includes('offset');
           const hrs = getEntryTotalHours(fEntry);
           const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
+          const cleanReason = cleanReasonText(fEntry.reason, fEntry.eventName);
+          const eventTag = getEventTag(cleanReason, fEntry.eventName);
           const proofTag = formatProofTags(getEntryProofs(fEntry));
-          combinedReason = `${cleanReasonText(fEntry.reason)}${actualTag}${proofTag}`.trim();
+          combinedReason = `${cleanReason}${eventTag}${actualTag}${proofTag}`.trim();
         } else {
           combinedReason = groupEntries
             .map((e, idx) => {
@@ -1724,12 +1885,13 @@ export function ApplyEsarfScreen({
               const hrs = getEntryTotalHours(e);
               const isOffset = keys.includes('offset');
               const creditedHrs = isOffset ? calculateCreditedOffsetHours(hrs) : hrs;
-              const cleanReason = cleanReasonText(e.reason);
+              const cleanReason = cleanReasonText(e.reason, e.eventName);
+              const eventTag = getEventTag(cleanReason, e.eventName);
               const proofTag = formatProofTags(getEntryProofs(e));
               const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
               const isFioOrOb = isFioOrObOnly(e.transaction);
               const hrsDisplay = isFioOrOb ? '' : ` (${creditedHrs.toFixed(2)} hrs)`;
-              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${actualTag}${proofTag}`;
+              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${eventTag}${actualTag}${proofTag}`;
             })
             .join('\n');
         }
@@ -1982,20 +2144,44 @@ export function ApplyEsarfScreen({
           const overallTimeFrom = firstEntry.timeFrom;
           const overallTimeTo = lastEntry.timeTo || firstEntry.timeTo;
 
-          const cleanReasonText = (text: string) => {
+          const cleanReasonText = (text: string, eventName?: string) => {
             if (!text) return '';
             let cleaned = text.trim();
-            const match = cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)\s*.*?\([^)]*\):\s*([\s\S]*)$/i)
+            const match = cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)\s*.*?\([^)]*hrs?\):\s*([\s\S]*)$/i)
+              || cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)\s*.*?:\s+([\s\S]*)$/i)
               || cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)[^:]*:\s*([\s\S]*)$/i);
             if (match) cleaned = match[1].trim();
-            return cleaned
+
+            const displaced = cleaned.match(
+              /^\d{2}(?::\d{2})?\s*(?:AM|PM)?\s*-\s*\d{1,2}:\d{2}\s*(?:AM|PM)?\s*(?:\([\d.]+\s*hrs?\))?:\s*([\s\S]*)$/i
+            );
+            if (displaced) {
+              cleaned = displaced[1].trim();
+            }
+            cleaned = cleaned
               .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
               .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
               .trim();
+            if (eventName && eventName.trim()) {
+              const escaped = eventName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const repeated = new RegExp(`(?:Event:\\s*)?${escaped}\\s*(?:Event:\\s*)?${escaped}`, 'gi');
+              cleaned = cleaned.replace(repeated, `Event: ${eventName.trim()}`).trim();
+            }
+            return cleaned;
+          };
+
+          const getEventTag = (reasonText: string, eventName?: string) => {
+            if (!eventName || !eventName.trim()) return '';
+            const trimmed = eventName.trim();
+            if (reasonText.toLowerCase().includes(trimmed.toLowerCase())) {
+              return '';
+            }
+            return ` [Event: ${trimmed}]`;
           };
 
           const formatProofTags = (proofInput?: EsarfAttachment[] | EsarfAttachment | null) => {
@@ -2029,8 +2215,10 @@ export function ApplyEsarfScreen({
             const isOffset = keys.includes('offset');
             const hrs = getEntryTotalHours(firstEntry);
             const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
+            const cleanReason = cleanReasonText(firstEntry.reason, firstEntry.eventName);
+            const eventTag = getEventTag(cleanReason, firstEntry.eventName);
             const proofTag = formatProofTags(getEntryProofs(firstEntry));
-            combinedReason = `${cleanReasonText(firstEntry.reason)}${actualTag}${proofTag}`.trim();
+            combinedReason = `${cleanReason}${eventTag}${actualTag}${proofTag}`.trim();
           } else {
             combinedReason = entries
               .map((e, idx) => {
@@ -2043,12 +2231,13 @@ export function ApplyEsarfScreen({
                 const hrs = getEntryTotalHours(e);
                 const isOffset = keys.includes('offset');
                 const creditedHrs = isOffset ? calculateCreditedOffsetHours(hrs) : hrs;
-                const cleanReason = cleanReasonText(e.reason);
+                const cleanReason = cleanReasonText(e.reason, e.eventName);
+                const eventTag = getEventTag(cleanReason, e.eventName);
                 const proofTag = formatProofTags(getEntryProofs(e));
                 const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
                 const isFioOrOb = isFioOrObOnly(e.transaction);
                 const hrsDisplay = isFioOrOb ? '' : ` (${creditedHrs.toFixed(2)} hrs)`;
-                return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${actualTag}${proofTag}`;
+                return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${eventTag}${actualTag}${proofTag}`;
               })
               .join('\n');
           }
@@ -2158,20 +2347,44 @@ export function ApplyEsarfScreen({
         const overallTimeFrom = firstEntry.timeFrom;
         const overallTimeTo = lastEntry.timeTo || firstEntry.timeTo;
 
-        const cleanReasonText = (text: string) => {
+        const cleanReasonText = (text: string, eventName?: string) => {
           if (!text) return '';
           let cleaned = text.trim();
-          const match = cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)\s*.*?\([^)]*\):\s*([\s\S]*)$/i)
+          const match = cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)\s*.*?\([^)]*hrs?\):\s*([\s\S]*)$/i)
+            || cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)\s*.*?:\s+([\s\S]*)$/i)
             || cleaned.match(/^\[Entry\s+\d+\]\s*\([^)]*\)[^:]*:\s*([\s\S]*)$/i);
           if (match) cleaned = match[1].trim();
-          return cleaned
+
+          const displaced = cleaned.match(
+            /^\d{2}(?::\d{2})?\s*(?:AM|PM)?\s*-\s*\d{1,2}:\d{2}\s*(?:AM|PM)?\s*(?:\([\d.]+\s*hrs?\))?:\s*([\s\S]*)$/i
+          );
+          if (displaced) {
+            cleaned = displaced[1].trim();
+          }
+          cleaned = cleaned
             .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
             .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+            .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
             .trim();
+          if (eventName && eventName.trim()) {
+            const escaped = eventName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const repeated = new RegExp(`(?:Event:\\s*)?${escaped}\\s*(?:Event:\\s*)?${escaped}`, 'gi');
+            cleaned = cleaned.replace(repeated, `Event: ${eventName.trim()}`).trim();
+          }
+          return cleaned;
+        };
+
+        const getEventTag = (reasonText: string, eventName?: string) => {
+          if (!eventName || !eventName.trim()) return '';
+          const trimmed = eventName.trim();
+          if (reasonText.toLowerCase().includes(trimmed.toLowerCase())) {
+            return '';
+          }
+          return ` [Event: ${trimmed}]`;
         };
 
         const formatProofTags = (proofInput?: EsarfAttachment[] | EsarfAttachment | null) => {
@@ -2205,8 +2418,10 @@ export function ApplyEsarfScreen({
           const isOffset = keys.includes('offset');
           const hrs = getEntryTotalHours(firstEntry);
           const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
+          const cleanReason = cleanReasonText(firstEntry.reason, firstEntry.eventName);
+          const eventTag = getEventTag(cleanReason, firstEntry.eventName);
           const proofTag = formatProofTags(getEntryProofs(firstEntry));
-          combinedReason = `${cleanReasonText(firstEntry.reason)}${actualTag}${proofTag}`.trim();
+          combinedReason = `${cleanReason}${eventTag}${actualTag}${proofTag}`.trim();
         } else {
           combinedReason = groupEntries
             .map((e, idx) => {
@@ -2219,12 +2434,13 @@ export function ApplyEsarfScreen({
               const hrs = getEntryTotalHours(e);
               const isOffset = keys.includes('offset');
               const creditedHrs = isOffset ? calculateCreditedOffsetHours(hrs) : hrs;
-              const cleanReason = cleanReasonText(e.reason);
+              const cleanReason = cleanReasonText(e.reason, e.eventName);
+              const eventTag = getEventTag(cleanReason, e.eventName);
               const proofTag = formatProofTags(getEntryProofs(e));
               const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
               const isFioOrOb = isFioOrObOnly(e.transaction);
               const hrsDisplay = isFioOrOb ? '' : ` (${creditedHrs.toFixed(2)} hrs)`;
-              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${actualTag}${proofTag}`;
+              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${eventTag}${actualTag}${proofTag}`;
             })
             .join('\n');
         }
@@ -2306,20 +2522,25 @@ export function ApplyEsarfScreen({
       }
       const offsetDeductedNote = offsetNotesList.length > 0 ? ` (${offsetNotesList.join(', ')})` : '';
 
-      const isAnyScheduled = entries.some((e) => isScheduledOtEntry(e));
-      const successTitle = isAnyScheduled ? 'Scheduled OT Pre-Approved ⏱️' : 'ESARF submitted';
-      const successMessage = isAnyScheduled
-        ? `Submitted scheduled overtime request. It is Pre-Approved! Remember to attach photo proof on your scheduled date from your Requests tab.`
-        : (groupsToSubmit.length > 1
-          ? `Submitted ${groupsToSubmit.length} separate ESARF requests (${regularEntries.length} regular entry(ies) and ${useOffsetEntries.length} Use Offset Balance entry(ies)${offsetDeductedNote}).`
-          : `Submitted ESARF request with ${entries.length} entry(ies)${offsetDeductedNote}.`);
+      let successTitle = 'ESARF submitted';
+      let successMessage = (groupsToSubmit.length > 1
+        ? `Submitted ${groupsToSubmit.length} separate ESARF requests (${regularEntries.length} regular entry(ies) and ${useOffsetEntries.length} Use Offset Balance entry(ies)${offsetDeductedNote}).`
+        : `Submitted ESARF request with ${entries.length} entry(ies)${offsetDeductedNote}.`);
+
+      if (isPreApprovedMode) {
+        const hasOffset = entries.some((e) => parseEntryTransactions(e.transaction).includes('offset') || isOffsetTransaction(e.transaction));
+        const hasOt = entries.some((e) => parseEntryTransactions(e.transaction).includes('ot') || isOvertimeTransaction(e.transaction));
+        const typeLabel = hasOffset && hasOt ? 'OT / Offset' : (hasOffset ? 'OT for Offset' : 'Overtime');
+        successTitle = `Pre-approved ${typeLabel} Submitted ⏱️`;
+        successMessage = `Your Pre-approved ${typeLabel} request with ${entries.length} entry(ies) has been sent directly to your approver(s) for approval.`;
+      }
 
       setSubmitStatus(successMessage);
       onToast?.({
         tone: 'success',
         title: successTitle,
-        message: isAnyScheduled
-          ? 'Your request is pre-approved! Remember to attach photo proof on your scheduled date from the Requests tab.'
+        message: isPreApprovedMode
+          ? successMessage
           : `${successMessage} Sent for approval.`,
       });
       await onSubmitted?.();
@@ -2437,7 +2658,11 @@ export function ApplyEsarfScreen({
         photoUrl={photoUrl}
         notificationCount={notificationCount}
         onBackHome={() => confirmDiscard(onBack)}
-        backTitle="Apply ESARF"
+        backTitle={
+          editingRequest
+            ? (isPreApprovedMode ? 'Edit Pre-approved Request' : 'Edit ESARF Request')
+            : (isPreApprovedMode ? 'Apply Pre-approved OT/Offset' : 'Apply ESARF')
+        }
         backAccessory="info"
         onBackAccessory={() => setShowSubmissionNotes(true)}
         onMessages={onAssistant ? () => confirmDiscard(onAssistant) : undefined}
@@ -2605,7 +2830,9 @@ export function ApplyEsarfScreen({
             }}
           >
             <View style={styles.entriesSectionHeader}>
-              <Text style={styles.entriesSectionTitle}>ESARF Request/s</Text>
+              <Text style={styles.entriesSectionTitle}>
+                {isPreApprovedMode ? 'Pre-approved OT/Offset Request/s' : 'ESARF Request/s'}
+              </Text>
             </View>
 
             {operationsScopeLabel ? (
@@ -2674,7 +2901,9 @@ export function ApplyEsarfScreen({
                     <View style={styles.entryBadge}>
                       <Text style={styles.entryBadgeText}>{badgeNumber}</Text>
                     </View>
-                    <Text style={styles.entryCardTitle}>ESARF Request Information</Text>
+                    <Text style={styles.entryCardTitle}>
+                      {isPreApprovedMode ? 'Pre-approved Request Information' : 'ESARF Request Information'}
+                    </Text>
                     {entries.length > 1 ? (
                       <Pressable
                         style={styles.deleteEntryButton}
@@ -2684,6 +2913,49 @@ export function ApplyEsarfScreen({
                         <Trash2 size={16} color="#ef4444" strokeWidth={2.2} />
                       </Pressable>
                     ) : null}
+                  </View>
+
+                  {/* Event or Activity Linker */}
+                  <View style={styles.eventRowWrap}>
+                    {entry.eventName ? (
+                      <View style={styles.selectedEventCard}>
+                        <View style={styles.selectedEventIconWrap}>
+                          <Sparkles size={16} color="#d97706" strokeWidth={2.4} />
+                        </View>
+                        <View style={styles.selectedEventDetails}>
+                          <Text style={styles.selectedEventTag}>LINKED EVENT / ACTIVITY</Text>
+                          <Text style={styles.selectedEventTitle} numberOfLines={1}>
+                            {entry.eventName}
+                          </Text>
+                          <Text style={styles.selectedEventSub}>
+                            Auto-populated date & time • Still editable
+                          </Text>
+                        </View>
+                        <Pressable
+                          style={styles.selectedEventClearBtn}
+                          onPress={() => handleClearEvent(actualIndex)}
+                          hitSlop={8}
+                        >
+                          <X size={16} color="#64748b" strokeWidth={2.4} />
+                        </Pressable>
+                      </View>
+                    ) : (
+                      <Pressable
+                        style={styles.selectEventTriggerBtn}
+                        onPress={() => {
+                          setEventSearchQuery('');
+                          setActiveEventModalIndex(actualIndex);
+                        }}
+                      >
+                        <View style={styles.selectEventTriggerLeft}>
+                          <CalendarDays size={16} color={colors.primary} strokeWidth={2.2} />
+                          <Text style={styles.selectEventTriggerText}>
+                            Select Event or Activity <Text style={styles.selectEventTriggerOptional}>(Optional)</Text>
+                          </Text>
+                        </View>
+                        <ChevronDown size={15} color="#94a3b8" strokeWidth={2.2} />
+                      </Pressable>
+                    )}
                   </View>
 
                   {/* Row 1: Transaction Type & Date From-To */}
@@ -3116,13 +3388,22 @@ export function ApplyEsarfScreen({
 
                   {/* Photo Proof / Gallery Attachment Section */}
                   {(() => {
+                    if (isPreApprovedMode) {
+                      return null;
+                    }
+
                     const isScheduledOt = isScheduledOtEntry(entry);
                     if (isScheduledOt) {
+                      const entryTransKeys = parseEntryTransactions(entry.transaction);
+                      const isOffset = entryTransKeys.includes('offset') || isOffsetTransaction(entry.transaction);
+                      const scheduledNoticeTitle = isOffset
+                        ? 'Scheduled Offset • Pre-Approved'
+                        : 'Scheduled Overtime • Pre-Approved';
                       return (
                         <View style={styles.scheduledOtNoticeCard}>
                           <View style={styles.scheduledOtNoticeHeader}>
                             <Clock3 size={16} color="#d97706" strokeWidth={2.4} />
-                            <Text style={styles.scheduledOtNoticeTitle}>Scheduled Overtime • Pre-Approved</Text>
+                            <Text style={styles.scheduledOtNoticeTitle}>{scheduledNoticeTitle}</Text>
                           </View>
                           <View style={styles.scheduledOtNoticeFooter}>
                             <AlertTriangle size={13} color="#b45309" strokeWidth={2.2} />
@@ -3898,17 +4179,24 @@ export function ApplyEsarfScreen({
                 <Pressable style={styles.modalDismissArea} onPress={() => setActiveTransactionSelectIndex(null)} />
                 <View style={[styles.optionSheet, { paddingBottom: getSafeBottomInset(insets.bottom, spacing.md) }]}>
                   <View style={styles.sheetHandle} />
-                  <Text style={styles.sheetTitle}>Select Transaction Type(s)</Text>
-                  <Text style={styles.transactionModalSubtitle}>
-                    Choose one or more transaction types for this request entry.
+                  <Text style={styles.sheetTitle}>
+                    {isPreApprovedMode ? 'Select Transaction Type' : 'Select Transaction Type(s)'}
                   </Text>
-                  {transactionOptions.map((option) => {
+                  <Text style={styles.transactionModalSubtitle}>
+                    {isPreApprovedMode
+                      ? 'Choose Overtime (OT) or OT for Offset for this pre-approved request.'
+                      : 'Choose one or more transaction types for this request entry.'}
+                  </Text>
+                  {(isPreApprovedMode
+                    ? transactionOptions.filter((option) => option.key === 'ot' || option.key === 'offset')
+                    : transactionOptions
+                  ).map((option) => {
                     const currentTransStr = entries[activeTransactionSelectIndex]?.transaction || '';
                     const currentSelectedKeys = parseEntryTransactions(currentTransStr);
                     const selected = currentSelectedKeys.includes(option.key);
                     const isOtDisabled = option.key === 'ot' && !isOtAllowed(payrollClass);
                     const isOffsetDisabled = option.key === 'offset' && !isOffsetAllowed(payrollClass);
-                    const isConflictDisabled = !selected && isTransactionDisabled(option.key, currentSelectedKeys);
+                    const isConflictDisabled = !selected && !isPreApprovedMode && isTransactionDisabled(option.key, currentSelectedKeys);
                     const disabled = isOtDisabled || isOffsetDisabled || isConflictDisabled;
                     const activeEntryHours = getEntryTotalHours(entries[activeTransactionSelectIndex]);
                     const activeEntryOtHours = getEntryOffsetOvertimeHours(entries[activeTransactionSelectIndex]);
@@ -3925,14 +4213,16 @@ export function ApplyEsarfScreen({
                         ]}
                         onPress={() => {
                           let newKeys: string[];
-                          if (selected) {
+                          if (isPreApprovedMode) {
+                            newKeys = selected ? [] : [option.key];
+                          } else if (selected) {
                             newKeys = currentSelectedKeys.filter((k) => k !== option.key);
                           } else {
                             newKeys = [...currentSelectedKeys, option.key];
                           }
                           const newTransStr = newKeys.join(',');
-                          const proofAllowed = isProofAllowedForTransactions(newTransStr);
-                          const proofRequired = isProofRequiredForTransactions(newTransStr);
+                          const proofAllowed = !isPreApprovedMode && isProofAllowedForTransactions(newTransStr);
+                          const proofRequired = !isPreApprovedMode && isProofRequiredForTransactions(newTransStr);
                           updateEntry(activeTransactionSelectIndex, {
                             transaction: newTransStr,
                             ...(!proofAllowed ? { proof: null } : {}),
@@ -3995,21 +4285,15 @@ export function ApplyEsarfScreen({
               const currentEntry = entries[activeDateChoiceIndex];
               const entryTransKeys = parseEntryTransactions(currentEntry?.transaction);
               const isEntryUseOffset = entryTransKeys.includes('use_offset');
-              const isEntryHasOt =
-                entryTransKeys.includes('ot') ||
-                (currentEntry?.transaction
-                  ? currentEntry.transaction
-                    .toLowerCase()
-                    .split(/[,/]+/)
-                    .map((s) => s.trim())
-                    .some((k) => k === 'ot' || k.includes('overtime'))
-                  : false);
-              const allowFutureDates = isEntryUseOffset || isEntryHasOt;
+              const allowFutureDates = isPreApprovedMode;
+              const todayStr = formatDateInput(new Date());
+              const minDate = isPreApprovedMode ? todayStr : undefined;
               return (
                 <DateRangePickerModal
                   key={`esarf-date-range-${activeDateChoiceIndex}-${currentEntry?.id || activeDateChoiceIndex}`}
                   visible
                   allowFutureDates={allowFutureDates}
+                  minDate={minDate}
                   initialStartDate={currentEntry?.dateFrom || ''}
                   initialEndDate={isEntryUseOffset ? currentEntry?.dateFrom || '' : currentEntry?.dateTo || ''}
                   maxRangeDays={isEntryUseOffset ? 1 : 2}
@@ -4105,6 +4389,211 @@ export function ApplyEsarfScreen({
             </View>
           </Modal>
 
+          {/* Event Selection Modal */}
+          <Modal
+            visible={activeEventModalIndex !== null}
+            transparent
+            animationType="slide"
+            onRequestClose={() => setActiveEventModalIndex(null)}
+          >
+            <View style={styles.eventModalOverlay}>
+              <Pressable
+                style={styles.eventModalBackdrop}
+                onPress={() => setActiveEventModalIndex(null)}
+              />
+              <View
+                style={[
+                  styles.eventModalSheet,
+                  { paddingBottom: Math.max(insets.bottom, 16) },
+                ]}
+              >
+                <View style={styles.eventModalHandle} />
+                <View style={styles.eventModalHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.eventModalTitle}>Select Event or Activity</Text>
+                    <Text style={styles.eventModalSubtitle}>
+                      {isPreApprovedMode
+                        ? 'Schedule ahead of time for upcoming events or activities.'
+                        : 'Select an event or activity that has already finished.'}
+                    </Text>
+                  </View>
+                  <Pressable
+                    style={styles.eventModalClose}
+                    onPress={() => setActiveEventModalIndex(null)}
+                    hitSlop={8}
+                  >
+                    <X size={20} color="#64748b" strokeWidth={2.4} />
+                  </Pressable>
+                </View>
+
+                {/* Search Filter */}
+                <View style={styles.eventSearchBox}>
+                  <Search size={16} color="#94a3b8" strokeWidth={2.2} />
+                  <TextInput
+                    style={styles.eventSearchInput}
+                    placeholder="Search events or activities..."
+                    placeholderTextColor="#94a3b8"
+                    value={eventSearchQuery}
+                    onChangeText={setEventSearchQuery}
+                  />
+                  {eventSearchQuery ? (
+                    <Pressable onPress={() => setEventSearchQuery('')} hitSlop={6}>
+                      <X size={15} color="#94a3b8" />
+                    </Pressable>
+                  ) : null}
+                </View>
+
+                {/* Event List */}
+                <ScrollView
+                  style={styles.eventListScroll}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {(() => {
+                    const query = eventSearchQuery.trim().toLowerCase();
+                    const filtered = availableEvents.filter((ev) => {
+                      if (!query) return true;
+                      return (
+                        ev.title.toLowerCase().includes(query) ||
+                        (ev.description || '').toLowerCase().includes(query) ||
+                        (ev.location || '').toLowerCase().includes(query)
+                      );
+                    });
+
+                    if (filtered.length === 0) {
+                      return (
+                        <View style={styles.eventEmptyState}>
+                          <CalendarDays size={36} color="#cbd5e1" strokeWidth={1.8} />
+                          <Text style={styles.eventEmptyTitle}>
+                            {availableEvents.length === 0
+                              ? 'No Active Events or Activities'
+                              : 'No matching events found'}
+                          </Text>
+                          <Text style={styles.eventEmptySub}>
+                            {availableEvents.length === 0
+                              ? 'Events added by admin in the portal will appear here.'
+                              : 'Try searching with different keywords.'}
+                          </Text>
+                        </View>
+                      );
+                    }
+
+                    // Sort: selectable events first, followed by disabled events
+                    const sorted = [...filtered].sort((a, b) => {
+                      const aClickable = isPreApprovedMode ? !isEventPassedOrDone(a) : isEventPassedOrDone(a);
+                      const bClickable = isPreApprovedMode ? !isEventPassedOrDone(b) : isEventPassedOrDone(b);
+                      if (aClickable && !bClickable) return -1;
+                      if (!aClickable && bClickable) return 1;
+                      return 0;
+                    });
+
+                    return sorted.map((ev) => {
+                      const isEvent = ev.type?.toLowerCase() === 'event';
+                      const isPassed = isEventPassedOrDone(ev);
+                      const isClickable = isPreApprovedMode ? !isPassed : isPassed;
+                      const statusTagLabel = isPassed ? 'ALREADY ENDED' : 'UPCOMING';
+
+                      return (
+                        <Pressable
+                          key={ev.id}
+                          style={({ pressed }) => [
+                            styles.eventCardItem,
+                            !isClickable ? styles.eventCardItemDisabled : null,
+                            pressed && isClickable ? styles.eventCardItemPressed : null,
+                          ]}
+                          onPress={() => {
+                            if (!isClickable) {
+                              const title = isPreApprovedMode ? 'Event Already Ended' : 'Event Not Yet Ended';
+                              const message = isPreApprovedMode
+                                ? 'This event or activity has already ended. For past events, please file using regular Apply ESARF.'
+                                : 'In Apply ESARF, you cannot select events or activities ahead of time. You can only select events that have already passed or ended. For upcoming events, please use Apply Pre-approved OT/Offset.';
+                              if (onToast) {
+                                onToast({ tone: 'warning', title, message });
+                              } else {
+                                platformAlert(title, message);
+                              }
+                              return;
+                            }
+                            if (activeEventModalIndex !== null) {
+                              handleSelectEvent(activeEventModalIndex, ev);
+                            }
+                          }}
+                        >
+                          <View style={styles.eventCardHeaderRow}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
+                              <View
+                                style={[
+                                  styles.eventTypeTag,
+                                  isEvent
+                                    ? styles.eventTypeTagEvent
+                                    : styles.eventTypeTagActivity,
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.eventTypeText,
+                                    isEvent
+                                      ? styles.eventTypeTextEvent
+                                      : styles.eventTypeTextActivity,
+                                  ]}
+                                >
+                                  {ev.type?.toUpperCase() || 'EVENT'}
+                                </Text>
+                              </View>
+                              {!isClickable ? (
+                                <View style={styles.eventStatusPillDisabled}>
+                                  <Lock size={10} color="#64748b" strokeWidth={2.4} />
+                                  <Text style={styles.eventStatusTextDisabled}>
+                                    {statusTagLabel}
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
+                            <View style={styles.eventHoursPill}>
+                              <Clock3 size={11} color={colors.brand.ink} strokeWidth={2.4} />
+                              <Text style={styles.eventHoursText}>
+                                {Number(ev.total_hours).toFixed(1)} hrs
+                              </Text>
+                            </View>
+                          </View>
+                          <Text style={[styles.eventCardTitle, !isClickable ? styles.eventCardTitleDisabled : null]}>
+                            {ev.title}
+                          </Text>
+                          {ev.description ? (
+                            <Text style={[styles.eventCardDesc, !isClickable ? styles.eventCardDescDisabled : null]} numberOfLines={2}>
+                              {ev.description}
+                            </Text>
+                          ) : null}
+                          <View style={styles.eventCardMetaRow}>
+                            <View style={styles.eventCardMetaItem}>
+                              <CalendarDays size={13} color={!isClickable ? '#94a3b8' : '#64748b'} strokeWidth={2} />
+                              <Text style={[styles.eventCardMetaText, !isClickable ? styles.eventCardMetaTextDisabled : null]}>
+                                {ev.event_date}{ev.end_date && ev.end_date !== ev.event_date ? ` to ${ev.end_date}` : ''}
+                              </Text>
+                            </View>
+                            <View style={styles.eventCardMetaItem}>
+                              <Clock3 size={13} color={!isClickable ? '#94a3b8' : '#64748b'} strokeWidth={2} />
+                              <Text style={[styles.eventCardMetaText, !isClickable ? styles.eventCardMetaTextDisabled : null]}>
+                                {ev.time_from} - {ev.time_to}
+                              </Text>
+                            </View>
+                            {ev.location ? (
+                              <View style={styles.eventCardMetaItem}>
+                                <MapPin size={13} color={!isClickable ? '#94a3b8' : '#64748b'} strokeWidth={2} />
+                                <Text style={[styles.eventCardMetaText, !isClickable ? styles.eventCardMetaTextDisabled : null]} numberOfLines={1}>
+                                  {ev.location}
+                                </Text>
+                              </View>
+                            ) : null}
+                          </View>
+                        </Pressable>
+                      );
+                    });
+                  })()}
+                </ScrollView>
+              </View>
+            </View>
+          </Modal>
 
         </ScrollView>
       </KeyboardAvoidingView>
@@ -6809,5 +7298,282 @@ const styles = StyleSheet.create({
   },
   submitButtonOffline: {
     backgroundColor: '#0284c7',
+  },
+  // Event & Activity Linker Styles
+  eventRowWrap: {
+    marginBottom: 10,
+  },
+  selectEventTriggerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderStyle: 'dashed',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  selectEventTriggerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  selectEventTriggerText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: colors.primary,
+  },
+  selectEventTriggerOptional: {
+    fontSize: 11,
+    fontWeight: 'normal',
+    color: '#94a3b8',
+  },
+  selectedEventCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    borderRadius: 10,
+    padding: 10,
+    gap: 10,
+  },
+  selectedEventIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#fef3c7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectedEventDetails: {
+    flex: 1,
+  },
+  selectedEventTag: {
+    fontSize: 9.5,
+    fontWeight: fontWeights.heavy,
+    letterSpacing: 0.5,
+    color: '#b45309',
+  },
+  selectedEventTitle: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+    marginTop: 1,
+  },
+  selectedEventSub: {
+    fontSize: 10.5,
+    color: '#78350f',
+    marginTop: 1,
+  },
+  selectedEventClearBtn: {
+    padding: 6,
+    borderRadius: 6,
+    backgroundColor: '#fef3c7',
+  },
+
+  // Event Selection Modal Styles
+  eventModalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+  },
+  eventModalBackdrop: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+  },
+  eventModalSheet: {
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '85%',
+    paddingHorizontal: 18,
+    paddingTop: 8,
+  },
+  eventModalHandle: {
+    width: 40,
+    height: 4,
+    backgroundColor: '#cbd5e1',
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginBottom: 12,
+  },
+  eventModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  eventModalTitle: {
+    fontSize: 18,
+    fontWeight: fontWeights.heavy,
+    color: '#0f172a',
+  },
+  eventModalSubtitle: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  eventModalClose: {
+    padding: 6,
+    borderRadius: 8,
+    backgroundColor: '#f1f5f9',
+  },
+  eventSearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 12,
+    gap: 8,
+  },
+  eventSearchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: '#0f172a',
+    padding: 0,
+  },
+  eventListScroll: {
+    maxHeight: 440,
+  },
+  eventEmptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 36,
+  },
+  eventEmptyTitle: {
+    fontSize: 15,
+    fontWeight: fontWeights.bold,
+    color: '#334155',
+    marginTop: 10,
+  },
+  eventEmptySub: {
+    fontSize: 12,
+    color: '#94a3b8',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  eventCardItem: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 3,
+    elevation: 1,
+  },
+  eventCardItemPressed: {
+    backgroundColor: '#f8fafc',
+    borderColor: colors.primary,
+  },
+  eventCardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  eventTypeTag: {
+    paddingHorizontal: 7,
+    paddingVertical: 2.5,
+    borderRadius: 5,
+  },
+  eventTypeTagEvent: {
+    backgroundColor: '#eff6ff',
+  },
+  eventTypeTagActivity: {
+    backgroundColor: '#f0fdfa',
+  },
+  eventTypeText: {
+    fontSize: 9.5,
+    fontWeight: fontWeights.heavy,
+    letterSpacing: 0.5,
+  },
+  eventTypeTextEvent: {
+    color: '#2563EB',
+  },
+  eventTypeTextActivity: {
+    color: '#0D9488',
+  },
+  eventHoursPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.brand.gold,
+    paddingHorizontal: 7,
+    paddingVertical: 2.5,
+    borderRadius: 5,
+    gap: 4,
+  },
+  eventHoursText: {
+    fontSize: 10.5,
+    fontWeight: fontWeights.heavy,
+    color: colors.brand.ink,
+  },
+  eventCardTitle: {
+    fontSize: 15,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+    marginBottom: 4,
+  },
+  eventCardDesc: {
+    fontSize: 12,
+    color: '#64748b',
+    lineHeight: 17,
+    marginBottom: 8,
+  },
+  eventCardMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginTop: 4,
+  },
+  eventCardMetaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  eventCardMetaText: {
+    fontSize: 11.5,
+    color: '#64748b',
+    fontWeight: fontWeights.medium,
+  },
+  eventCardItemDisabled: {
+    backgroundColor: '#f8fafc',
+    borderColor: '#e2e8f0',
+    opacity: 0.62,
+  },
+  eventCardTitleDisabled: {
+    color: '#64748b',
+  },
+  eventCardDescDisabled: {
+    color: '#94a3b8',
+  },
+  eventCardMetaTextDisabled: {
+    color: '#94a3b8',
+  },
+  eventStatusPillDisabled: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 5,
+    gap: 4,
+  },
+  eventStatusTextDisabled: {
+    fontSize: 9,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+    letterSpacing: 0.3,
   },
 });
