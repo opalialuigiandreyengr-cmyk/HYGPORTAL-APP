@@ -23,13 +23,16 @@ import { DateRangePickerModal } from '../components/DateRangePickerModal';
 import { ScrollableTimePickerModal } from '../components/ScrollableTimePickerModal';
 import {
   AlertTriangle,
+  ArrowRightLeft,
   CalendarDays,
   Camera,
   Check,
+  CheckCircle2,
   ChevronDown,
   Clock3,
   ExternalLink,
   Eye,
+  GitCommit,
   Image as ImageIcon,
   Images,
   ListChecks,
@@ -42,10 +45,20 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  UserCheck,
+  Users,
   WifiOff,
   X,
 } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
+import {
+  loadStoreApprovalWorkflow,
+  loadApproverCandidates,
+  formatApproverDisplayName,
+  type WorkflowStep,
+  type ApproverCandidate,
+} from '../services/storeApprovalWorkflow';
+import { resolveApproverLevel, loadPositionAuthorities } from '../services/positions';
 import {
   loadPhotoProofs,
   savePhotoProof,
@@ -60,7 +73,12 @@ import {
 
 import { TopBar } from '../components/TopBar';
 import { WebNativeDateInput } from '../components/WebNativeDateInput';
-import { loadActiveEventsActivities, isEventPassedOrDone, type PortalEventActivity } from '../services/eventsActivities';
+import {
+  loadActiveEventsActivities,
+  loadCachedEventsActivities,
+  isEventPassedOrDone,
+  type PortalEventActivity,
+} from '../services/eventsActivities';
 import { dayOffOptions, payrollClassOptions, scheduleOptions } from '../constants/requestOptions';
 import { supabase } from '../lib/supabase';
 import type { AssistantDraft } from '../services/assistant';
@@ -132,6 +150,8 @@ export type EsarfEntry = {
   proofs?: EsarfAttachment[];
   eventId?: string;
   eventName?: string;
+  workflowSteps?: WorkflowStep[];
+  isLoadingWorkflow?: boolean;
 };
 
 export function getEntryProofs(entry?: EsarfEntry | null): EsarfAttachment[] {
@@ -528,6 +548,7 @@ export function ApplyEsarfScreen({
               .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
               .trim(),
             eventName: p.eventName,
@@ -542,10 +563,10 @@ export function ApplyEsarfScreen({
       : '';
     const initialTransKey = isPreApprovedMode
       ? (defaultKey === 'ot' || defaultKey === 'offset'
-          ? defaultKey
-          : initialTransactions[0] === 'offset'
-            ? 'offset'
-            : 'ot')
+        ? defaultKey
+        : initialTransactions[0] === 'offset'
+          ? 'offset'
+          : 'ot')
       : defaultKey || initialTransactions[0] || '';
     const isInitialUseOffset = initialTransKey.includes('use_offset');
     const fallbackProofs = parseProofsFromRawReason(editingRequest?.reason || '', initialDateFrom);
@@ -575,11 +596,189 @@ export function ApplyEsarfScreen({
   const [activeEventModalIndex, setActiveEventModalIndex] = useState<number | null>(null);
   const [eventSearchQuery, setEventSearchQuery] = useState('');
 
+  // Default Approval Workflow State (Employee's original route approvers)
+  const [defaultWorkflowSteps, setDefaultWorkflowSteps] = useState<WorkflowStep[]>([]);
+  const [isLoadingDefaultWorkflow, setIsLoadingDefaultWorkflow] = useState(false);
+
+  // Reassign Approver Modal State
+  const [isReassignModalOpen, setIsReassignModalOpen] = useState(false);
+  const [reassigningInfo, setReassigningInfo] = useState<{ entryIndex: number; step: WorkflowStep } | null>(null);
+  const [candidateSearchQuery, setCandidateSearchQuery] = useState('');
+  const [approverCandidates, setApproverCandidates] = useState<ApproverCandidate[]>([]);
+  const [selectedCandidate, setSelectedCandidate] = useState<ApproverCandidate | null>(null);
+  const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
+
+  // Pre-cache approver candidates and position authorities in background on mount
+  useEffect(() => {
+    loadApproverCandidates().catch(() => { });
+    loadPositionAuthorities().catch(() => { });
+  }, []);
+
+  // Load employee's original approvers based on their approval routes
   useEffect(() => {
     let isMounted = true;
+    async function initDefaultWorkflow() {
+      setIsLoadingDefaultWorkflow(true);
+      try {
+        const steps = await loadStoreApprovalWorkflow(null, employeeId, null, false);
+        if (!isMounted) return;
+        setDefaultWorkflowSteps(steps);
+        // Hydrate any entries that don't have workflowSteps yet
+        setEntries((prev) =>
+          prev.map((e) => {
+            if (!e.workflowSteps || e.workflowSteps.length === 0) {
+              return { ...e, workflowSteps: steps };
+            }
+            return e;
+          }),
+        );
+      } catch (err) {
+        console.warn('[ApplyEsarf] Error loading default approval workflow:', err);
+      } finally {
+        if (isMounted) setIsLoadingDefaultWorkflow(false);
+      }
+    }
+    initDefaultWorkflow();
+    return () => {
+      isMounted = false;
+    };
+  }, [employeeId]);
+
+  // Load approver candidates when reassign modal opens
+  useEffect(() => {
+    if (!isReassignModalOpen) return;
+    let isMounted = true;
+    async function fetchCandidates() {
+      setIsLoadingCandidates(true);
+      try {
+        const candidates = await loadApproverCandidates();
+        if (!isMounted) return;
+        setApproverCandidates(candidates);
+      } catch {
+        // non-fatal
+      } finally {
+        if (isMounted) setIsLoadingCandidates(false);
+      }
+    }
+    fetchCandidates();
+    return () => {
+      isMounted = false;
+    };
+  }, [isReassignModalOpen]);
+
+  // Filtered approver candidates (Strictly excludes level 1 rank-and-file employees)
+  const filteredApproverCandidates = useMemo(() => {
+    const approversOnly = approverCandidates.filter((c) => (c.authority_level ?? 0) > 1);
+    if (!candidateSearchQuery.trim()) return approversOnly;
+    const q = candidateSearchQuery.toLowerCase().trim();
+    return approversOnly.filter(
+      (c) =>
+        c.full_name.toLowerCase().includes(q) ||
+        (c.employee_no && c.employee_no.toLowerCase().includes(q)) ||
+        (c.position_name && c.position_name.toLowerCase().includes(q)) ||
+        (c.department_name && c.department_name.toLowerCase().includes(q)) ||
+        (c.store_name && c.store_name.toLowerCase().includes(q)) ||
+        (c.company_name && c.company_name.toLowerCase().includes(q)),
+    );
+  }, [approverCandidates, candidateSearchQuery]);
+
+  function handleOpenReassignModal(entryIndex: number, step: WorkflowStep) {
+    setReassigningInfo({ entryIndex, step });
+    setSelectedCandidate(null);
+    setCandidateSearchQuery('');
+    setIsReassignModalOpen(true);
+  }
+
+  function handleConfirmReassign() {
+    if (!reassigningInfo || !selectedCandidate) return;
+    const { entryIndex, step } = reassigningInfo;
+    const targetStepOrder = step.step_order;
+
+    const candLevel = selectedCandidate.authority_level ?? 2;
+
+    setEntries((prev) =>
+      prev.map((e, idx) => {
+        if (idx !== entryIndex) return e;
+        const updated = (e.workflowSteps || []).map((s) => {
+          if (s.step_order === targetStepOrder) {
+            return {
+              ...s,
+              approver_employee_id: selectedCandidate.employee_id,
+              approver_name: selectedCandidate.full_name,
+              approver_position_name: selectedCandidate.position_name || s.approver_position_name,
+              approver_employee_no: selectedCandidate.employee_no || s.approver_employee_no,
+              approver_level: candLevel,
+              position_level: candLevel,
+              required_level: candLevel,
+              is_reassigned: true,
+            };
+          }
+          return s;
+        });
+        return { ...e, workflowSteps: updated };
+      }),
+    );
+
+    onToast?.({
+      tone: 'success',
+      title: 'Approver Reassigned',
+      message: `Step ${targetStepOrder} approver for Request #${entryIndex + 1} set to ${selectedCandidate.full_name}`,
+    });
+
+    setIsReassignModalOpen(false);
+    setReassigningInfo(null);
+    setSelectedCandidate(null);
+  }
+
+  async function handleResetStepApprover() {
+    if (!reassigningInfo) return;
+    const { entryIndex, step } = reassigningInfo;
+    const targetStepOrder = step.step_order;
+    const entry = entries[entryIndex];
+
+    try {
+      const baseSteps = defaultWorkflowSteps;
+      const def = baseSteps.find((s) => s.step_order === targetStepOrder);
+      if (def) {
+        setEntries((prev) =>
+          prev.map((e, idx) => {
+            if (idx !== entryIndex) return e;
+            const updated = (e.workflowSteps || []).map((s) =>
+              s.step_order === targetStepOrder ? { ...def, is_reassigned: false } : s,
+            );
+            return { ...e, workflowSteps: updated };
+          }),
+        );
+      }
+      onToast?.({
+        tone: 'success',
+        title: 'Approver Reset',
+        message: `Step ${targetStepOrder} approver reset to default.`,
+      });
+    } finally {
+      setIsReassignModalOpen(false);
+      setReassigningInfo(null);
+      setSelectedCandidate(null);
+    }
+  }
+
+  useEffect(() => {
+    let isMounted = true;
+    // 1. Immediately hydrate from cache so available events appear instantly (0ms) even offline
+    loadCachedEventsActivities()
+      .then((cached) => {
+        if (isMounted && cached.length > 0) {
+          setAvailableEvents(cached);
+        }
+      })
+      .catch(() => { });
+
+    // 2. Refresh active events in background
     loadActiveEventsActivities()
       .then((items) => {
-        if (isMounted) setAvailableEvents(items);
+        if (isMounted && items && items.length > 0) {
+          setAvailableEvents(items);
+        }
       })
       .catch((err) => console.warn('Error loading active events:', err));
     return () => {
@@ -1178,6 +1377,7 @@ export function ApplyEsarfScreen({
         reason: '',
         proof: null,
         proofs: [],
+        workflowSteps: defaultWorkflowSteps.length > 0 ? [...defaultWorkflowSteps] : [],
       },
     ]);
 
@@ -1634,7 +1834,7 @@ export function ApplyEsarfScreen({
             errors[`entry_${i}_dateFrom`] = `Request #${num}: Pre-approved OT/Offset must be scheduled for today or a future date.`;
           }
         } else {
-          if (entry.dateFrom > todayStr || entry.dateTo > todayStr) {
+          if (!transKeys.includes('use_offset') && (entry.dateFrom > todayStr || entry.dateTo > todayStr)) {
             errors[`entry_${i}_dateFrom`] = `Request #${num}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT or Offset ahead of time, please use Apply Pre-approved OT/Offset.`;
           }
         }
@@ -1843,7 +2043,9 @@ export function ApplyEsarfScreen({
             .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+            .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+            .replace(/\[PreApproved(?::\s*[^\]]+)?\]\s*/gi, '')
             .trim();
           if (eventName && eventName.trim()) {
             const escaped = eventName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1901,7 +2103,7 @@ export function ApplyEsarfScreen({
           ? (isOfflineTarget ? targetReqId : (targetReqId.startsWith('offline_update_') ? targetReqId : `offline_update_${targetReqId}`))
           : `offline_esarf_${Date.now()}_${g}`;
 
-        const isScheduledOffline = groupEntries.some((e) => isScheduledOtEntry(e));
+        const isScheduledOffline = isPreApprovedMode;
         const offlineInitialStatus = isScheduledOffline ? 'Pre-Approved (Offline)' : 'Pending Sync (Offline)';
         const displayReqId = isEdit && targetReqId ? targetReqId : offlineReqId;
 
@@ -1931,25 +2133,76 @@ export function ApplyEsarfScreen({
           paid_days: null,
           unpaid_days: null,
           reason: combinedReason,
-          approval_summary: editingRequest?.approval_summary || [
-            {
-              step_order: 1,
-              required_level: 1,
-              status: 'Pending Sync (Offline)',
-              acted_at: null,
-              remarks: 'Saved locally on device. Will auto-sync to database once internet is restored.',
-              skipped_reason: null,
-              approver_name: 'Local Device Queue',
-              approver_employee_no: 'SYS-LOCAL',
-            },
-          ],
+          approval_summary: (() => {
+            const groupWorkflow = groupEntries.find((e) => e.workflowSteps && e.workflowSteps.length > 0)?.workflowSteps || defaultWorkflowSteps;
+            return groupWorkflow.length > 0
+              ? groupWorkflow.map((ws) => {
+                const effLevel = resolveApproverLevel(ws);
+                return {
+                  step_order: ws.step_order,
+                  required_level: effLevel,
+                  position_level: ws.position_level || effLevel,
+                  approver_level: ws.approver_level || effLevel,
+                  level: effLevel,
+                  status: ws.step_order === 1 ? 'Pending Sync (Offline)' : 'waiting',
+                  acted_at: null,
+                  remarks: ws.is_reassigned ? 'Reassigned approver (Pending Sync)' : 'Saved locally on device. Will auto-sync once online.',
+                  skipped_reason: null,
+                  approver_employee_id: ws.approver_employee_id || null,
+                  approver_name: ws.approver_name,
+                  approver_position_name: ws.approver_position_name || null,
+                  approver_employee_no: ws.approver_employee_no || null,
+                  is_reassigned: Boolean(ws.is_reassigned),
+                };
+              })
+              : editingRequest?.approval_summary || [
+                {
+                  step_order: 1,
+                  required_level: 1,
+                  status: 'Pending Sync (Offline)',
+                  acted_at: null,
+                  remarks: 'Saved locally on device. Will auto-sync to database once internet is restored.',
+                  skipped_reason: null,
+                  approver_name: 'Approver 1',
+                  approver_employee_no: 'SYS-LOCAL',
+                },
+                {
+                  step_order: 2,
+                  required_level: 2,
+                  status: 'waiting',
+                  acted_at: null,
+                  remarks: 'Pending online sync.',
+                  skipped_reason: null,
+                  approver_name: 'Approver 2',
+                  approver_employee_no: null,
+                },
+              ];
+          })(),
         };
+
+        const customApproversPayload: { step_order: number; approver_employee_id: string }[] = [];
+        for (const entry of groupEntries) {
+          if (entry.workflowSteps) {
+            for (const s of entry.workflowSteps) {
+              if (s.is_reassigned && s.approver_employee_id) {
+                if (!customApproversPayload.some((c) => c.step_order === s.step_order)) {
+                  customApproversPayload.push({
+                    step_order: s.step_order,
+                    approver_employee_id: s.approver_employee_id,
+                  });
+                }
+              }
+            }
+          }
+        }
 
         await enqueueOfflineItem({
           id: offlineReqId,
           type: 'esarf',
           createdAt: new Date().toISOString(),
           payload: {
+            isPreApproved: isScheduledOffline,
+            isPreApprovedMode,
             primaryRequestType,
             overallDateFrom,
             overallDateTo,
@@ -1961,6 +2214,9 @@ export function ApplyEsarfScreen({
             dayOff,
             payrollClass,
             combinedTransactionType,
+            storeId: null,
+            storeName: null,
+            customApprovers: customApproversPayload.length > 0 ? customApproversPayload : null,
             attachedProofs: groupEntries.flatMap((e) => getEntryProofs(e)).map((p) => {
               const isGallery = p.source === 'gallery' || (!p.timestamp && !p.locationText);
               return {
@@ -2242,6 +2498,22 @@ export function ApplyEsarfScreen({
               .join('\n');
           }
 
+          const customApproversPayload: { step_order: number; approver_employee_id: string }[] = [];
+          for (const entry of entries) {
+            if (entry.workflowSteps) {
+              for (const s of entry.workflowSteps) {
+                if (s.is_reassigned && s.approver_employee_id) {
+                  if (!customApproversPayload.some((c) => c.step_order === s.step_order)) {
+                    customApproversPayload.push({
+                      step_order: s.step_order,
+                      approver_employee_id: s.approver_employee_id,
+                    });
+                  }
+                }
+              }
+            }
+          }
+
           await withTimeout(
             updateMyPendingRequest({
               requestId: targetReqId,
@@ -2256,6 +2528,8 @@ export function ApplyEsarfScreen({
               payrollClass: payrollClass,
               transactionType: combinedTransactionType,
               reason: combinedReason,
+              storeId: null,
+              customApprovers: customApproversPayload.length > 0 ? customApproversPayload : null,
             }),
             25000,
             'Updating ESARF request timed out. Please check your network connection.',
@@ -2368,7 +2642,9 @@ export function ApplyEsarfScreen({
             .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+            .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+            .replace(/\[PreApproved(?::\s*[^\]]+)?\]\s*/gi, '')
             .trim();
           if (eventName && eventName.trim()) {
             const escaped = eventName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -2455,28 +2731,91 @@ export function ApplyEsarfScreen({
               await new Promise((r) => setTimeout(r, 1000 * attempt));
             }
 
+            const customApproversPayload: { step_order: number; approver_employee_id: string }[] = [];
+            for (const entry of groupEntries) {
+              if (entry.workflowSteps) {
+                for (const s of entry.workflowSteps) {
+                  if (s.is_reassigned && s.approver_employee_id) {
+                    if (!customApproversPayload.some((c) => c.step_order === s.step_order)) {
+                      customApproversPayload.push({
+                        step_order: s.step_order,
+                        approver_employee_id: s.approver_employee_id,
+                      });
+                    }
+                  }
+                }
+              }
+            }
+
+            const finalReason = isPreApprovedMode ? `${combinedReason} [PreApproved]`.trim() : combinedReason;
+            const finalTransactionType = combinedTransactionType || (isPreApprovedMode ? 'OT' : '');
+
+            const rpcPayload: Record<string, any> = {
+              p_request_type_code: primaryRequestType,
+              p_date_from: overallDateFrom,
+              p_date_to: overallDateTo,
+              p_time_from: overallTimeFrom,
+              p_time_to: overallTimeTo,
+              p_total_hours: totalHoursSum,
+              p_reason: finalReason,
+              p_time_schedule: schedule,
+              p_day_off: dayOff,
+              p_payroll_class: payrollClass,
+              p_transaction_type: finalTransactionType,
+              p_store_id: null,
+              p_custom_approvers: customApproversPayload.length > 0 ? customApproversPayload : null,
+              p_is_pre_approved: isPreApprovedMode,
+            };
+
             res = await withTimeout<{ data: any; error: any }>(
-              Promise.resolve(
-                supabase.rpc('submit_time_request', {
-                  p_request_type_code: primaryRequestType,
-                  p_date_from: overallDateFrom,
-                  p_date_to: overallDateTo,
-                  p_time_from: overallTimeFrom,
-                  p_time_to: overallTimeTo,
-                  p_total_hours: totalHoursSum,
-                  p_reason: combinedReason,
-                  p_time_schedule: schedule,
-                  p_day_off: dayOff,
-                  p_payroll_class: payrollClass,
-                  p_transaction_type: combinedTransactionType,
-                }),
-              ),
+              Promise.resolve(supabase.rpc('submit_time_request', rpcPayload)),
               25000,
               'ESARF submission timed out. Please check your network connection and try again.',
             );
 
+            // If extended payload failed due to parameter mismatch, retry with standard 11 parameters
+            if (res?.error) {
+              const errStr = (res.error.message || '').toLowerCase();
+              if (errStr.includes('function') || errStr.includes('schema') || errStr.includes('parameter')) {
+                res = await withTimeout<{ data: any; error: any }>(
+                  Promise.resolve(
+                    supabase.rpc('submit_time_request', {
+                      p_request_type_code: primaryRequestType,
+                      p_date_from: overallDateFrom,
+                      p_date_to: overallDateTo,
+                      p_time_from: overallTimeFrom,
+                      p_time_to: overallTimeTo,
+                      p_total_hours: totalHoursSum,
+                      p_reason: finalReason,
+                      p_time_schedule: schedule,
+                      p_day_off: dayOff,
+                      p_payroll_class: payrollClass,
+                      p_transaction_type: finalTransactionType,
+                    }),
+                  ),
+                  25000,
+                  'ESARF submission timed out. Please check your network connection and try again.',
+                );
+              }
+            }
+
             if (res?.error) {
               throw new Error(res.error.message);
+            }
+
+            // If custom approvers were assigned and we got back the new request ID, ensure reassignments are stored
+            if (res?.data && customApproversPayload.length > 0) {
+              const createdReqId = String(res.data);
+              for (const ca of customApproversPayload) {
+                try {
+                  await supabase.rpc('admin_reassign_request_approver', {
+                    p_request_id: createdReqId,
+                    p_new_approver_employee_id: ca.approver_employee_id,
+                  });
+                } catch {
+                  // non-fatal
+                }
+              }
             }
 
             lastErr = null;
@@ -2543,6 +2882,7 @@ export function ApplyEsarfScreen({
           ? successMessage
           : `${successMessage} Sent for approval.`,
       });
+      await removeCacheItem('my_requests_v1').catch(() => {});
       await onSubmitted?.();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to submit ESARF.';
@@ -2945,6 +3285,13 @@ export function ApplyEsarfScreen({
                         onPress={() => {
                           setEventSearchQuery('');
                           setActiveEventModalIndex(actualIndex);
+                          if (availableEvents.length === 0) {
+                            loadCachedEventsActivities()
+                              .then((cached) => {
+                                if (cached.length > 0) setAvailableEvents(cached);
+                              })
+                              .catch(() => { });
+                          }
                         }}
                       >
                         <View style={styles.selectEventTriggerLeft}>
@@ -3386,33 +3733,95 @@ export function ApplyEsarfScreen({
                     ) : null}
                   </View>
 
+                  {/* Approval Workflow Timeline (Positioned below Reason field) */}
+                  {(() => {
+                    const displaySteps = (entry.workflowSteps && entry.workflowSteps.length > 0)
+                      ? entry.workflowSteps
+                      : defaultWorkflowSteps;
+
+                    if (displaySteps.length === 0 && !entry.isLoadingWorkflow && !isLoadingDefaultWorkflow) {
+                      return null;
+                    }
+
+                    return (
+                      <View style={styles.entryTimelineSubPanel}>
+                        <View style={styles.entryTimelineHeaderRow}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Users size={14} color="#64748b" strokeWidth={2.2} />
+                            <Text style={styles.entryTimelineHeaderTitle}>Approval Timeline</Text>
+                          </View>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            {(entry.isLoadingWorkflow || isLoadingDefaultWorkflow) ? (
+                              <ActivityIndicator size="small" color="#1e40af" />
+                            ) : null}
+                          </View>
+                        </View>
+
+                        <View style={styles.entryStepperContainer}>
+                          {displaySteps.length > 1 ? <View style={styles.entryStepperLineTrack} /> : null}
+
+                          <View style={styles.entryStepperColumnsRow}>
+                            {displaySteps.map((step, sIdx) => {
+                              const isReassigned = Boolean(step.is_reassigned);
+                              const isPending = sIdx === 0;
+                              const dotColor = isPending ? '#eab308' : '#cbd5e1';
+                              const effectiveLevel = resolveApproverLevel(step);
+                              const approverUpper = formatApproverDisplayName(
+                                step.approver_name,
+                                step.approver_position_name || step.role_name,
+                                effectiveLevel,
+                              );
+                              const levelLabel = `L${effectiveLevel}`;
+                              const statusLabel = isPending ? 'Pending to approve' : 'Not yet processed';
+
+                              return (
+                                <View key={step.step_order || sIdx} style={styles.entryStepperColumn}>
+                                  <View style={[styles.entryStepperDot, { backgroundColor: dotColor }]} />
+                                  <Text style={styles.entryStepTitleText} numberOfLines={2}>
+                                    {approverUpper}
+                                  </Text>
+                                  <Text style={styles.entryStepSubtitleText} numberOfLines={1}>
+                                    {`${levelLabel} • ${statusLabel}`}
+                                  </Text>
+
+                                  {/* Reassign action button */}
+                                  <Pressable
+                                    style={({ pressed }) => [
+                                      styles.entryStepReassignBtn,
+                                      isReassigned ? styles.entryStepReassignBtnActive : null,
+                                      pressed ? { opacity: 0.7 } : null,
+                                    ]}
+                                    onPress={() => handleOpenReassignModal(actualIndex, step)}
+                                    hitSlop={6}
+                                    accessibilityLabel={`Reassign step ${step.step_order} approver`}
+                                  >
+                                    <ArrowRightLeft
+                                      size={10}
+                                      color={isReassigned ? '#1d4ed8' : '#64748b'}
+                                      strokeWidth={2.2}
+                                    />
+                                    <Text
+                                      style={[
+                                        styles.entryStepReassignText,
+                                        isReassigned ? styles.entryStepReassignedText : null,
+                                      ]}
+                                    >
+                                      {isReassigned ? 'Reassigned' : 'Reassign'}
+                                    </Text>
+                                  </Pressable>
+                                </View>
+                              );
+                            })}
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  })()}
+
                   {/* Photo Proof / Gallery Attachment Section */}
                   {(() => {
                     if (isPreApprovedMode) {
                       return null;
-                    }
-
-                    const isScheduledOt = isScheduledOtEntry(entry);
-                    if (isScheduledOt) {
-                      const entryTransKeys = parseEntryTransactions(entry.transaction);
-                      const isOffset = entryTransKeys.includes('offset') || isOffsetTransaction(entry.transaction);
-                      const scheduledNoticeTitle = isOffset
-                        ? 'Scheduled Offset • Pre-Approved'
-                        : 'Scheduled Overtime • Pre-Approved';
-                      return (
-                        <View style={styles.scheduledOtNoticeCard}>
-                          <View style={styles.scheduledOtNoticeHeader}>
-                            <Clock3 size={16} color="#d97706" strokeWidth={2.4} />
-                            <Text style={styles.scheduledOtNoticeTitle}>{scheduledNoticeTitle}</Text>
-                          </View>
-                          <View style={styles.scheduledOtNoticeFooter}>
-                            <AlertTriangle size={13} color="#b45309" strokeWidth={2.2} />
-                            <Text style={styles.scheduledOtNoticeFooterText}>
-                              Reminder: You must attach your photo proof on or after <Text style={{ fontWeight: '700' }}>{entry.dateFrom || 'your scheduled date'}</Text> from the Requests tab before it will be forwarded to your approver.
-                            </Text>
-                          </View>
-                        </View>
-                      );
                     }
 
                     const isAllowed = isProofAllowedForTransactions(entry.transaction);
@@ -4223,9 +4632,12 @@ export function ApplyEsarfScreen({
                           const newTransStr = newKeys.join(',');
                           const proofAllowed = !isPreApprovedMode && isProofAllowedForTransactions(newTransStr);
                           const proofRequired = !isPreApprovedMode && isProofRequiredForTransactions(newTransStr);
+                          const isNowUseOffset = newKeys.includes('use_offset');
+                          const activeEntry = entries[activeTransactionSelectIndex];
                           updateEntry(activeTransactionSelectIndex, {
                             transaction: newTransStr,
                             ...(!proofAllowed ? { proof: null } : {}),
+                            ...(isNowUseOffset && activeEntry?.dateFrom ? { dateTo: activeEntry.dateFrom } : {}),
                           });
                           setValidationErrors((current) => ({
                             ...current,
@@ -4285,7 +4697,7 @@ export function ApplyEsarfScreen({
               const currentEntry = entries[activeDateChoiceIndex];
               const entryTransKeys = parseEntryTransactions(currentEntry?.transaction);
               const isEntryUseOffset = entryTransKeys.includes('use_offset');
-              const allowFutureDates = isPreApprovedMode;
+              const allowFutureDates = isPreApprovedMode || isEntryUseOffset || entryTransKeys.length === 0;
               const todayStr = formatDateInput(new Date());
               const minDate = isPreApprovedMode ? todayStr : undefined;
               return (
@@ -4410,11 +4822,18 @@ export function ApplyEsarfScreen({
                 <View style={styles.eventModalHandle} />
                 <View style={styles.eventModalHeader}>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.eventModalTitle}>Select Event or Activity</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Text style={styles.eventModalTitle}>Select Event or Activity</Text>
+                      {!network.isOnline && (
+                        <View style={styles.eventOfflineBadge}>
+                          <Text style={styles.eventOfflineBadgeText}>OFFLINE</Text>
+                        </View>
+                      )}
+                    </View>
                     <Text style={styles.eventModalSubtitle}>
                       {isPreApprovedMode
                         ? 'Schedule ahead of time for upcoming events or activities.'
-                        : 'Select an event or activity that has already finished.'}
+                        : 'Select an event or activity that you attended.'}
                     </Text>
                   </View>
                   <Pressable
@@ -4471,7 +4890,9 @@ export function ApplyEsarfScreen({
                           </Text>
                           <Text style={styles.eventEmptySub}>
                             {availableEvents.length === 0
-                              ? 'Events added by admin in the portal will appear here.'
+                              ? (!network.isOnline
+                                ? 'No cached events found. Connect to internet once to cache active events.'
+                                : 'Events added by admin in the portal will appear here.')
                               : 'Try searching with different keywords.'}
                           </Text>
                         </View>
@@ -4591,6 +5012,181 @@ export function ApplyEsarfScreen({
                     });
                   })()}
                 </ScrollView>
+              </View>
+            </View>
+          </Modal>
+
+          {/* Reassign Approver Modal (matching Admin Desktop Requests Screen concept) */}
+          <Modal
+            visible={isReassignModalOpen}
+            transparent
+            animationType="slide"
+            onRequestClose={() => {
+              setIsReassignModalOpen(false);
+              setReassigningInfo(null);
+              setSelectedCandidate(null);
+            }}
+          >
+            <View style={styles.reassignModalBackdrop}>
+              <View style={[styles.reassignModalCard, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+                {/* Header */}
+                <View style={styles.reassignModalHeader}>
+                  <View style={styles.reassignModalHeaderLeft}>
+                    <View style={styles.reassignModalIconBox}>
+                      <ArrowRightLeft size={20} color="#2563eb" strokeWidth={2.4} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.reassignModalTitle}>Reassign Approver</Text>
+                      <Text style={styles.reassignModalSub} numberOfLines={1}>
+                        Request #{reassigningInfo ? reassigningInfo.entryIndex + 1 : 1} • Step {reassigningInfo?.step?.step_order}: {reassigningInfo?.step?.role_name}
+                        {reassigningInfo?.step?.approver_position_name ? ` • ${reassigningInfo.step.approver_position_name}` : ''}
+                      </Text>
+                      {!isOnline ? (
+                        <View style={styles.reassignModalOfflineBadge}>
+                          <WifiOff size={10} color="#b45309" strokeWidth={2.4} />
+                          <Text style={styles.reassignModalOfflineText}>Offline Mode • Using cached approvers</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  </View>
+                  <Pressable
+                    style={styles.eventModalClose}
+                    onPress={() => {
+                      setIsReassignModalOpen(false);
+                      setReassigningInfo(null);
+                      setSelectedCandidate(null);
+                    }}
+                    hitSlop={8}
+                  >
+                    <X size={20} color="#64748b" strokeWidth={2.4} />
+                  </Pressable>
+                </View>
+
+                {/* Search Bar */}
+                <View style={styles.candidateSearchBox}>
+                  <Search size={16} color="#94a3b8" strokeWidth={2.2} />
+                  <TextInput
+                    style={styles.candidateSearchInput}
+                    placeholder="Search employee by name, ID, position, store..."
+                    placeholderTextColor="#94a3b8"
+                    value={candidateSearchQuery}
+                    onChangeText={setCandidateSearchQuery}
+                  />
+                  {candidateSearchQuery ? (
+                    <Pressable onPress={() => setCandidateSearchQuery('')} hitSlop={6}>
+                      <X size={15} color="#94a3b8" />
+                    </Pressable>
+                  ) : null}
+                </View>
+
+                {/* Candidate List */}
+                <ScrollView
+                  style={styles.candidateListScroll}
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator={false}
+                >
+                  {isLoadingCandidates ? (
+                    <View style={styles.candidateEmptyWrap}>
+                      <ActivityIndicator size="small" color="#2563eb" />
+                      <Text style={styles.candidateEmptyTitle}>Loading employees...</Text>
+                    </View>
+                  ) : filteredApproverCandidates.length === 0 ? (
+                    <View style={styles.candidateEmptyWrap}>
+                      <Users size={32} color="#cbd5e1" strokeWidth={1.8} />
+                      <Text style={styles.candidateEmptyTitle}>No matching employees found</Text>
+                      <Text style={styles.candidateEmptySub}>
+                        Try searching with a different name or employee number.
+                      </Text>
+                    </View>
+                  ) : (
+                    filteredApproverCandidates.map((candidate) => {
+                      const isSelected = selectedCandidate?.employee_id === candidate.employee_id;
+                      const initials = candidate.full_name
+                        .split(' ')
+                        .map((part) => part[0])
+                        .filter(Boolean)
+                        .slice(0, 2)
+                        .join('')
+                        .toUpperCase() || 'EMP';
+
+                      return (
+                        <Pressable
+                          key={candidate.employee_id}
+                          style={[styles.candidateRow, isSelected ? styles.candidateRowSelected : null]}
+                          onPress={() => setSelectedCandidate(candidate)}
+                        >
+                          <View style={[styles.candidateAvatar, isSelected ? styles.candidateAvatarSelected : null]}>
+                            <Text style={[styles.candidateAvatarText, isSelected ? styles.candidateAvatarTextSelected : null]}>
+                              {initials}
+                            </Text>
+                          </View>
+
+                          <View style={styles.candidateInfoCol}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                              <Text style={[styles.candidateName, isSelected ? styles.candidateNameSelected : null]}>
+                                {candidate.full_name}
+                              </Text>
+                              {candidate.authority_level ? (
+                                <View style={styles.candidateLevelBadge}>
+                                  <Text style={styles.candidateLevelBadgeText}>L{candidate.authority_level}</Text>
+                                </View>
+                              ) : null}
+                            </View>
+                            <Text style={styles.candidateRole} numberOfLines={1}>
+                              {[candidate.position_name, candidate.department_name].filter(Boolean).join(' • ')}
+                              {candidate.employee_no ? ` (${candidate.employee_no})` : ''}
+                            </Text>
+                            {(candidate.store_name || candidate.company_name) ? (
+                              <Text style={styles.candidateStore} numberOfLines={1}>
+                                {[candidate.store_name, candidate.company_name].filter(Boolean).join(' • ')}
+                              </Text>
+                            ) : null}
+                          </View>
+
+                          {isSelected ? (
+                            <CheckCircle2 size={20} color="#2563eb" strokeWidth={2.4} />
+                          ) : (
+                            <View style={{ width: 20, height: 20, borderRadius: 10, borderWidth: 1.5, borderColor: '#cbd5e1' }} />
+                          )}
+                        </Pressable>
+                      );
+                    })
+                  )}
+                </ScrollView>
+
+                {/* Footer Actions */}
+                <View style={styles.reassignModalActions}>
+                  {reassigningInfo?.step?.is_reassigned ? (
+                    <Pressable
+                      style={styles.reassignResetBtn}
+                      onPress={handleResetStepApprover}
+                    >
+                      <Text style={styles.reassignResetText}>Reset Default</Text>
+                    </Pressable>
+                  ) : null}
+
+                  <Pressable
+                    style={styles.reassignCancelBtn}
+                    onPress={() => {
+                      setIsReassignModalOpen(false);
+                      setReassigningInfo(null);
+                      setSelectedCandidate(null);
+                    }}
+                  >
+                    <Text style={styles.reassignCancelText}>Cancel</Text>
+                  </Pressable>
+
+                  <Pressable
+                    disabled={!selectedCandidate}
+                    style={[
+                      styles.reassignConfirmBtn,
+                      !selectedCandidate ? styles.reassignConfirmBtnDisabled : null,
+                    ]}
+                    onPress={handleConfirmReassign}
+                  >
+                    <Text style={styles.reassignConfirmText}>Confirm Reassign</Text>
+                  </Pressable>
+                </View>
               </View>
             </View>
           </Modal>
@@ -7410,6 +8006,20 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.heavy,
     color: '#0f172a',
   },
+  eventOfflineBadge: {
+    backgroundColor: '#f1f5f9',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  eventOfflineBadgeText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+    letterSpacing: 0.5,
+  },
   eventModalSubtitle: {
     fontSize: 12,
     color: '#64748b',
@@ -7575,5 +8185,330 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.bold,
     color: '#64748b',
     letterSpacing: 0.3,
+  },
+
+  /* In-Entry Horizontal Approval Timeline Styles (Matching Request Tab Screen) */
+  entryTimelineSubPanel: {
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 10,
+    marginTop: 8,
+    marginBottom: 10,
+  },
+  entryTimelineHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  entryTimelineHeaderTitle: {
+    fontSize: 13,
+    fontWeight: fontWeights.heavy,
+    color: '#334155',
+  },
+  entryStoreRoutePill: {
+    backgroundColor: '#f1f5f9',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+    maxWidth: 160,
+  },
+  entryStoreRoutePillText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#475569',
+  },
+  entryStepperContainer: {
+    marginTop: 4,
+    paddingVertical: 2,
+    position: 'relative',
+  },
+  entryStepperLineTrack: {
+    position: 'absolute',
+    top: 5,
+    left: 20,
+    right: 20,
+    height: 2,
+    backgroundColor: '#e2e8f0',
+    zIndex: 0,
+  },
+  entryStepperColumnsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    zIndex: 1,
+  },
+  entryStepperColumn: {
+    flex: 1,
+    alignItems: 'flex-start',
+    paddingRight: 6,
+  },
+  entryStepperDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginBottom: 6,
+    borderWidth: 1.5,
+    borderColor: '#ffffff',
+  },
+  entryStepTitleText: {
+    fontSize: 11,
+    fontWeight: fontWeights.heavy,
+    color: '#0f172a',
+  },
+  entryStepSubtitleText: {
+    fontSize: 10,
+    color: '#64748b',
+  },
+  entryStepReassignBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginTop: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  entryStepReassignBtnActive: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#bfdbfe',
+  },
+  entryStepReassignText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+  },
+  entryStepReassignedText: {
+    color: '#1d4ed8',
+  },
+
+  /* Reassign Approver & Store Picker Modal Styles */
+  reassignModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.55)',
+    justifyContent: 'flex-end',
+  },
+  reassignModalCard: {
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '90%',
+    paddingBottom: 20,
+  },
+  reassignModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  reassignModalHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  reassignModalIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reassignModalTitle: {
+    fontSize: 17,
+    fontWeight: fontWeights.heavy,
+    color: '#0f172a',
+  },
+  reassignModalSub: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  reassignModalOfflineBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+    backgroundColor: '#fef3c7',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    alignSelf: 'flex-start',
+  },
+  reassignModalOfflineText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#b45309',
+  },
+  candidateLevelBadge: {
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  candidateLevelBadgeText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#1d4ed8',
+  },
+  candidateSearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginHorizontal: 16,
+    marginVertical: 12,
+    gap: 8,
+  },
+  candidateSearchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: '#0f172a',
+    padding: 0,
+  },
+  candidateListScroll: {
+    maxHeight: 380,
+    paddingHorizontal: 16,
+  },
+  candidateEmptyWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 36,
+  },
+  candidateEmptyTitle: {
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+    color: '#475569',
+    marginTop: 8,
+  },
+  candidateEmptySub: {
+    fontSize: 12,
+    color: '#94a3b8',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  candidateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+    backgroundColor: '#ffffff',
+    marginBottom: 8,
+    gap: 12,
+  },
+  candidateRowSelected: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#3b82f6',
+  },
+  candidateAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#e2e8f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  candidateAvatarSelected: {
+    backgroundColor: '#2563eb',
+  },
+  candidateAvatarText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#334155',
+  },
+  candidateAvatarTextSelected: {
+    color: '#ffffff',
+  },
+  candidateInfoCol: {
+    flex: 1,
+  },
+  candidateName: {
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+  },
+  candidateNameSelected: {
+    color: '#1d4ed8',
+  },
+  candidateRole: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 1,
+  },
+  candidateStore: {
+    fontSize: 11,
+    color: '#94a3b8',
+    marginTop: 2,
+  },
+  reassignModalActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+  },
+  reassignResetBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#ffffff',
+  },
+  reassignResetText: {
+    fontSize: 12.5,
+    fontWeight: fontWeights.bold,
+    color: '#475569',
+  },
+  reassignCancelBtn: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reassignCancelText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+  },
+  reassignConfirmBtn: {
+    flex: 1.5,
+    paddingVertical: 11,
+    borderRadius: 8,
+    backgroundColor: '#2563eb',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reassignConfirmBtnDisabled: {
+    backgroundColor: '#94a3b8',
+    opacity: 0.6,
+  },
+  reassignConfirmText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#ffffff',
   },
 });

@@ -78,6 +78,7 @@ export function isScheduledOtEntry(
     transaction?: string | null;
     dateFrom?: string | null;
     timeFrom?: string | null;
+    timeTo?: string | null;
   } | null,
   nowDate?: Date,
 ): boolean {
@@ -92,11 +93,20 @@ export function isScheduledOtEntry(
   }
 
   if (entry.dateFrom === todayStr) {
-    if (!entry.timeFrom) return false;
-    const startMins = parseTimeToMinutes(entry.timeFrom);
-    if (startMins === null) return false;
     const nowMins = now.getHours() * 60 + now.getMinutes();
-    return startMins > nowMins;
+    if (entry.timeTo) {
+      const endMins = parseTimeToMinutes(entry.timeTo);
+      if (endMins !== null) {
+        return endMins > nowMins;
+      }
+    }
+    if (entry.timeFrom) {
+      const startMins = parseTimeToMinutes(entry.timeFrom);
+      if (startMins !== null) {
+        return startMins > nowMins;
+      }
+    }
+    return true;
   }
 
   return false;
@@ -104,6 +114,9 @@ export function isScheduledOtEntry(
 
 /**
  * Checks if a request object is or was a scheduled OT or Offset request.
+ * ONLY requests applied from the Pre-approved OT/Offset screen are pre-approved.
+ * Regular ESARF requests applied in Apply ESARF (even with an event or activity)
+ * are NEVER pre-approved and always remain pending.
  */
 export function isScheduledOtRequest(
   request?: ScheduledOtCandidate | MyRequest | PendingApproval | null,
@@ -116,18 +129,29 @@ export function isScheduledOtRequest(
     return true;
   }
 
+  const reason = (request as any).reason || '';
+  // Explicitly tagged pre-approved requests from Pre-approved OT/Offset screen
+  if (/\[PreApproved\]/i.test(reason)) {
+    return true;
+  }
+
   const trans =
     (request as any).transaction_type ||
     (request as any).transaction ||
     (request as any).request_type_code ||
     '';
-  if (!isScheduledTransaction(trans)) return false;
+  if (String(trans).toLowerCase().includes('scheduled_ot')) {
+    return true;
+  }
 
-  const dateFrom = (request as any).date_from || (request as any).dateFrom;
-  const timeFrom = (request as any).time_from || (request as any).timeFrom;
+  // Requests with an event or activity from regular Apply ESARF are never pre-approved
+  if (/event:/i.test(reason) || /activity:/i.test(reason)) {
+    return false;
+  }
 
-  return isScheduledOtEntry({ transaction: trans, dateFrom, timeFrom }, nowDate);
+  return false;
 }
+
 
 /**
  * Checks if photo proof has already been attached to the request/entry.

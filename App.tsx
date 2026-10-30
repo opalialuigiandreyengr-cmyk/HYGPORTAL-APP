@@ -6053,6 +6053,9 @@ function TimeRequestScreen({
       p_time_schedule: timeSchedule,
       p_day_off: dayOff,
       p_payroll_class: payrollClass,
+      p_transaction_type: null,
+      p_store_id: null,
+      p_custom_approvers: null,
     });
     setIsSubmittingRequest(false);
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { AppState, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Path, Rect } from 'react-native-svg';
 import { getScreenBottomPadding } from '../utils/safeArea';
 import {
   ArrowRight,
@@ -27,6 +28,7 @@ import { loadPerkUsage, type PerkUsage } from '../services/perks';
 import { loadMyRequests, type MyRequest } from '../services/requests';
 import { syncAllOfflineItems } from '../services/offlineQueue';
 import { isAppOnline } from '../services/network';
+import { loadActiveEventsActivities } from '../services/eventsActivities';
 import { addAppNotification } from '../services/notificationCenter';
 import {
   checkBirthdayLeaveAppliedForYear,
@@ -119,7 +121,11 @@ export function DashboardScreen({
 
   const refreshSupplemental = async () => {
     try {
-      const [usage, requests] = await Promise.all([loadPerkUsage(), loadMyRequests(false)]);
+      const [usage, requests] = await Promise.all([
+        loadPerkUsage(),
+        loadMyRequests(false),
+        loadActiveEventsActivities().catch(() => []),
+      ]);
       if (usage) {
         setPerkUsage(usage);
       }
@@ -446,38 +452,45 @@ export function DashboardScreen({
           </View>
         </View>
 
-        <View style={styles.quickActionRow}>
-          <DashboardQuickAction
-            icon={<FileText size={16} color={colors.brand.ink} strokeWidth={2.7} />}
-            label={"Apply\nESARF"}
-            accessibilityLabel="Apply ESARF"
-            onPress={onApplyEsarf}
-          />
-          <DashboardQuickAction
-            icon={<Clock3 size={16} color={colors.brand.ink} strokeWidth={2.7} />}
-            label={"Pre-approved\nOT/Offset"}
-            accessibilityLabel="Apply Pre-approved OT/Offset"
-            onPress={onApplyPreApprovedOtOffset}
-          />
-          <DashboardQuickAction
-            icon={<CalendarDays size={16} color={colors.brand.ink} strokeWidth={2.7} />}
-            label={"Request\nLeave"}
-            accessibilityLabel="Request Leave"
-            onPress={onRequestLeave}
-          />
-          <DashboardQuickAction
-            icon={<Tag size={16} color={colors.brand.ink} strokeWidth={2.7} />}
-            label={"Apply\nPerks"}
-            accessibilityLabel="Apply Perks"
-            onPress={onApplyPerks}
-          />
-          <DashboardQuickAction
-            icon={<Briefcase size={16} color={colors.brand.ink} strokeWidth={2.7} />}
-            label={"File Travel\nOrder"}
-            accessibilityLabel="File Travel Order"
-            onPress={onFileTravelOrder}
-          />
-        </View>
+        <DashboardQuickActionCarousel
+          actions={[
+            {
+              id: 'esarf',
+              label: 'Apply ESARF',
+              accessibilityLabel: 'Apply ESARF',
+              onPress: onApplyEsarf,
+              Icon: ActionIconDocument,
+            },
+            {
+              id: 'leave',
+              label: 'Request Leave',
+              accessibilityLabel: 'Request Leave',
+              onPress: onRequestLeave,
+              Icon: ActionIconCalendar,
+            },
+            {
+              id: 'pre_approved',
+              label: 'Pre-approved\nOT/Offset',
+              accessibilityLabel: 'Apply Pre-approved OT/Offset',
+              onPress: onApplyPreApprovedOtOffset,
+              Icon: ActionIconClock,
+            },
+            {
+              id: 'perks',
+              label: 'Apply Perks',
+              accessibilityLabel: 'Apply Perks',
+              onPress: onApplyPerks,
+              Icon: ActionIconTag,
+            },
+            {
+              id: 'travel',
+              label: 'File Travel\nOrder',
+              accessibilityLabel: 'File Travel Order',
+              onPress: onFileTravelOrder,
+              Icon: ActionIconBriefcase,
+            },
+          ]}
+        />
 
         {completion.percent < 100 ? <ProfileCompletionCard completion={completion} onPress={onOpenProfile} /> : null}
 
@@ -580,6 +593,199 @@ function isBirthdayToday(birthDateStr?: string | null): boolean {
   return false;
 }
 
+function ActionIconDocument({ size = 40, color = '#FFFFFF' }: { size?: number; color?: string }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 32 32">
+      <Path
+        fill={color}
+        fillRule="evenodd"
+        d="M 6 3 C 4.6 3 3.5 4.1 3.5 5.5 L 3.5 26.5 C 3.5 27.9 4.6 29 6 29 L 26 29 C 27.4 29 28.5 27.9 28.5 26.5 L 28.5 11 L 20.5 3 Z M 7.5 13 h 2.8 v 2.8 h -2.8 Z M 12.5 13 h 11.5 v 2.8 h -11.5 Z M 7.5 17.2 h 2.8 v 2.8 h -2.8 Z M 12.5 17.2 h 11.5 v 2.8 h -11.5 Z M 7.5 21.4 h 2.8 v 2.8 h -2.8 Z M 12.5 21.4 h 11.5 v 2.8 h -11.5 Z M 7.5 25.6 h 2.8 v 2.8 h -2.8 Z M 12.5 25.6 h 11.5 v 2.8 h -11.5 Z"
+      />
+      <Path fill={color} d="M 20.5 3 L 20.5 9.5 C 20.5 10.3 21.2 11 22 11 L 28.5 11 Z" />
+    </Svg>
+  );
+}
+
+function ActionIconCalendar({ size = 40, color = '#FFFFFF' }: { size?: number; color?: string }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 32 32">
+      <Rect x="7" y="1" width="3" height="6" rx="1.5" fill={color} />
+      <Rect x="22" y="1" width="3" height="6" rx="1.5" fill={color} />
+      <Path
+        fill={color}
+        fillRule="evenodd"
+        d="M 5 4 C 3.3 4 2 5.3 2 7 L 2 27 C 2 28.7 3.3 30 5 30 L 27 30 C 28.7 30 30 28.7 30 27 L 30 7 C 30 5.3 28.7 4 27 4 Z M 4.5 9.5 h 23 v 2.2 h -23 Z M 5.5 14 h 3.5 v 3.2 h -3.5 Z M 11 14 h 3.5 v 3.2 h -3.5 Z M 16.5 14 h 3.5 v 3.2 h -3.5 Z M 22 14 h 3.5 v 3.2 h -3.5 Z M 5.5 19 h 3.5 v 3.2 h -3.5 Z M 11 19 h 3.5 v 3.2 h -3.5 Z M 16.5 19 h 3.5 v 3.2 h -3.5 Z M 22 19 h 3.5 v 3.2 h -3.5 Z M 5.5 24 h 3.5 v 3.2 h -3.5 Z M 11 24 h 3.5 v 3.2 h -3.5 Z M 16.5 24 h 3.5 v 3.2 h -3.5 Z M 22 24 h 3.5 v 3.2 h -3.5 Z"
+      />
+    </Svg>
+  );
+}
+
+function ActionIconClock({ size = 40, color = '#FFFFFF' }: { size?: number; color?: string }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 32 32">
+      <Path
+        fill={color}
+        fillRule="evenodd"
+        d="M 16 1 C 7.7 1 1 7.7 1 16 C 1 24.3 7.7 31 16 31 C 24.3 31 31 24.3 31 16 C 31 7.7 24.3 1 16 1 Z M 14.5 5.5 C 14.5 4.7 15.2 4 16 4 C 16.8 4 17.5 4.7 17.5 5.5 L 17.5 14.5 L 22.8 19.8 C 23.4 20.4 23.4 21.3 22.8 21.9 C 22.2 22.5 21.3 22.5 20.7 21.9 L 14.8 16 C 14.6 15.8 14.5 15.5 14.5 15.2 Z"
+      />
+    </Svg>
+  );
+}
+
+function ActionIconTag({ size = 40, color = '#FFFFFF' }: { size?: number; color?: string }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 32 32">
+      <Path
+        fill={color}
+        fillRule="evenodd"
+        d="M 7.8 2.5 L 2.5 7.8 C 1.5 8.8 1 10.1 1 11.5 L 1 14 C 1 15.3 1.5 16.6 2.5 17.5 L 14.5 29.5 C 16.5 31.5 19.6 31.5 21.6 29.5 L 29.5 21.6 C 31.5 19.6 31.5 16.5 29.5 14.5 L 17.5 2.5 C 16.6 1.5 15.3 1 14 1 L 11.5 1 C 10.1 1 8.8 1.5 7.8 2.5 Z M 8.5 6 C 9.9 6 11 7.1 11 8.5 C 11 9.9 9.9 11 8.5 11 C 7.1 11 6 9.9 6 8.5 C 6 7.1 7.1 6 8.5 6 Z"
+      />
+    </Svg>
+  );
+}
+
+function ActionIconBriefcase({ size = 40, color = '#FFFFFF' }: { size?: number; color?: string }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 32 32">
+      <Path
+        fill={color}
+        fillRule="evenodd"
+        d="M 11 3 C 11 1.9 11.9 1 13 1 L 19 1 C 20.1 1 21 1.9 21 3 L 21 7 L 18.5 7 L 18.5 3.5 L 13.5 3.5 L 13.5 7 L 11 7 Z"
+      />
+      <Path
+        fill={color}
+        fillRule="evenodd"
+        d="M 4 7 C 2.3 7 1 8.3 1 10 L 1 26 C 1 27.7 2.3 29 4 29 L 28 29 C 29.7 29 31 27.7 31 26 L 31 10 C 31 8.3 29.7 7 28 7 Z M 1 14.5 h 30 v 1.8 h -30 Z M 6.5 12.5 h 3.8 v 5.5 h -3.8 Z M 21.7 12.5 h 3.8 v 5.5 h -3.8 Z"
+      />
+    </Svg>
+  );
+}
+
+type QuickActionItem = {
+  id: string;
+  label: string;
+  accessibilityLabel?: string;
+  onPress?: () => void;
+  Icon: React.ComponentType<{ size?: number; color?: string; style?: any }>;
+};
+
+function DashboardQuickActionCard({
+  id,
+  label,
+  accessibilityLabel,
+  onPress,
+  Icon,
+  cardWidth,
+  cardHeight,
+}: QuickActionItem & { cardWidth?: number; cardHeight?: number }) {
+  const currentHeight = cardHeight || cardWidth || 108;
+  const iconSize = Math.round(currentHeight * 0.38);
+
+  return (
+    <View style={styles.quickActionCardWrapper}>
+      <Pressable
+        style={({ pressed }) => [
+          styles.quickActionCard,
+          cardWidth ? { width: cardWidth, height: currentHeight } : null,
+          !onPress ? styles.quickActionDisabled : null,
+          pressed ? styles.quickActionPressed : null,
+        ]}
+        onPress={onPress}
+        disabled={!onPress}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel || label.replace('\n', ' ')}
+      >
+        <View style={styles.quickActionWatermark} pointerEvents="none">
+          <Icon size={Math.round(currentHeight * 0.65)} color="#FFFFFF" />
+        </View>
+
+        <View
+          style={[styles.quickActionTopIcon, { width: iconSize, height: iconSize }]}
+          pointerEvents="none"
+        >
+          <Icon size={iconSize} color="#FFFFFF" />
+        </View>
+
+        <View style={styles.quickActionLabelContainer} pointerEvents="none">
+          <Text
+            style={styles.quickActionCardLabel}
+            numberOfLines={2}
+            adjustsFontSizeToFit
+            minimumFontScale={0.75}
+          >
+            {label}
+          </Text>
+        </View>
+      </Pressable>
+    </View>
+  );
+}
+
+function DashboardQuickActionCarousel({
+  actions,
+}: {
+  actions: QuickActionItem[];
+}) {
+  const { width } = useWindowDimensions();
+  const gap = 8;
+  const isWide = width >= 540;
+
+  // Sized dynamically so exactly 3 buttons fit cleanly and center on phone screens
+  const cardWidth = useMemo(() => {
+    if (isWide) {
+      return 116;
+    }
+    const available = width - spacing.md * 2 - gap * 2;
+    return Math.max(94, Math.floor(available / 3));
+  }, [width, isWide]);
+
+  const cardHeight = cardWidth;
+
+  // Symmetric side padding ensures the 3 cards sit precisely at the center of the viewport
+  const sidePadding = useMemo(() => {
+    if (isWide) {
+      return spacing.md;
+    }
+    return Math.max(spacing.md, Math.floor((width - (cardWidth * 3 + gap * 2)) / 2));
+  }, [width, cardWidth, isWide]);
+
+  const snapInterval = cardWidth + gap;
+
+  // Snap offsets define magnetic stopping points showing 3 centered buttons at each position
+  const snapOffsets = useMemo(() => {
+    const maxSnapIndex = Math.max(0, actions.length - 3);
+    return Array.from({ length: maxSnapIndex + 1 }, (_, i) => i * snapInterval);
+  }, [actions.length, snapInterval]);
+
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      nestedScrollEnabled
+      directionalLockEnabled
+      snapToInterval={snapInterval}
+      snapToOffsets={snapOffsets}
+      decelerationRate="fast"
+      snapToAlignment="start"
+      disableIntervalMomentum={true}
+      contentContainerStyle={[
+        styles.quickActionCarouselContent,
+        { paddingHorizontal: sidePadding, gap },
+      ]}
+      style={styles.quickActionCarousel}
+    >
+      {actions.map((item) => (
+        <DashboardQuickActionCard
+          key={item.id}
+          {...item}
+          cardWidth={cardWidth}
+          cardHeight={cardHeight}
+        />
+      ))}
+    </ScrollView>
+  );
+}
+
 function DashboardQuickAction({
   icon,
   label,
@@ -592,23 +798,31 @@ function DashboardQuickAction({
   onPress?: () => void;
 }) {
   return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.quickActionButton,
-        !onPress ? styles.quickActionDisabled : null,
-        pressed ? styles.quickActionPressed : null,
-      ]}
-      onPress={onPress}
-      disabled={!onPress}
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel || label.replace('\n', ' ')}
-      hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
-    >
-      <View style={styles.quickActionIcon} pointerEvents="none">{icon}</View>
-      <Text style={styles.quickActionLabel} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.72} pointerEvents="none">
-        {label}
-      </Text>
-    </Pressable>
+    <View style={styles.quickActionCardWrapper}>
+      <Pressable
+        style={({ pressed }) => [
+          styles.quickActionCard,
+          !onPress ? styles.quickActionDisabled : null,
+          pressed ? styles.quickActionPressed : null,
+        ]}
+        onPress={onPress}
+        disabled={!onPress}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel || label.replace('\n', ' ')}
+      >
+        <View style={styles.quickActionTopIcon} pointerEvents="none">{icon}</View>
+        <View style={styles.quickActionLabelContainer} pointerEvents="none">
+          <Text
+            style={styles.quickActionCardLabel}
+            numberOfLines={2}
+            adjustsFontSizeToFit
+            minimumFontScale={0.8}
+          >
+            {label}
+          </Text>
+        </View>
+      </Pressable>
+    </View>
   );
 }
 
@@ -807,19 +1021,19 @@ function ActivityRow({ request }: { request: MyRequest }) {
     statusTone === 'approved'
       ? styles.statusApproved
       : statusTone === 'rejected'
-      ? styles.statusRejected
-      : statusTone === 'pre_approved'
-      ? styles.statusPreApproved
-      : styles.statusPending;
+        ? styles.statusRejected
+        : statusTone === 'pre_approved'
+          ? styles.statusPreApproved
+          : styles.statusPending;
 
   const textStyle =
     statusTone === 'approved'
       ? styles.statusApprovedText
       : statusTone === 'rejected'
-      ? styles.statusRejectedText
-      : statusTone === 'pre_approved'
-      ? styles.statusPreApprovedText
-      : styles.statusPendingText;
+        ? styles.statusRejectedText
+        : statusTone === 'pre_approved'
+          ? styles.statusPreApprovedText
+          : styles.statusPendingText;
 
   return (
     <View style={styles.activityRow}>
@@ -1079,49 +1293,71 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     fontWeight: fontWeights.medium,
   },
-  quickActionRow: {
-    flexDirection: 'row',
-    flexWrap: 'nowrap',
-    gap: 4,
+  quickActionCarousel: {
+    marginHorizontal: -spacing.md,
     marginBottom: spacing.sm,
   },
-  quickActionButton: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 74,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: '#facc15',
-    backgroundColor: '#fffbeb',
+  quickActionCarouselContent: {
+    paddingHorizontal: spacing.md,
+    flexDirection: 'row',
+    gap: 8,
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 2,
-    paddingVertical: 7,
-    gap: 3,
+    paddingVertical: 3,
+  },
+  quickActionCardWrapper: {
+    borderRadius: 14,
+    shadowColor: '#d97706',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.16,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  quickActionCard: {
+    width: 96,
+    height: 96,
+    borderRadius: 14,
+    backgroundColor: '#FFB800',
+    overflow: 'hidden',
+    position: 'relative',
+    paddingTop: 8,
+    paddingHorizontal: 9,
+    paddingBottom: 10,
+    justifyContent: 'space-between',
   },
   quickActionPressed: {
-    opacity: 0.82,
-    transform: [{ scale: 0.98 }],
+    opacity: 0.88,
+    transform: [{ scale: 0.96 }],
   },
   quickActionDisabled: {
     opacity: 0.52,
   },
-  quickActionIcon: {
-    width: 30,
-    height: 30,
-    borderRadius: 8,
-    backgroundColor: colors.brand.gold,
-    alignItems: 'center',
-    justifyContent: 'center',
+  quickActionWatermark: {
+    position: 'absolute',
+    right: -8,
+    bottom: -8,
+    opacity: 0.18,
+    transform: [{ rotate: '14deg' }],
   },
-  quickActionLabel: {
+  quickActionTopIcon: {
+    width: 40,
+    height: 40,
+    alignItems: 'flex-start',
+    justifyContent: 'flex-start',
+  },
+  quickActionLabelContainer: {
+    justifyContent: 'flex-end',
     minHeight: 28,
-    color: colors.brand.ink,
-    fontSize: 10.5,
-    lineHeight: 13,
+    marginBottom: 4,
+  },
+  quickActionCardLabel: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    lineHeight: 16,
     fontWeight: fontWeights.heavy,
-    textAlign: 'center',
-    textAlignVertical: 'center',
+    textAlign: 'left',
+    textShadowColor: 'rgba(0, 0, 0, 0.14)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 1.5,
   },
   profileCompletionCard: {
     borderRadius: radius.md,

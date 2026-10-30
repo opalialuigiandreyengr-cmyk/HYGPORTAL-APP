@@ -50,6 +50,7 @@ import {
   isRequestEditable,
   parseEsarfEntries,
 } from '../components/EsarfDetailsView';
+import { lookupCachedApproverName, lookupCachedApproverByLevel } from '../services/storeApprovalWorkflow';
 import { formatDateInput, stripSecondsFromTimeString } from '../utils/dateTime';
 import { isScheduledOtRequest, isScheduledTransaction } from '../utils/scheduledOt';
 import { parseTimeToMinutes } from '../utils/requestCalculations';
@@ -874,50 +875,14 @@ function isPreApprovedApproval(item?: PendingApproval | null): boolean {
     return true;
   }
 
-  const trans =
-    item.transaction_type ||
-    item.request_type_code ||
-    '';
   const reason = item.reason || '';
-
-  // If request contains an event/activity tag and is OT or Offset
-  if (isScheduledTransaction(trans) && /\[Event:\s*[^\]]+\]/i.test(reason)) {
+  if (/\[PreApproved\]/i.test(reason)) {
     return true;
   }
 
-  // Check multi-entry ESARF
-  if (reason.includes('[Entry ')) {
-    const entries = parseEsarfEntries(item);
-    if (entries.some((e) => Boolean(e.eventName) && isScheduledTransaction(e.transactionLabel))) {
-      return true;
-    }
-  }
-
-  // Scheduled OT or Offset (future schedule or applied ahead of time)
-  if (isScheduledTransaction(trans)) {
-    if (isScheduledOtRequest(item)) {
-      return true;
-    }
-
-    // Check if it was submitted ahead of time relative to submitted_at
-    if (item.date_from && item.submitted_at) {
-      try {
-        const submittedDateStr = formatDateInput(new Date(item.submitted_at));
-        if (item.date_from > submittedDateStr) {
-          return true;
-        }
-        if (item.date_from === submittedDateStr && item.time_from) {
-          const submittedTime = new Date(item.submitted_at);
-          const submittedMins = submittedTime.getHours() * 60 + submittedTime.getMinutes();
-          const fromMins = parseTimeToMinutes(item.time_from);
-          if (fromMins !== null && fromMins > submittedMins) {
-            return true;
-          }
-        }
-      } catch {
-        // ignore date parse errors
-      }
-    }
+  const trans = (item.transaction_type || item.request_type_code || '').toLowerCase();
+  if (trans.includes('scheduled_ot')) {
+    return true;
   }
 
   return false;
@@ -1933,17 +1898,58 @@ function formatPersonNameWithMiddleInitial(value: string) {
   return [first, middleText, ...rest].join(' ');
 }
 
-function approvalRoleLabel(step: PendingApproval['approval_summary'][number]) {
+function isGenericApproverName(name: string | null | undefined): boolean {
+  if (!name) return true;
+  const n = name.trim().toLowerCase();
+  if (
+    n === 'approver' ||
+    n === 'approver 1' ||
+    n === 'approver 2' ||
+    n === 'approver 3' ||
+    n === 'approver 4' ||
+    n === 'approver 5' ||
+    n === 'approver 6' ||
+    n === 'approver 7' ||
+    n === 'approver 8' ||
+    /^approver\s+\d+$/i.test(n) ||
+    /^level\s+\d+\s+approver$/i.test(n) ||
+    n.includes('local device queue') ||
+    n === 'sys-local'
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function approvalRoleLabel(step: PendingApproval['approval_summary'][number], department?: string | null) {
+  const levelNum = resolveApproverLevel(step);
   const approverName = normalizeDisplayValue(step.approver_name);
-  if (approverName) return formatPersonNameWithMiddleInitial(approverName);
+
+  // 1. If step has a real approver name, display it
+  if (approverName && !isGenericApproverName(approverName)) {
+    return formatPersonNameWithMiddleInitial(approverName);
+  }
+
+  // 2. If approver_employee_id is available, check cached candidates
+  if ((step as any).approver_employee_id) {
+    const cachedName = lookupCachedApproverName((step as any).approver_employee_id);
+    if (cachedName && !isGenericApproverName(cachedName)) {
+      return formatPersonNameWithMiddleInitial(cachedName);
+    }
+  }
+
+  // 3. Fallback to cached approver candidate matching this authority level
+  const levelCandidateName = lookupCachedApproverByLevel(levelNum, department);
+  if (levelCandidateName && !isGenericApproverName(levelCandidateName)) {
+    return formatPersonNameWithMiddleInitial(levelCandidateName);
+  }
 
   const positionName = normalizeDisplayValue(step.approver_position_name);
-  if (positionName) return positionName;
+  if (positionName && !isGenericApproverName(positionName)) return positionName;
 
   const skippedReason = normalizeDisplayValue(step.skipped_reason);
   if (skippedReason) return skippedReason;
 
-  const levelNum = resolveApproverLevel(step);
   return `Level ${levelNum} Approver`;
 }
 
@@ -1985,7 +1991,7 @@ function approvalTimeline(item: PendingApproval | ApprovedApproval) {
           ? 'Auto-Approved'
           : `L${levelNum} • ${approvalStepStatus(step.status)}`;
         return {
-          label: approvalRoleLabel(step),
+          label: approvalRoleLabel(step, (item as any)?.department || (item as any)?.department_name || (item as any)?.employee?.department),
           status: statusText,
           actedAt: step.acted_at,
         };

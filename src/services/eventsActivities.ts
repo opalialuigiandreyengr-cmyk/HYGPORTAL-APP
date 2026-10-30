@@ -1,4 +1,7 @@
+import { DeviceEventEmitter } from 'react-native';
 import { supabase } from '../lib/supabase';
+import { getCacheJSON, setCacheJSON } from '../lib/localCache';
+import { isAppOnline } from './network';
 import { formatDateInput } from '../utils/dateTime';
 import { parseTimeToMinutes } from '../utils/requestCalculations';
 
@@ -15,6 +18,22 @@ export type PortalEventActivity = {
   total_hours: number;
   is_active: boolean;
 };
+
+export const EVENTS_ACTIVITIES_CACHE_KEY = 'portal_active_events_activities_v1';
+
+/**
+ * Loads cached events and activities from local storage (SQLite / AsyncStorage / Memory).
+ * Returns immediately with no network dependencies.
+ */
+export async function loadCachedEventsActivities(): Promise<PortalEventActivity[]> {
+  try {
+    const cached = await getCacheJSON<PortalEventActivity[]>(EVENTS_ACTIVITIES_CACHE_KEY);
+    return Array.isArray(cached) ? cached : [];
+  } catch (err) {
+    console.warn('[eventsActivities] Failed to load cached events:', err);
+    return [];
+  }
+}
 
 /**
  * Checks if an event or activity has already passed or is finished.
@@ -47,7 +66,14 @@ export function isEventPassedOrDone(ev: PortalEventActivity, now: Date = new Dat
   return currentMinutes >= endMinutes;
 }
 
-export async function loadActiveEventsActivities(): Promise<PortalEventActivity[]> {
+export async function loadActiveEventsActivities(forceRefresh = false): Promise<PortalEventActivity[]> {
+  const cached = await loadCachedEventsActivities();
+
+  // If app is offline, return cached events immediately
+  if (!isAppOnline()) {
+    return cached;
+  }
+
   try {
     const { data, error } = await supabase
       .from('portal_events')
@@ -57,7 +83,7 @@ export async function loadActiveEventsActivities(): Promise<PortalEventActivity[
       .order('time_from', { ascending: true });
 
     if (!error && Array.isArray(data)) {
-      return data.map((d: any) => ({
+      const mapped: PortalEventActivity[] = data.map((d: any) => ({
         id: String(d.id),
         title: String(d.title || ''),
         type: String(d.type || 'Event'),
@@ -70,6 +96,9 @@ export async function loadActiveEventsActivities(): Promise<PortalEventActivity[
         total_hours: typeof d.total_hours === 'number' ? d.total_hours : parseFloat(d.total_hours) || 8.0,
         is_active: Boolean(d.is_active),
       }));
+
+      await setCacheJSON(EVENTS_ACTIVITIES_CACHE_KEY, mapped);
+      return mapped;
     }
   } catch (err) {
     console.warn('Error querying portal_events directly:', err);
@@ -81,7 +110,7 @@ export async function loadActiveEventsActivities(): Promise<PortalEventActivity[
       p_only_active: true,
     });
     if (!rpcErr && Array.isArray(rpcData)) {
-      return rpcData.map((d: any) => ({
+      const mapped: PortalEventActivity[] = rpcData.map((d: any) => ({
         id: String(d.id),
         title: String(d.title || ''),
         type: String(d.type || 'Event'),
@@ -94,10 +123,23 @@ export async function loadActiveEventsActivities(): Promise<PortalEventActivity[
         total_hours: typeof d.total_hours === 'number' ? d.total_hours : parseFloat(d.total_hours) || 8.0,
         is_active: Boolean(d.is_active),
       }));
+
+      await setCacheJSON(EVENTS_ACTIVITIES_CACHE_KEY, mapped);
+      return mapped;
     }
   } catch (rpcCatch) {
     console.warn('Error calling get_portal_events RPC:', rpcCatch);
   }
 
+  // If network queries failed but we have cached events, return them
+  if (cached.length > 0) {
+    return cached;
+  }
+
   return [];
 }
+
+// Automatically revalidate events when device regains network connectivity
+DeviceEventEmitter.addListener('network_restored', () => {
+  void loadActiveEventsActivities(true).catch(() => {});
+});

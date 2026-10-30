@@ -322,6 +322,7 @@ function normalizeTransactionToken(token: string): string {
   const cleaned = token.trim();
   const lower = cleaned.toLowerCase();
 
+  if (lower === 'scheduled_ot' || lower === 'scheduled ot') return 'OT';
   if (lower.includes('official business') || lower === 'ob') return 'OB';
   if (lower.includes('undertime') || lower === 'ut') return 'UT';
   if (lower.includes('overtime') || lower === 'ot') return 'OT';
@@ -386,7 +387,19 @@ export function formatUnifiedRequestType(
     }
   }
 
-  const normalizedTokens = rawTokens
+  const hasOtherTokens = rawTokens.some((t) => {
+    const l = t.toLowerCase().trim();
+    return l !== 'scheduled_ot' && l !== 'scheduled ot';
+  });
+
+  const filteredRawTokens = hasOtherTokens
+    ? rawTokens.filter((t) => {
+        const l = t.toLowerCase().trim();
+        return l !== 'scheduled_ot' && l !== 'scheduled ot';
+      })
+    : rawTokens;
+
+  const normalizedTokens = filteredRawTokens
     .map(normalizeTransactionToken)
     .filter((token) => Boolean(token) && token !== 'ESARF Request');
 
@@ -456,10 +469,32 @@ export function parseEsarfEntries(item: {
 
       if (match) {
         if (blocks.length === 1 && item.transaction_type && item.transaction_type.trim()) {
-          const tokens = item.transaction_type.split(/[,/]+/).map((s) => normalizeTransactionToken(s)).filter(Boolean);
+          const rawSplit = item.transaction_type.split(/[,/]+/).map((s) => s.trim()).filter(Boolean);
+          const hasOther = rawSplit.some((t) => {
+            const l = t.toLowerCase();
+            return l !== 'scheduled_ot' && l !== 'scheduled ot';
+          });
+          const filtered = hasOther
+            ? rawSplit.filter((t) => {
+                const l = t.toLowerCase();
+                return l !== 'scheduled_ot' && l !== 'scheduled ot';
+              })
+            : rawSplit;
+          const tokens = filtered.map((s) => normalizeTransactionToken(s)).filter(Boolean);
           transactionLabel = tokens.length > 0 ? Array.from(new Set(tokens)).join(' / ') : item.transaction_type.trim();
         } else {
-          const tokens = transactionLabel.split(/[,/]+/).map((s) => normalizeTransactionToken(s)).filter(Boolean);
+          const rawSplit = transactionLabel.split(/[,/]+/).map((s) => s.trim()).filter(Boolean);
+          const hasOther = rawSplit.some((t) => {
+            const l = t.toLowerCase();
+            return l !== 'scheduled_ot' && l !== 'scheduled ot';
+          });
+          const filtered = hasOther
+            ? rawSplit.filter((t) => {
+                const l = t.toLowerCase();
+                return l !== 'scheduled_ot' && l !== 'scheduled ot';
+              })
+            : rawSplit;
+          const tokens = filtered.map((s) => normalizeTransactionToken(s)).filter(Boolean);
           if (tokens.length > 0) {
             transactionLabel = Array.from(new Set(tokens)).join(' / ');
           }
@@ -548,6 +583,7 @@ export function parseEsarfEntries(item: {
           .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+          .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
           .trim();
 
@@ -639,6 +675,7 @@ export function parseEsarfEntries(item: {
     .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+    .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
     .trim();
 

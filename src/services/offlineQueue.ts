@@ -11,11 +11,14 @@ import {
 import type { MyRequest } from './requests';
 import { markBirthdayLeaveGrantedForYear } from './birthdayLeave';
 import { updateEmployeeProfile, type UpdateEmployeeProfileInput } from './profile';
+import { isScheduledOtRequest } from '../utils/scheduledOt';
 
 export const OFFLINE_QUEUE_KEY = 'hyg_offline_queue_v2';
 export const MY_REQUESTS_CACHE_KEY = 'my_requests_v1';
 
 export type OfflineEsarfPayload = {
+  isPreApproved?: boolean;
+  isPreApprovedMode?: boolean;
   primaryRequestType: string;
   overallDateFrom: string;
   overallDateTo: string;
@@ -27,6 +30,9 @@ export type OfflineEsarfPayload = {
   dayOff?: string | null;
   payrollClass?: string | null;
   combinedTransactionType: string;
+  storeId?: string | null;
+  storeName?: string | null;
+  customApprovers?: Array<{ step_order: number; approver_employee_id: string }> | null;
   attachedProofs?: Array<{
     photoProofId?: string | null;
     uri: string;
@@ -235,15 +241,22 @@ export async function replaceOfflineRequestInLocalCache(oldRequestId: string, up
     const cached = (await getCacheJSON<MyRequest[]>(MY_REQUESTS_CACHE_KEY)) || [];
     const baseId = oldRequestId.replace(/_\d+$/, '');
     let replaced = false;
+    const isPreApproved = Boolean(
+      (updatedRequest.status || '').toLowerCase().includes('pre-approved') ||
+      (updatedRequest.status || '').toLowerCase().includes('pre_approved') ||
+      (updatedRequest.reason || '').includes('[PreApproved]')
+    );
+    const resolvedStatus = isPreApproved ? 'pre_approved' : (updatedRequest.status || 'pending');
+
     const cleanUpdated: MyRequest = {
       ...updatedRequest,
-      status: 'pending',
+      status: resolvedStatus,
       approval_summary: (updatedRequest.approval_summary || []).map((step) => ({
         ...step,
         status:
           (step.status || '').toLowerCase().includes('offline') ||
           (step.status || '').toLowerCase().includes('pending sync')
-            ? 'pending'
+            ? (isPreApproved ? 'waiting' : 'pending')
             : step.status,
       })),
     };
@@ -675,7 +688,7 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
                     await new Promise((r) => setTimeout(r, 2000 * (attempt - 1)));
                   }
 
-                  const { error } = await supabase.rpc('update_my_pending_request', {
+                  const updatePayload: Record<string, any> = {
                     p_request_id: item.payload.targetRequestId,
                     p_request_type_code: item.payload.primaryRequestType,
                     p_date_from: item.payload.overallDateFrom,
@@ -688,7 +701,31 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
                     p_day_off: item.payload.dayOff,
                     p_payroll_class: item.payload.payrollClass,
                     p_transaction_type: item.payload.combinedTransactionType || null,
-                  });
+                    p_store_id: item.payload.storeId || null,
+                    p_custom_approvers: item.payload.customApprovers && item.payload.customApprovers.length > 0 ? item.payload.customApprovers : null,
+                  };
+
+                  let { error } = await supabase.rpc('update_my_pending_request', updatePayload);
+                  if (error) {
+                    const errStr = (error.message || '').toLowerCase();
+                    if (errStr.includes('function') || errStr.includes('schema') || errStr.includes('parameter')) {
+                      const fallbackRes = await supabase.rpc('update_my_pending_request', {
+                        p_request_id: item.payload.targetRequestId,
+                        p_request_type_code: item.payload.primaryRequestType,
+                        p_date_from: item.payload.overallDateFrom,
+                        p_date_to: item.payload.overallDateTo,
+                        p_time_from: item.payload.overallTimeFrom ? item.payload.overallTimeFrom : null,
+                        p_time_to: item.payload.overallTimeTo ? item.payload.overallTimeTo : null,
+                        p_total_hours: item.payload.totalHoursSum,
+                        p_reason: reason,
+                        p_time_schedule: item.payload.schedule,
+                        p_day_off: item.payload.dayOff,
+                        p_payroll_class: item.payload.payrollClass,
+                        p_transaction_type: item.payload.combinedTransactionType || null,
+                      });
+                      error = fallbackRes.error;
+                    }
+                  }
 
                   if (error) {
                     throw new Error(error.message);
@@ -729,7 +766,7 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
                     await new Promise((r) => setTimeout(r, 2000 * (attempt - 1)));
                   }
 
-                  const { data: newRequestId, error } = await supabase.rpc('submit_time_request', {
+                  const submitPayload: Record<string, any> = {
                     p_request_type_code: item.payload.primaryRequestType,
                     p_date_from: item.payload.overallDateFrom,
                     p_date_to: item.payload.overallDateTo,
@@ -741,7 +778,32 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
                     p_day_off: item.payload.dayOff,
                     p_payroll_class: item.payload.payrollClass,
                     p_transaction_type: item.payload.combinedTransactionType || null,
-                  });
+                    p_store_id: item.payload.storeId || null,
+                    p_custom_approvers: item.payload.customApprovers && item.payload.customApprovers.length > 0 ? item.payload.customApprovers : null,
+                    p_is_pre_approved: Boolean(item.payload.isPreApproved || item.payload.isPreApprovedMode),
+                  };
+
+                  let { data: newRequestId, error } = await supabase.rpc('submit_time_request', submitPayload);
+                  if (error) {
+                    const errStr = (error.message || '').toLowerCase();
+                    if (errStr.includes('function') || errStr.includes('schema') || errStr.includes('parameter')) {
+                      const fallbackRes = await supabase.rpc('submit_time_request', {
+                        p_request_type_code: item.payload.primaryRequestType,
+                        p_date_from: item.payload.overallDateFrom,
+                        p_date_to: item.payload.overallDateTo,
+                        p_time_from: item.payload.overallTimeFrom ? item.payload.overallTimeFrom : null,
+                        p_time_to: item.payload.overallTimeTo ? item.payload.overallTimeTo : null,
+                        p_total_hours: item.payload.totalHoursSum,
+                        p_reason: reason,
+                        p_time_schedule: item.payload.schedule,
+                        p_day_off: item.payload.dayOff,
+                        p_payroll_class: item.payload.payrollClass,
+                        p_transaction_type: item.payload.combinedTransactionType || null,
+                      });
+                      newRequestId = fallbackRes.data;
+                      error = fallbackRes.error;
+                    }
+                  }
 
                   if (error) {
                     throw new Error(error.message);
@@ -749,6 +811,18 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
 
                   if (newRequestId) {
                     createdServerId = String(newRequestId);
+                    if (item.payload.customApprovers && item.payload.customApprovers.length > 0) {
+                      for (const ca of item.payload.customApprovers) {
+                        try {
+                          await supabase.rpc('admin_reassign_request_approver', {
+                            p_request_id: createdServerId,
+                            p_new_approver_employee_id: ca.approver_employee_id,
+                          });
+                        } catch {
+                          // non-fatal
+                        }
+                      }
+                    }
                   }
                   esarfSubmittedSuccessfully = true;
                   lastEsarfErr = null;
@@ -765,14 +839,32 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
                 esarfSynced++;
                 await removeOfflineItem(item.id);
                 if (createdServerId) {
+                  const isPreApproved = Boolean(
+                    item.payload?.isPreApprovedMode ||
+                    item.payload?.isPreApproved ||
+                    item.displayItem.status?.toLowerCase().includes('pre-approved') ||
+                    item.displayItem.status?.toLowerCase().includes('pre_approved') ||
+                    (item.displayItem.reason || '').includes('[PreApproved]')
+                  );
+                  const syncedStatus = isPreApproved ? 'pre_approved' : 'pending';
+
+                  if (isPreApproved) {
+                    try {
+                      await supabase.from('requests').update({ status: 'pre_approved' }).eq('id', createdServerId);
+                    } catch (e) {
+                      // ignore if RLS does not allow direct updates
+                    }
+                  }
+
                   await replaceOfflineRequestInLocalCache(item.displayItem.request_id, {
                     ...item.displayItem,
                     request_id: createdServerId,
-                    status: 'pending',
+                    status: syncedStatus,
                   });
                   DeviceEventEmitter.emit('offline_request_synced', {
                     oldId: item.displayItem.request_id,
                     newId: createdServerId,
+                    status: syncedStatus,
                   });
                 } else {
                   await removeRequestFromLocalCache(item.displayItem.request_id);
@@ -807,18 +899,20 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
                     await new Promise((r) => setTimeout(r, 2000 * (attempt - 1)));
                   }
 
-                  const { error } = await supabase.rpc('update_my_pending_request', {
-                    p_request_id: item.payload.targetRequestId,
-                    p_request_type_code: 'leave',
-                    p_leave_type: ent.leaveType,
-                    p_leave_category: ent.leaveCategory,
-                    p_start_date: ent.startDate,
-                    p_end_date: ent.endDate,
-                    p_total_days: ent.paidDays + ent.unpaidDays,
-                    p_paid_days: ent.paidDays,
-                    p_unpaid_days: ent.unpaidDays,
-                    p_reason: ent.reason,
-                  });
+                    const { error } = await supabase.rpc('update_my_pending_request', {
+                      p_request_id: item.payload.targetRequestId,
+                      p_request_type_code: 'leave',
+                      p_leave_type: ent.leaveType,
+                      p_leave_category: ent.leaveCategory,
+                      p_start_date: ent.startDate,
+                      p_end_date: ent.endDate,
+                      p_total_days: ent.paidDays + ent.unpaidDays,
+                      p_paid_days: ent.paidDays,
+                      p_unpaid_days: ent.unpaidDays,
+                      p_reason: ent.reason,
+                      p_store_id: null,
+                      p_custom_approvers: null,
+                    });
 
                   if (error) {
                     throw new Error(error.message);

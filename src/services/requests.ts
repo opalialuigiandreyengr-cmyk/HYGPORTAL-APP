@@ -1,7 +1,7 @@
 import { DeviceEventEmitter } from 'react-native';
 import { ensureFreshSession, supabase } from '../lib/supabase';
 import { getCacheJSON, removeCacheItem, setCacheJSON } from '../lib/localCache';
-import { isScheduledOtRequest } from '../utils/scheduledOt';
+import { isScheduledOtRequest, hasPhotoProofAttached } from '../utils/scheduledOt';
 
 export type RequestApprovalSummary = {
   step_order: number;
@@ -123,13 +123,30 @@ export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]>
   // Normalize request status from database
   items = items.map((req) => {
     const rawLower = (req.status || '').toLowerCase().trim();
-    // If pre-approved scheduled OT, preserve it
-    if (
+    const reason = req.reason || '';
+    const hasEventOrActivity = /event:/i.test(reason) || /activity:/i.test(reason);
+    const cachedItem = cached?.find((c) => c.request_id === req.request_id);
+    const wasCachedPreApproved = Boolean(
+      cachedItem &&
+      ((cachedItem.status || '').toLowerCase().includes('pre-approved') ||
+       (cachedItem.status || '').toLowerCase().includes('pre_approved'))
+    );
+
+    const isExplicitlyPreApproved =
       rawLower.includes('pre_approved') ||
       rawLower.includes('pre-approved') ||
-      ((rawLower === 'pending' || rawLower === 'submitted' || rawLower === 'waiting') && isScheduledOtRequest(req))
-    ) {
+      /\[PreApproved\]/i.test(reason) ||
+      isScheduledOtRequest(req) ||
+      (wasCachedPreApproved && !hasPhotoProofAttached(req));
+
+    // If pre-approved from Pre-approved OT/Offset screen, ensure status is marked as pre_approved
+    if (isExplicitlyPreApproved && !req.final_approved_at && !rawLower.includes('reject') && !rawLower.includes('validat')) {
       return { ...req, status: 'pre_approved' };
+    }
+
+    // If regular ESARF with Event or Activity (from Apply ESARF), it MUST ALWAYS be pending (unless already approved/validated/rejected)
+    if (hasEventOrActivity && !req.final_approved_at && !rawLower.includes('reject') && !rawLower.includes('validat')) {
+      return { ...req, status: 'pending' };
     }
     // If validated in database, preserve it
     if (rawLower.includes('validat')) {
@@ -336,6 +353,8 @@ export type UpdatePendingRequestParams = {
   paidDays?: number | null;
   unpaidDays?: number | null;
   reason?: string | null;
+  storeId?: string | null;
+  customApprovers?: { step_order: number; approver_employee_id: string }[] | null;
 };
 
 import { checkApproverActiveViewing, type ActiveViewerInfo } from './requestViewerLock';
@@ -393,6 +412,8 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
       if (includeTypeCode && params.requestTypeCode) {
         payload.p_request_type_code = params.requestTypeCode;
       }
+      payload.p_store_id = params.storeId || null;
+      payload.p_custom_approvers = params.customApprovers && params.customApprovers.length > 0 ? params.customApprovers : null;
       return supabase.rpc('update_my_pending_request', payload);
     };
 
@@ -465,6 +486,7 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
       ...(params.startDate ? { date_from: params.startDate } : {}),
       ...(params.endDate ? { date_to: params.endDate } : {}),
       ...(targetTypeId ? { request_type_id: targetTypeId } : {}),
+      ...(params.storeId ? { store_id: params.storeId } : {}),
       updated_at: new Date().toISOString(),
     })
     .eq('id', targetId);
@@ -488,6 +510,7 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
         ...(params.payrollClass ? { payroll_class: params.payrollClass } : {}),
         ...(params.transactionType ? { transaction_type: params.transactionType } : {}),
         ...(params.reason ? { reason: params.reason } : {}),
+        ...(params.storeId ? { store_id: params.storeId } : {}),
       })
       .eq('request_id', targetId);
 

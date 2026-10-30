@@ -43,6 +43,7 @@ import {
   parseEsarfEntries,
   type ParsedEsarfEntry,
 } from '../components/EsarfDetailsView';
+import { lookupCachedApproverName, lookupCachedApproverByLevel } from '../services/storeApprovalWorkflow';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
 type StatusFilter = 'all' | 'pending' | 'approved' | 'validated' | 'rejected';
@@ -414,23 +415,50 @@ export function RequestsTabScreen({
       }
     });
 
-    const reqSyncedSub = DeviceEventEmitter.addListener('offline_request_synced', ({ oldId, newId }: { oldId: string; newId: string }) => {
-      if (!active) return;
-      setItems((prev) =>
-        prev.map((it) => (it.request_id === oldId ? { ...it, request_id: newId, status: 'pending' } : it)),
-      );
-      setSelectedRequest((curr) => {
-        if (!curr || curr.item.request_id !== oldId) return curr;
-        return {
-          ...curr,
-          item: {
-            ...curr.item,
-            request_id: newId,
-            status: 'pending',
-          },
-        };
-      });
-    });
+    const reqSyncedSub = DeviceEventEmitter.addListener(
+      'offline_request_synced',
+      ({ oldId, newId, status }: { oldId: string; newId: string; status?: string }) => {
+        if (!active) return;
+        const targetStatus = status || 'pending';
+        setItems((prev) =>
+          prev.map((it) => {
+            if (it.request_id === oldId) {
+              const isPreApproved =
+                targetStatus === 'pre_approved' ||
+                Boolean(
+                  (it.status || '').toLowerCase().includes('pre-approved') ||
+                  (it.status || '').toLowerCase().includes('pre_approved') ||
+                  isScheduledOtRequest(it),
+                );
+              return {
+                ...it,
+                request_id: newId,
+                status: isPreApproved ? 'pre_approved' : targetStatus,
+              };
+            }
+            return it;
+          }),
+        );
+        setSelectedRequest((curr) => {
+          if (!curr || curr.item.request_id !== oldId) return curr;
+          const isPreApproved =
+            targetStatus === 'pre_approved' ||
+            Boolean(
+              (curr.item.status || '').toLowerCase().includes('pre-approved') ||
+              (curr.item.status || '').toLowerCase().includes('pre_approved') ||
+              isScheduledOtRequest(curr.item),
+            );
+          return {
+            ...curr,
+            item: {
+              ...curr.item,
+              request_id: newId,
+              status: isPreApproved ? 'pre_approved' : targetStatus,
+            },
+          };
+        });
+      },
+    );
 
     const reqSyncedOnlineSub = DeviceEventEmitter.addListener('requests_synced_online', () => {
       if (!active) return;
@@ -1684,6 +1712,8 @@ function statusLabel(item: MyRequest): string {
     return 'REJECTED';
   }
 
+
+
   if (
     isScheduledOtAwaitingProof(item) ||
     lower.includes('pre_approved') ||
@@ -1730,6 +1760,7 @@ function renderStatusPillContent(item: MyRequest) {
 function statusPillStyle(status: StatusFilter | 'partial', item?: MyRequest) {
   const rawStatus = (item?.status || '').toLowerCase();
   const isFinalDone = rawStatus === 'approved' || rawStatus.includes('reject') || Boolean(item?.final_approved_at);
+
 
   if (
     item &&
@@ -1843,6 +1874,14 @@ function isOfflineUnsyncedRequest(item?: MyRequest | null): boolean {
   }
   const statusLower = (item.status || '').toLowerCase();
   if (statusLower.includes('offline') || statusLower.includes('pending sync')) {
+    return true;
+  }
+  if (item.approval_summary?.some((s) =>
+    s.approver_employee_no === 'SYS-LOCAL' ||
+    s.approver_name?.toLowerCase().includes('local device queue') ||
+    (s.status || '').toLowerCase().includes('offline') ||
+    (s.status || '').toLowerCase().includes('pending sync')
+  )) {
     return true;
   }
   return false;
@@ -2011,6 +2050,7 @@ function approvalTimeline(item: MyRequest) {
     ];
   }
 
+  const isOffline = isOfflineUnsyncedRequest(item);
   const fallback = [1, 2];
   const summary = (item.approval_summary && item.approval_summary.length > 0)
     ? item.approval_summary
@@ -2026,40 +2066,94 @@ function approvalTimeline(item: MyRequest) {
         ? 'Auto-Approved'
         : `L${levelNum} • ${approvalStepStatus(step.status)}`;
       return {
-        label: approvalRoleLabel(step),
+        label: approvalRoleLabel(step, isOffline, (item as any).department || (item as any).department_name),
         status: statusText,
         actedAt: step.acted_at,
       };
     })
-    : fallback.map((level) => ({
-      label: fallbackApprovalRoleLabel(level),
-      status: `L${level} • ${level === 1 ? 'Pending to approve' : 'Not yet processed'}`,
-      actedAt: null,
-    }));
+    : fallback.map((level) => {
+      const candidateName = lookupCachedApproverByLevel(level, (item as any).department || (item as any).department_name);
+      return {
+        label: candidateName && !isGenericApproverName(candidateName)
+          ? formatPersonNameWithMiddleInitial(candidateName)
+          : fallbackApprovalRoleLabel(level, isOffline),
+        status: `L${level} • ${level === 1 ? 'Pending to approve' : 'Not yet processed'}`,
+        actedAt: null,
+      };
+    });
 
   while (rows.length < fallback.length) {
     const level = fallback[rows.length];
-    rows.push({ label: fallbackApprovalRoleLabel(level), status: `L${level} • Not yet processed`, actedAt: null });
+    const candidateName = lookupCachedApproverByLevel(level, (item as any).department || (item as any).department_name);
+    rows.push({
+      label: candidateName && !isGenericApproverName(candidateName)
+        ? formatPersonNameWithMiddleInitial(candidateName)
+        : fallbackApprovalRoleLabel(level, isOffline),
+      status: `L${level} • Not yet processed`,
+      actedAt: null,
+    });
   }
 
   return rows;
 }
 
-function approvalRoleLabel(step: MyRequest['approval_summary'][number]) {
-  const approverName = normalizeDisplayValue(step.approver_name);
-  if (approverName) return formatPersonNameWithMiddleInitial(approverName);
+function isGenericApproverName(name: string | null | undefined): boolean {
+  if (!name) return true;
+  const n = name.trim().toLowerCase();
+  if (
+    n === 'approver' ||
+    n === 'approver 1' ||
+    n === 'approver 2' ||
+    n === 'approver 3' ||
+    n === 'approver 4' ||
+    n === 'approver 5' ||
+    n === 'approver 6' ||
+    n === 'approver 7' ||
+    n === 'approver 8' ||
+    /^approver\s+\d+$/i.test(n) ||
+    /^level\s+\d+\s+approver$/i.test(n) ||
+    n.includes('local device queue') ||
+    n === 'sys-local'
+  ) {
+    return true;
+  }
+  return false;
+}
 
+function approvalRoleLabel(step: MyRequest['approval_summary'][number], isOffline = false, department?: string | null) {
+  const levelNum = resolveApproverLevel(step);
+  const approverName = normalizeDisplayValue(step.approver_name);
+
+  // 1. If step has a real approver name (online, offline, assigned, or reassigned), always display their actual name!
+  if (approverName && !isGenericApproverName(approverName)) {
+    return formatPersonNameWithMiddleInitial(approverName);
+  }
+
+  // 2. If approver_employee_id is available, check locally cached approver candidates
+  if ((step as any).approver_employee_id) {
+    const cachedName = lookupCachedApproverName((step as any).approver_employee_id);
+    if (cachedName && !isGenericApproverName(cachedName)) {
+      return formatPersonNameWithMiddleInitial(cachedName);
+    }
+  }
+
+  // 3. Fallback to cached approver candidate matching this authority level
+  const levelCandidateName = lookupCachedApproverByLevel(levelNum, department);
+  if (levelCandidateName && !isGenericApproverName(levelCandidateName)) {
+    return formatPersonNameWithMiddleInitial(levelCandidateName);
+  }
+
+  // 4. Fallback to position name if available
   const positionName = normalizeDisplayValue(step.approver_position_name);
-  if (positionName) return positionName;
+  if (positionName && !isGenericApproverName(positionName)) return positionName;
 
   const skippedReason = normalizeDisplayValue(step.skipped_reason);
   if (skippedReason) return skippedReason;
 
-  const levelNum = resolveApproverLevel(step);
   return `Level ${levelNum} Approver`;
 }
 
-function fallbackApprovalRoleLabel(level: number) {
+function fallbackApprovalRoleLabel(level: number, isOffline = false) {
   return `Level ${level} Approver`;
 }
 
