@@ -54,6 +54,7 @@ export type MyRequest = {
 
 import { isAutoApprovedBirthdayGrant } from './birthdayLeave';
 import { invalidateBalanceHistoryCache } from './balanceHistory';
+import { invalidateTravelOrderDetailsCache } from './travelOrder';
 import { isAppOnline } from './network';
 import { loadPositionAuthorities } from './positions';
 import { enqueueOfflineItem, getOfflineQueue, removeOfflineItem, removeRequestFromLocalCache, type OfflineQueueItem } from './offlineQueue';
@@ -219,13 +220,13 @@ export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]>
       }
     }
 
-    // Preserve local travel orders until backend official travel order migration is deployed
-    const localTravelItems = cached.filter(
+    // Only preserve truly offline unsynced travel orders waiting for sync (never resurrect deleted server requests)
+    const localOfflineTravelItems = cached.filter(
       (item) =>
-        item.request_id?.startsWith('travel_') ||
-        item.request_type_code === 'travel_order',
+        item.request_id?.startsWith('travel_') &&
+        ((item.status || '').toLowerCase().includes('offline') || (item.status || '').toLowerCase().includes('pending sync')),
     );
-    for (const travItem of localTravelItems) {
+    for (const travItem of localOfflineTravelItems) {
       if (!items.some((serverItem) => serverItem.request_id === travItem.request_id)) {
         items = [travItem, ...items];
       }
@@ -271,10 +272,75 @@ export type SubmitLocalTravelOrderPayload = {
   costCenterCode?: string | null;
   chargeToStore?: string | null;
   submittedAt?: string;
+  customApprovers?: { step_order: number; approver_employee_id: string }[] | null;
+  workflowSteps?: {
+    step_order: number;
+    required_level: number;
+    role_name?: string;
+    approver_name: string;
+    approver_position_name?: string | null;
+    approver_employee_no?: string | null;
+    is_reassigned?: boolean;
+  }[] | null;
 };
 
-export async function submitLocalTravelOrder(payload: SubmitLocalTravelOrderPayload): Promise<MyRequest> {
-  const reqId = `travel_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+export async function submitOfficialTravelOrder(payload: SubmitLocalTravelOrderPayload): Promise<MyRequest> {
+  let rpcData: any = null;
+  let rpcError: any = null;
+
+  try {
+    const res = await supabase.rpc('submit_travel_order_request', {
+      p_destination_stores: payload.destinationStores,
+      p_departure_date: payload.departureDate,
+      p_return_date: payload.returnDate,
+      p_departure_time: payload.departureTime || null,
+      p_return_time: payload.returnTime || null,
+      p_transport_mode: payload.transportMode || null,
+      p_plate_no: payload.plateNo || null,
+      p_purpose_of_travel: payload.purposeOfTravel || null,
+      p_purpose_details: payload.purposeDetails || null,
+      p_transport_budget: Number(payload.transportBudget || 0),
+      p_meal_budget: Number(payload.mealBudget || 0),
+      p_emergency_budget: Number(payload.emergencyBudget || 0),
+      p_cost_center_code: payload.costCenterCode || null,
+      p_charge_to_store: payload.chargeToStore || null,
+      p_custom_approvers: payload.customApprovers || null,
+    });
+    rpcData = res.data;
+    rpcError = res.error;
+  } catch (err) {
+    rpcError = err;
+  }
+
+  if (rpcError) {
+    console.error('[submitOfficialTravelOrder] RPC error:', rpcError);
+    const msg = rpcError.message || String(rpcError);
+    const isNet = msg.toLowerCase().includes('network') || msg.toLowerCase().includes('fetch failed');
+    if (!isNet) {
+      throw new Error(msg);
+    }
+  }
+
+  const reqId = rpcData ? String(rpcData) : `travel_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+  // If custom approvers were specified, persist reassignments to request_approval_steps
+  if (rpcData && payload.customApprovers && payload.customApprovers.length > 0) {
+    for (const ca of payload.customApprovers) {
+      try {
+        await supabase
+          .from('request_approval_steps')
+          .update({
+            assigned_approver_employee_id: ca.approver_employee_id,
+            is_reassigned: true,
+          })
+          .eq('request_id', reqId)
+          .eq('step_order', ca.step_order);
+      } catch (err) {
+        console.warn('[submitOfficialTravelOrder] Failed to update custom approver:', err);
+      }
+    }
+  }
+
   const submittedAt = payload.submittedAt || new Date().toISOString();
   const destinations = payload.destinationStores?.length ? payload.destinationStores.join(', ') : 'Not specified';
   const purpose = payload.purposeOfTravel || 'Official Travel';
@@ -309,18 +375,40 @@ export async function submitLocalTravelOrder(payload: SubmitLocalTravelOrderPayl
     paid_days: null,
     unpaid_days: null,
     reason: `Destination: ${destinations} | Purpose: ${purpose}${purposeDetailStr}${transportStr}${budgetStr}`,
-    approval_summary: [
-      {
-        step_order: 1,
-        required_level: 2,
-        status: 'pending',
-        acted_at: null,
-        remarks: null,
-        skipped_reason: null,
-        approver_name: 'Immediate Supervisor / Manager',
-        approver_employee_no: null,
-      },
-    ],
+    approval_summary: (payload.workflowSteps && payload.workflowSteps.length > 0)
+      ? payload.workflowSteps.map((st, idx) => ({
+          step_order: st.step_order || idx + 1,
+          required_level: st.required_level || (idx === 0 ? 2 : 5),
+          status: idx === 0 ? 'pending' : 'waiting',
+          acted_at: null,
+          remarks: null,
+          skipped_reason: null,
+          approver_name: st.approver_name,
+          approver_position_name: st.approver_position_name || null,
+          approver_employee_no: st.approver_employee_no || null,
+        }))
+      : [
+          {
+            step_order: 1,
+            required_level: 2,
+            status: 'pending',
+            acted_at: null,
+            remarks: null,
+            skipped_reason: null,
+            approver_name: 'Store Manager / Immediate Supervisor',
+            approver_employee_no: null,
+          },
+          {
+            step_order: 2,
+            required_level: 5,
+            status: 'waiting',
+            acted_at: null,
+            remarks: null,
+            skipped_reason: null,
+            approver_name: 'Area Operations Manager',
+            approver_employee_no: null,
+          },
+        ],
   };
 
   const cacheKey = 'my_requests_v1';
@@ -328,8 +416,231 @@ export async function submitLocalTravelOrder(payload: SubmitLocalTravelOrderPayl
   const updated = [newTravelReq, ...cached.filter((r) => r.request_id !== reqId)];
   await setCacheJSON(cacheKey, updated);
   invalidateRequestsCache();
+  try {
+    const approvalsModule = await import('./approvals');
+    approvalsModule.invalidateApprovalsCache();
+  } catch (_) {}
+  await removeCacheItem('my_requests_v1').catch(() => {});
   DeviceEventEmitter.emit('my_requests_updated');
   return newTravelReq;
+}
+
+export const submitLocalTravelOrder = submitOfficialTravelOrder;
+
+export function isTravelOrderRequest(
+  item: {
+    request_type_code?: string | null;
+    request_type_name?: string | null;
+    transaction_type?: string | null;
+  } | null | undefined,
+): boolean {
+  if (!item) return false;
+  const code = (item.request_type_code || '').toLowerCase().trim();
+  if (
+    code === 'travel_order' ||
+    code === 'travel' ||
+    code === 'official_travel' ||
+    code === 'official_travel_order' ||
+    code === 'to'
+  ) {
+    return true;
+  }
+  const name = (item.request_type_name || '').toLowerCase();
+  if (name.includes('travel order') || name.includes('official travel')) {
+    return true;
+  }
+  const trans = (item.transaction_type || '').toLowerCase();
+  if (trans.includes('travel order') || trans.includes('official travel')) {
+    return true;
+  }
+  return false;
+}
+
+export async function updateOfficialTravelOrder(
+  requestId: string,
+  payload: SubmitLocalTravelOrderPayload,
+): Promise<MyRequest> {
+  if (!requestId) {
+    throw new Error('Missing Request ID.');
+  }
+
+  // 1. Active Viewing Lock Pre-check
+  const lockInfo = await checkApproverActiveViewing(requestId);
+  if (lockInfo.isLocked) {
+    throw new Error(
+      `This travel order is currently being reviewed by your manager/approver (${lockInfo.approverName || 'Manager'}). Editing is temporarily disabled while they are viewing it to prevent data conflicts. Please try again in a few moments.`,
+    );
+  }
+
+  // 2. Prevent editing if any approval step has already been approved
+  const { data: updateApprovedSteps } = await supabase
+    .from('request_approval_steps')
+    .select('id')
+    .eq('request_id', requestId)
+    .ilike('status', '%approved%')
+    .limit(1);
+
+  if (updateApprovedSteps && updateApprovedSteps.length > 0) {
+    throw new Error('This travel order has already received an approval in the timeline and can no longer be edited.');
+  }
+
+  const destinations = payload.destinationStores?.length ? payload.destinationStores.join(', ') : 'Not specified';
+  const purpose = payload.purposeOfTravel || 'Official Travel';
+  const purposeDetailStr = payload.purposeDetails ? ` (${payload.purposeDetails})` : '';
+  const transportStr = payload.transportMode ? ` | Transport: ${payload.transportMode}${payload.plateNo ? ` [${payload.plateNo}]` : ''}` : '';
+  const budgetTotal = (payload.transportBudget || 0) + (payload.mealBudget || 0) + (payload.emergencyBudget || 0);
+  const budgetStr = budgetTotal > 0 ? ` | Budget: PHP ${budgetTotal.toLocaleString()}` : '';
+  const reasonSummary = `Destination: ${destinations} | Purpose: ${purpose}${purposeDetailStr}${transportStr}${budgetStr}`;
+
+  // 3. Attempt RPC first if available
+  let rpcSucceeded = false;
+  try {
+    const { error: rpcErr } = await supabase.rpc('update_travel_order_request', {
+      p_request_id: requestId,
+      p_destination_stores: payload.destinationStores || [],
+      p_departure_date: payload.departureDate,
+      p_return_date: payload.returnDate,
+      p_departure_time: payload.departureTime || null,
+      p_return_time: payload.returnTime || null,
+      p_transport_mode: payload.transportMode || null,
+      p_plate_no: payload.plateNo || null,
+      p_purpose_of_travel: payload.purposeOfTravel || null,
+      p_purpose_details: payload.purposeDetails || null,
+      p_transport_budget: Number(payload.transportBudget || 0),
+      p_meal_budget: Number(payload.mealBudget || 0),
+      p_emergency_budget: Number(payload.emergencyBudget || 0),
+      p_cost_center_code: payload.costCenterCode || null,
+      p_charge_to_store: payload.chargeToStore || null,
+      p_custom_approvers: payload.customApprovers || null,
+    });
+    if (!rpcErr) {
+      rpcSucceeded = true;
+    } else {
+      console.warn('[updateOfficialTravelOrder] RPC returned error, attempting direct table update:', rpcErr);
+    }
+  } catch (rpcEx) {
+    console.warn('[updateOfficialTravelOrder] RPC threw exception, attempting direct table update:', rpcEx);
+  }
+
+  // 4. Fallback: Direct table update if RPC failed or not deployed yet
+  if (!rpcSucceeded) {
+    // Master requests row update: ONLY existing columns (updated_at)
+    try {
+      await supabase
+        .from('requests')
+        .update({
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', requestId);
+    } catch (reqErr) {
+      console.warn('[updateOfficialTravelOrder] Note: requests updated_at update failed:', reqErr);
+    }
+
+    // Upsert dedicated travel_order_request_details row
+    const { error: detailsError } = await supabase
+      .from('travel_order_request_details')
+      .upsert(
+        {
+          request_id: requestId,
+          destination_stores: payload.destinationStores || [],
+          destinations: destinations,
+          departure_date: payload.departureDate,
+          return_date: payload.returnDate,
+          departure_time: payload.departureTime || null,
+          return_time: payload.returnTime || null,
+          transport_mode: payload.transportMode || null,
+          plate_no: payload.plateNo || null,
+          purpose_of_travel: payload.purposeOfTravel || null,
+          purpose_details: payload.purposeDetails || null,
+          transport_budget: Number(payload.transportBudget || 0),
+          meal_budget: Number(payload.mealBudget || 0),
+          emergency_budget: Number(payload.emergencyBudget || 0),
+          total_budget: budgetTotal,
+          cost_center_code: payload.costCenterCode || null,
+          charge_to_store: payload.chargeToStore || null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'request_id' },
+      );
+
+    if (detailsError) {
+      console.error('[updateOfficialTravelOrder] Error upserting travel_order_request_details:', detailsError);
+      throw new Error(detailsError.message || 'Failed to update travel order details.');
+    }
+
+    // Update custom approvers if specified
+    if (payload.customApprovers && payload.customApprovers.length > 0) {
+      for (const ca of payload.customApprovers) {
+        try {
+          await supabase
+            .from('request_approval_steps')
+            .update({
+              assigned_approver_employee_id: ca.approver_employee_id,
+              is_reassigned: true,
+            })
+            .eq('request_id', requestId)
+            .eq('step_order', ca.step_order);
+        } catch (err) {
+          console.warn('[updateOfficialTravelOrder] Error updating custom approver:', err);
+        }
+      }
+    }
+  }
+
+  // 5. Invalidate caches
+  invalidateRequestsCache();
+  invalidateTravelOrderDetailsCache(requestId);
+
+  const { data: sessionData } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+  const userId = sessionData.session?.user?.id;
+  const cacheKey = userId ? `my_requests_v1_${userId}` : 'my_requests_v1';
+  const cached = (await getCacheJSON<MyRequest[]>(cacheKey)) || [];
+  const existingReq = cached.find((r) => r.request_id === requestId);
+
+  const updatedReq: MyRequest = {
+    request_id: requestId,
+    request_type_code: 'travel_order',
+    request_type_name: 'Official Travel Order',
+    status: (existingReq?.status as any) || 'pending',
+    submitted_at: existingReq?.submitted_at || payload.submittedAt || new Date().toISOString(),
+    final_approved_at: null,
+    rejected_at: null,
+    rejected_reason: null,
+    date_from: payload.departureDate,
+    date_to: payload.returnDate,
+    time_from: payload.departureTime || null,
+    time_to: payload.returnTime || null,
+    transaction_type: 'Travel Order',
+    total_hours: null,
+    leave_type: null,
+    leave_category: null,
+    start_date: payload.departureDate,
+    end_date: payload.returnDate,
+    total_days: null,
+    paid_days: null,
+    unpaid_days: null,
+    reason: reasonSummary,
+    approval_summary: (payload.workflowSteps && payload.workflowSteps.length > 0)
+      ? payload.workflowSteps.map((st, idx) => ({
+          step_order: st.step_order || idx + 1,
+          required_level: st.required_level || (idx === 0 ? 2 : 5),
+          status: idx === 0 ? 'pending' : 'waiting',
+          acted_at: null,
+          remarks: null,
+          skipped_reason: null,
+          approver_name: st.approver_name,
+          approver_position_name: st.approver_position_name || null,
+          approver_employee_no: st.approver_employee_no || null,
+        }))
+      : existingReq?.approval_summary || [],
+  };
+
+  const updated = [updatedReq, ...cached.filter((r) => r.request_id !== requestId)];
+  await setCacheJSON(cacheKey, updated);
+  await removeCacheItem('my_requests_v1').catch(() => {});
+  DeviceEventEmitter.emit('my_requests_updated');
+
+  return updatedReq;
 }
 
 

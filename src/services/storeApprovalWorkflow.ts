@@ -429,7 +429,9 @@ export async function resolveStoreWorkflowFromCandidates(
   employeeId?: string | null,
   isOperations = true,
 ): Promise<WorkflowStep[]> {
-  const storeLabel = (fallbackStoreName || '').trim();
+  let storeLabel = (fallbackStoreName || '').trim();
+  let employeeDept: string | null = null;
+  let employeeLevel = 1;
   let candidates: ApproverCandidate[] = [];
 
   try {
@@ -460,6 +462,17 @@ export async function resolveStoreWorkflowFromCandidates(
     }
   }
 
+  if (employeeId && candidates.length > 0) {
+    const requester = candidates.find((c) => c.employee_id === employeeId);
+    if (requester) {
+      if (!storeLabel && requester.store_name) {
+        storeLabel = requester.store_name;
+      }
+      employeeDept = requester.department_name || null;
+      employeeLevel = requester.authority_level ?? (lookupPositionAuthorityLevel(requester.position_name) ?? 1);
+    }
+  }
+
   // Filter out the requester so they never approve their own request
   const validCandidates = candidates.filter((c) => !employeeId || c.employee_id !== employeeId);
 
@@ -486,43 +499,61 @@ export async function resolveStoreWorkflowFromCandidates(
 
   // Ladder Finder 1: Store-level approver (Level 2 / 3 - Store Supervisor / Store Manager)
   function findStoreCandidate(usedIds: Set<string>): ApproverCandidate | null {
-    if (!storeLabel || validCandidates.length === 0) return null;
-    const storeMatches = validCandidates.filter(
-      (c) => !usedIds.has(c.employee_id) && isStoreNameMatch(c.store_name, storeLabel),
-    );
-    if (storeMatches.length > 0) {
-      storeMatches.sort((a, b) => {
-        const aLevel = a.authority_level ?? (lookupPositionAuthorityLevel(a.position_name) ?? 2);
-        const bLevel = b.authority_level ?? (lookupPositionAuthorityLevel(b.position_name) ?? 2);
-        const aIsStore = aLevel === 2 || aLevel === 3 ? 0 : 1;
-        const bIsStore = bLevel === 2 || bLevel === 3 ? 0 : 1;
-        if (aIsStore !== bIsStore) return aIsStore - bIsStore;
-        return aLevel - bLevel;
-      });
-      return storeMatches[0];
-    }
-
-    const cleanStoreKey = storeLabel
-      .replace(/\b(goldilocks|hyg|store|branch|bldg|building|mall)\b/gi, '')
-      .trim()
-      .toLowerCase();
-    if (cleanStoreKey.length >= 3) {
-      const keywordMatches = validCandidates.filter((c) => {
-        if (usedIds.has(c.employee_id)) return false;
-        const s = (c.store_name || '').toLowerCase();
-        const d = (c.department_name || '').toLowerCase();
-        const p = (c.position_name || '').toLowerCase();
-        return s.includes(cleanStoreKey) || d.includes(cleanStoreKey) || p.includes(cleanStoreKey);
-      });
-      if (keywordMatches.length > 0) {
-        keywordMatches.sort((a, b) => {
+    if (storeLabel && validCandidates.length > 0) {
+      const storeMatches = validCandidates.filter(
+        (c) => !usedIds.has(c.employee_id) && isStoreNameMatch(c.store_name, storeLabel),
+      );
+      if (storeMatches.length > 0) {
+        storeMatches.sort((a, b) => {
           const aLevel = a.authority_level ?? (lookupPositionAuthorityLevel(a.position_name) ?? 2);
           const bLevel = b.authority_level ?? (lookupPositionAuthorityLevel(b.position_name) ?? 2);
+          const aIsStore = aLevel === 2 || aLevel === 3 ? 0 : 1;
+          const bIsStore = bLevel === 2 || bLevel === 3 ? 0 : 1;
+          if (aIsStore !== bIsStore) return aIsStore - bIsStore;
           return aLevel - bLevel;
         });
-        return keywordMatches[0];
+        return storeMatches[0];
+      }
+
+      const cleanStoreKey = storeLabel
+        .replace(/\b(goldilocks|hyg|store|branch|bldg|building|mall)\b/gi, '')
+        .trim()
+        .toLowerCase();
+      if (cleanStoreKey.length >= 3) {
+        const keywordMatches = validCandidates.filter((c) => {
+          if (usedIds.has(c.employee_id)) return false;
+          const s = (c.store_name || '').toLowerCase();
+          const d = (c.department_name || '').toLowerCase();
+          const p = (c.position_name || '').toLowerCase();
+          return s.includes(cleanStoreKey) || d.includes(cleanStoreKey) || p.includes(cleanStoreKey);
+        });
+        if (keywordMatches.length > 0) {
+          keywordMatches.sort((a, b) => {
+            const aLevel = a.authority_level ?? (lookupPositionAuthorityLevel(a.position_name) ?? 2);
+            const bLevel = b.authority_level ?? (lookupPositionAuthorityLevel(b.position_name) ?? 2);
+            return aLevel - bLevel;
+          });
+          return keywordMatches[0];
+        }
       }
     }
+
+    // If not found in store or non-store department, find higher-level supervisor in same department
+    if (employeeDept && validCandidates.length > 0) {
+      const deptMatches = validCandidates.filter(
+        (c) =>
+          !usedIds.has(c.employee_id) &&
+          c.department_name &&
+          c.department_name.toLowerCase() === employeeDept!.toLowerCase() &&
+          (c.authority_level ?? 2) > employeeLevel &&
+          (c.authority_level ?? 2) <= 4,
+      );
+      if (deptMatches.length > 0) {
+        deptMatches.sort((a, b) => (a.authority_level ?? 2) - (b.authority_level ?? 2));
+        return deptMatches[0];
+      }
+    }
+
     return null;
   }
 
@@ -896,7 +927,7 @@ export async function loadStoreApprovalWorkflow(
 
       // 4. Default workflow when storeId is not provided (requester's home route)
       if (!storeId) {
-        // Try RPC
+        // Query database get_store_approval_route RPC which resolves the ladder via approval_level_routes & find_request_approver
         try {
           const res: any = await withTimeout(
             supabase.rpc('get_store_approval_route', {
@@ -907,10 +938,22 @@ export async function loadStoreApprovalWorkflow(
           );
 
           if (res && !res.error && Array.isArray(res.data) && res.data.length > 0) {
-            const steps = (res.data as WorkflowStep[]).map((st) => ({
-              ...st,
-              approver_name: formatApproverDisplayName(st.approver_name, st.approver_position_name || st.role_name, st.required_level),
-            }));
+            const steps = (res.data as any[]).map((st) => {
+              const effLevel = resolveApproverLevel({
+                approver_level: st.approver_level,
+                position_level: st.position_level,
+                required_level: st.required_level,
+                approver_position_name: st.approver_position_name,
+                role_name: st.role_name,
+              });
+              return {
+                ...st,
+                required_level: effLevel,
+                approver_level: st.approver_level ?? effLevel,
+                position_level: st.position_level ?? effLevel,
+                approver_name: formatApproverDisplayName(st.approver_name, st.approver_position_name || st.role_name, effLevel),
+              } as WorkflowStep;
+            });
 
             const hasValidRealNames = steps.some(
               (s) => s.approver_name && s.approver_name.trim().toUpperCase() !== 'APPROVER',
@@ -923,131 +966,15 @@ export async function loadStoreApprovalWorkflow(
           // ignore
         }
 
-        // Zero-network check: extract from local my_requests_v1 cache if original route
-        try {
-          const myReqs = await getCacheJSON<any[]>('my_requests_v1');
-          if (Array.isArray(myReqs) && myReqs.length > 0) {
-            const withSummary = myReqs.find(
-              (r) =>
-                Array.isArray(r.approval_summary) &&
-                r.approval_summary.length > 0 &&
-                r.approval_summary.some(
-                  (as: any) =>
-                    as.approver_name &&
-                    as.approver_name.trim().toLowerCase() !== 'approver' &&
-                    as.approver_name.trim().toLowerCase() !== 'hyg portal system',
-                ),
-            );
-
-            if (withSummary && withSummary.approval_summary.length > 0) {
-              const mapped: WorkflowStep[] = withSummary.approval_summary.map((as: any, idx: number) => {
-                const role = as.approver_position_name || (idx === 0 ? 'Supervisor' : 'Manager');
-                const levelNum = as.required_level || as.level || as.approver_level || (idx === 0 ? 3 : 7);
-                return {
-                  step_order: as.step_order || idx + 1,
-                  required_level: levelNum,
-                  role_name: role,
-                  approver_employee_id: as.approver_employee_id || null,
-                  approver_name: formatApproverDisplayName(as.approver_name, role, levelNum),
-                  approver_position_name: as.approver_position_name || null,
-                  approver_employee_no: as.approver_employee_no || null,
-                  status: idx === 0 ? 'Pending to approve' : 'Not yet processed',
-                  store_id: null,
-                  store_name: null,
-                };
-              });
-
-              if (mapped.length > 0) {
-                return mapped;
-              }
-            }
-          }
-        } catch {
-          // ignore
-        }
-
-        // Targeted database check for recent request
-        try {
-          let targetEmpId = employeeId;
-          if (!targetEmpId) {
-            const authSession: any = await withTimeout(supabase.auth.getSession(), 1500);
-            const authUser = authSession?.data?.session?.user;
-            if (authUser?.id) {
-              const profRes: any = await withTimeout(
-                supabase
-                  .from('user_profiles')
-                  .select('employee_id')
-                  .eq('auth_user_id', authUser.id)
-                  .maybeSingle(),
-                2000,
-              );
-              if (profRes?.data?.employee_id) targetEmpId = profRes.data.employee_id;
-            }
-          }
-
-          const reqQuery = supabase
-            .from('requests')
-            .select('id, request_approval_steps(step_order, required_level, assigned_approver_employee_id)')
-            .order('created_at', { ascending: false })
-            .limit(1);
-
-          if (targetEmpId) {
-            reqQuery.or(`submitted_by_employee_id.eq.${targetEmpId},submitted_by_user_id.eq.${targetEmpId}`);
-          }
-
-          const recentRes: any = await withTimeout(reqQuery.maybeSingle(), 2000);
-          const recentReq = recentRes?.data;
-
-          if (recentReq && Array.isArray(recentReq.request_approval_steps) && recentReq.request_approval_steps.length > 0) {
-            const sortedSteps = [...recentReq.request_approval_steps].sort((a: any, b: any) => a.step_order - b.step_order);
-            const empIds = sortedSteps
-              .map((st: any) => st.assigned_approver_employee_id)
-              .filter((id: any) => typeof id === 'string' && id.length > 0);
-
-            let empMap: Record<string, any> = {};
-            if (empIds.length > 0) {
-              const empRes: any = await withTimeout(
-                supabase
-                  .from('employees')
-                  .select('id, first_name, middle_name, last_name, suffix, employee_no')
-                  .in('id', empIds),
-                2000,
-              );
-              if (Array.isArray(empRes?.data)) {
-                for (const e of empRes.data) {
-                  empMap[e.id] = e;
-                }
-              }
-            }
-
-            const mapped: WorkflowStep[] = sortedSteps.map((st: any, idx: number) => {
-              const emp = empMap[st.assigned_approver_employee_id];
-              const fullName = emp
-                ? [emp.first_name, emp.middle_name, emp.last_name, emp.suffix].filter(Boolean).join(' ')
-                : '';
-              const role = idx === 0 ? 'Supervisor' : 'Manager';
-              const levelNum = st.required_level || (idx === 0 ? 3 : 7);
-              return {
-                step_order: st.step_order || idx + 1,
-                required_level: levelNum,
-                role_name: role,
-                approver_employee_id: st.assigned_approver_employee_id || null,
-                approver_name: formatApproverDisplayName(fullName, role, levelNum),
-                approver_position_name: null,
-                approver_employee_no: emp?.employee_no || null,
-                status: idx === 0 ? 'Pending to approve' : 'Not yet processed',
-                store_id: null,
-                store_name: null,
-              };
-            });
-
-            const hasRealName = mapped.some((m) => m.approver_name && !m.approver_name.includes('APPROVER'));
-            if (hasRealName) {
-              return mapped;
-            }
-          }
-        } catch {
-          // ignore
+        // Offline / fallback: resolve from approver candidates following the ladder
+        const candidateResolved = await resolveStoreWorkflowFromCandidates(
+          null,
+          fallbackStoreName,
+          employeeId,
+          isOperations,
+        );
+        if (candidateResolved && candidateResolved.length > 0 && candidateResolved.some((s) => s.approver_employee_id)) {
+          return candidateResolved;
         }
       }
 
@@ -1065,13 +992,13 @@ export async function loadStoreApprovalWorkflow(
   }
 
   // Offline / cold-start fallback
-  if (storeId || fallbackStoreName) {
-    const candidateResolved = await resolveStoreWorkflowFromCandidates(
-      storeId,
-      fallbackStoreName,
-      employeeId,
-      isOperations,
-    );
+  const candidateResolved = await resolveStoreWorkflowFromCandidates(
+    storeId,
+    fallbackStoreName,
+    employeeId,
+    isOperations,
+  );
+  if (candidateResolved && candidateResolved.length > 0 && candidateResolved.some((s) => s.approver_employee_id)) {
     const entry: SWRCacheEntry<WorkflowStep[]> = { data: candidateResolved, timestamp: Date.now() };
     swrMemoryCache.set(cacheKey, entry);
     setCacheJSON(cacheKey, entry).catch(() => {});
@@ -1232,5 +1159,16 @@ export async function reassignRequestApprover(
     return (data as string) || 'Approver reassigned successfully.';
   } catch (err: any) {
     throw new Error(err?.message || 'Failed to reassign approver.');
+  }
+}
+
+/**
+ * Purges cached workflow entries to force a fresh ladder resolution from the database.
+ */
+export function invalidateApprovalWorkflowCache(): void {
+  for (const key of Array.from(swrMemoryCache.keys())) {
+    if (key.startsWith(SWR_PREFIX_WORKFLOW)) {
+      swrMemoryCache.delete(key);
+    }
   }
 }

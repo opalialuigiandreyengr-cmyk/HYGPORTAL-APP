@@ -86,7 +86,7 @@ import {
 import { loadEmployeeProfile } from './src/services/profile';
 import { getCachedAvatarUri, primeAvatarCache } from './src/services/avatarCache';
 import { resolveLoginEmail } from './src/services/registerAccount';
-import { type MyRequest } from './src/services/requests';
+import { isTravelOrderRequest, type MyRequest } from './src/services/requests';
 import {
   deleteMyTeamSchedule,
   loadMyTeamEmployees,
@@ -864,6 +864,8 @@ export default function App() {
     setAssistantDraft(null);
     if (request.request_type_code === 'leave') {
       setActiveQuickRequestScreen('request_leave');
+    } else if (isTravelOrderRequest(request)) {
+      setActiveQuickRequestScreen('file_travel_order');
     } else {
       const trans = (request.transaction_type || request.request_type_code || '').toLowerCase();
       const isOtOrOffset = trans.includes('ot') || trans.includes('offset') || request.request_type_code === 'overtime' || request.request_type_code === 'offset_earn';
@@ -1892,6 +1894,7 @@ export default function App() {
         <SlideOverlayContainer visible={activeQuickRequestScreen === 'file_travel_order'}>
           <FileOfficialTravelOrderScreen
             profileResult={profileResult}
+            editingRequest={editingRequest}
             name={profileResult?.status === 'linked' ? profileResult.profile.fullName : signedInUser.email}
             username={currentUsername}
             photoUrl={profileResult?.status === 'linked' ? profileResult.profile.photoUrl : null}

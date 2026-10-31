@@ -26,7 +26,8 @@ import {
 } from '../utils/scheduledOt';
 import { PhotoProofPickerModal, type SelectedProofAttachment } from '../components/PhotoProofPickerModal';
 import { formatTimeDisplay, stripSecondsFromTimeString } from '../utils/dateTime';
-import { syncAllOfflineItems } from '../services/offlineQueue';
+import { syncAllOfflineItems, removeRequestFromLocalCache } from '../services/offlineQueue';
+import { invalidateTravelOrderDetailsCache } from '../services/travelOrder';
 import { isAppOnline, useNetworkStatus } from '../services/network';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
@@ -44,6 +45,7 @@ import {
   type ParsedEsarfEntry,
 } from '../components/EsarfDetailsView';
 import { lookupCachedApproverName, lookupCachedApproverByLevel } from '../services/storeApprovalWorkflow';
+import { TravelOrderDetailsContent } from '../components/TravelOrderDetailsView';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
 type StatusFilter = 'all' | 'pending' | 'approved' | 'validated' | 'rejected';
@@ -121,7 +123,9 @@ export function RequestsTabScreen({
   async function handleEditRequest(item: MyRequest) {
     if (!onEditRequest) return;
     if (!canEditRequest(item)) {
-      const msg = 'This ESARF request has already received an approval in the timeline and can no longer be edited.';
+      const msg = isTravelOrderRequest(item)
+        ? 'This Travel Order has already received an approval in the timeline and can no longer be edited.'
+        : 'This request has already received an approval in the timeline and can no longer be edited.';
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
         window.alert(msg);
       } else {
@@ -367,6 +371,23 @@ export function RequestsTabScreen({
           .on(
             'postgres_changes',
             {
+              event: 'DELETE',
+              schema: 'public',
+              table: 'requests',
+            },
+            (payload: any) => {
+              const deletedId = payload?.old?.id;
+              if (deletedId) {
+                setItems((prev) => prev.filter((r) => r.request_id !== deletedId));
+                void removeRequestFromLocalCache(deletedId);
+                invalidateTravelOrderDetailsCache(deletedId);
+              }
+              void refreshSilently();
+            },
+          )
+          .on(
+            'postgres_changes',
+            {
               event: '*',
               schema: 'public',
               table: 'employee_perk_requests',
@@ -384,7 +405,15 @@ export function RequestsTabScreen({
             schema: 'public',
             table: 'requests',
           },
-          () => {
+          (payload: any) => {
+            if (payload?.eventType === 'DELETE') {
+              const deletedId = payload?.old?.id;
+              if (deletedId) {
+                setItems((prev) => prev.filter((r) => r.request_id !== deletedId));
+                void removeRequestFromLocalCache(deletedId);
+                invalidateTravelOrderDetailsCache(deletedId);
+              }
+            }
             void refreshSilently();
           },
         );
@@ -1044,6 +1073,27 @@ function RequestDetailsSheet({
       tone: timelineTone(step.status),
     })),
   ];
+
+  if (isTravel) {
+    return (
+      <Modal transparent animationType="slide" visible={Boolean(request)} onRequestClose={onClose}>
+        <View style={styles.sheetBackdrop}>
+          <Pressable style={styles.sheetDismissArea} onPress={onClose} />
+          <View style={styles.detailsSheet}>
+            <TravelOrderDetailsContent
+              item={item}
+              sequence={sequence}
+              profile={profile}
+              onClose={onClose}
+              timelineRows={timelineRows}
+              onEdit={onEdit}
+              canEdit={Boolean(onEdit && canEditRequest(item))}
+            />
+          </View>
+        </View>
+      </Modal>
+    );
+  }
 
   return (
     <Modal transparent animationType="slide" visible={Boolean(request)} onRequestClose={onClose}>
@@ -1859,8 +1909,8 @@ function canEditRequest(item: MyRequest): boolean {
   const statusKey = normalizeStatus(item.status, item);
   if (statusKey !== 'pending') return false;
   if (isPerkRequest(item)) return false;
-  // If ESARF has at least one approved status in the timeline, it cannot be edited
-  if (isEsarfRequest(item) && hasApprovedTimelineStatus(item)) {
+  // If request has at least one approved status in the timeline, it cannot be edited
+  if ((isEsarfRequest(item) || isTravelOrderRequest(item)) && hasApprovedTimelineStatus(item)) {
     return false;
   }
   return true;

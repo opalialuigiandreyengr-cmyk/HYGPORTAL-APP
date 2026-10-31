@@ -51,6 +51,7 @@ import {
   parseEsarfEntries,
 } from '../components/EsarfDetailsView';
 import { lookupCachedApproverName, lookupCachedApproverByLevel } from '../services/storeApprovalWorkflow';
+import { TravelOrderDetailsContent } from '../components/TravelOrderDetailsView';
 import { formatDateInput, stripSecondsFromTimeString } from '../utils/dateTime';
 import { isScheduledOtRequest, isScheduledTransaction } from '../utils/scheduledOt';
 import { parseTimeToMinutes } from '../utils/requestCalculations';
@@ -1141,6 +1142,107 @@ function ApprovalDetailsSheet({
     ...approvalTimeline(item),
   ];
 
+  if (isTravel) {
+    return (
+      <Modal transparent animationType="slide" visible onRequestClose={onClose}>
+        <KeyboardAvoidingView
+          style={styles.sheetBackdrop}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}
+        >
+          <Pressable style={styles.sheetDismissArea} onPress={onClose} />
+          <View style={styles.detailsSheet}>
+            <TravelOrderDetailsContent
+              item={item}
+              sequence={sequence}
+              profile={profile}
+              onClose={onClose}
+              timelineRows={timelineRows}
+              footerActions={
+                !isRejectingInline ? (
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                    <Pressable
+                      style={[styles.approverRejectBtn, { flex: 1 }]}
+                      onPress={() => setIsRejectingInline(true)}
+                    >
+                      <Text style={styles.approverRejectText}>Reject</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.approverConfirmBtn, { flex: 1 }]}
+                      onPress={() => onApprove(item, [], {})}
+                    >
+                      <Text style={styles.approverConfirmText}>Confirm Approval</Text>
+                    </Pressable>
+                  </View>
+                ) : null
+              }
+            />
+
+            {isRejectingInline ? (
+              <View style={[styles.inlineRejectPanel, { paddingBottom: footerBottomPadding }]}>
+                <View style={styles.inlineRejectBanner}>
+                  <View style={styles.inlineRejectIconCircle}>
+                    <AlertCircle size={18} color="#dc2626" strokeWidth={2.4} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inlineRejectTitle}>Reject Request</Text>
+                    <Text style={styles.inlineRejectSubtitle}>
+                      Specify the reason for rejecting this request
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.inputContainer}>
+                  <TextInput
+                    value={rejectReason}
+                    onChangeText={(val) => {
+                      setRejectReason(val);
+                      if (rejectError) setRejectError('');
+                    }}
+                    placeholder="Type reason for rejection here..."
+                    placeholderTextColor="#94a3b8"
+                    style={styles.inlineRejectInput}
+                    multiline
+                    maxLength={500}
+                    textAlignVertical="top"
+                    editable={!isSubmittingReject}
+                    autoFocus
+                  />
+                  <Text style={styles.charCountText}>{rejectReason.length}/500</Text>
+                </View>
+
+                {rejectError ? <Text style={styles.rejectErrorText}>{rejectError}</Text> : null}
+
+                <View style={styles.inlineRejectActions}>
+                  <Pressable
+                    style={styles.inlineCancelBtn}
+                    onPress={() => {
+                      setIsRejectingInline(false);
+                      setRejectReason('');
+                      setRejectError('');
+                    }}
+                    disabled={isSubmittingReject}
+                  >
+                    <Text style={styles.inlineCancelText}>Back</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.inlineSubmitRejectBtn, isSubmittingReject ? styles.btnDisabled : null]}
+                    onPress={() => void handleConfirmRejection()}
+                    disabled={isSubmittingReject}
+                  >
+                    <Text style={styles.inlineSubmitRejectText}>
+                      {isSubmittingReject ? 'Rejecting...' : 'Confirm Rejection'}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : null}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+    );
+  }
+
   const toggleEntrySelect = (idx: number) => {
     const target = esarfEntries.find((e) => e.index === idx);
     if (target?.isRejected) return;
@@ -1537,6 +1639,40 @@ function ApprovedDetailsSheet({
   }, [item, isLeave, isTravel]);
 
   if (!approval || !item) return null;
+
+  if (isTravel) {
+    const timelineRows: TimelineStep[] = [
+      {
+        title: 'Submitted',
+        subtitle: 'Request submitted',
+        date: formatSheetDate(item.submitted_at),
+        time: formatCompactTime(item.submitted_at),
+        tone: 'muted',
+      },
+      ...approvalTimeline(item),
+    ];
+
+    return (
+      <Modal transparent animationType="slide" visible onRequestClose={onClose}>
+        <KeyboardAvoidingView
+          style={styles.sheetBackdrop}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}
+        >
+          <Pressable style={styles.sheetDismissArea} onPress={onClose} />
+          <View style={styles.detailsSheet}>
+            <TravelOrderDetailsContent
+              item={item}
+              sequence={sequence}
+              profile={profile}
+              onClose={onClose}
+              timelineRows={timelineRows}
+            />
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+    );
+  }
 
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
   const department = item.department_name || profile?.departmentName || profile?.storeName || 'Department';

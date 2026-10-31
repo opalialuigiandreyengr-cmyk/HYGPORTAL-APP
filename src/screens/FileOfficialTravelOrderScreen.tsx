@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  BackHandler,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -17,14 +18,18 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
+  ArrowRightLeft,
   CalendarDays,
   Check,
+  CheckCircle2,
   ChevronDown,
   Clock3,
   Compass,
   Search,
   ShieldAlert,
   User,
+  Users,
+  WifiOff,
   X,
 } from 'lucide-react-native';
 
@@ -39,10 +44,22 @@ import { loadEmployeeProfile } from '../services/profile';
 import { loadEmployeeStoreOptions, type EmployeeStoreOption } from '../services/createProfile';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 import { dateStringToDate, formatDateInput } from '../utils/dateTime';
-import { submitLocalTravelOrder } from '../services/requests';
+import { platformAlert } from '../utils/platformAlert';
+import { submitOfficialTravelOrder, updateOfficialTravelOrder, type MyRequest } from '../services/requests';
+import { fetchTravelOrderDetails } from '../services/travelOrder';
+import {
+  loadStoreApprovalWorkflow,
+  loadApproverCandidates,
+  formatApproverDisplayName,
+  type WorkflowStep,
+  type ApproverCandidate,
+} from '../services/storeApprovalWorkflow';
+import { resolveApproverLevel, loadPositionAuthorities } from '../services/positions';
+import { useNetworkStatus } from '../services/network';
 
 export type FileOfficialTravelOrderScreenProps = {
   profileResult?: ProfileLoadResult | null;
+  editingRequest?: MyRequest | null;
   name?: string | null;
   username?: string | null;
   photoUrl?: string | null;
@@ -112,6 +129,7 @@ function formatTimeDisplay(timeStr: string): string {
 
 export function FileOfficialTravelOrderScreen({
   profileResult,
+  editingRequest,
   name,
   username,
   photoUrl,
@@ -244,6 +262,56 @@ export function FileOfficialTravelOrderScreen({
     };
   }, []);
 
+  const handleConfirmBack = useCallback(() => {
+    platformAlert(
+      editingRequest ? 'Discard Changes?' : 'Discard Travel Order?',
+      'Are you sure you want to discard and leave this page? Any unsaved changes will be lost.',
+      [
+        { text: 'Keep Editing', style: 'cancel' },
+        {
+          text: 'Discard',
+          style: 'destructive',
+          onPress: () => onBack(),
+        },
+      ],
+    );
+  }, [editingRequest, onBack]);
+
+  useEffect(() => {
+    const onBackPress = () => {
+      handleConfirmBack();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [handleConfirmBack]);
+
+  // Pre-load data if editing an existing travel order
+  useEffect(() => {
+    if (editingRequest) {
+      fetchTravelOrderDetails(editingRequest, profile)
+        .then((d) => {
+          if (d.destinationStores?.length) setSelectedStores(d.destinationStores);
+          if (d.departureDate) setDepartureDate(d.departureDate);
+          if (d.returnDate) setReturnDate(d.returnDate);
+          if (d.departureTime) setDepartureTime(d.departureTime);
+          if (d.returnTime) setReturnTime(d.returnTime);
+          if (d.transportMode) setTransportMode(d.transportMode);
+          if (d.plateNo) setPlateNo(d.plateNo);
+          if (d.purposeOfTravel) setPurposeOfTravel(d.purposeOfTravel);
+          if (d.purposeDetails) setOtherPurposeDetails(d.purposeDetails);
+          if (d.transportBudget) setTransportBudget(String(d.transportBudget));
+          if (d.mealBudget) setMealBudget(String(d.mealBudget));
+          if (d.emergencyBudget) setEmergencyBudget(String(d.emergencyBudget));
+          if (d.costCenterCode) setCostCenterCode(d.costCenterCode);
+          if (d.chargeToStore) setChargeToStore(d.chargeToStore);
+        })
+        .catch((err) => {
+          console.warn('[FileOfficialTravelOrderScreen] Failed to load travel order details for editing:', err);
+        });
+    }
+  }, [editingRequest, profile]);
+
   // Load employee profile if not provided
   useEffect(() => {
     if (profileResult?.status === 'linked') {
@@ -341,6 +409,17 @@ export function FileOfficialTravelOrderScreen({
         filtered.sort((a, b) => a.store_name.localeCompare(b.store_name));
         setGoldilocksStores(filtered);
       } catch (_) { }
+      try {
+        await Promise.all([
+          loadApproverCandidates(),
+          loadStoreApprovalWorkflow(
+            null,
+            profile?.employeeId?.trim() || employeeId?.trim() || null,
+            null,
+            false,
+          ),
+        ]);
+      } catch (_) { }
     } finally {
       setRefreshing(false);
     }
@@ -352,11 +431,17 @@ export function FileOfficialTravelOrderScreen({
     name?.trim() ||
     'Employee';
 
-  const resolvedEmployeeId =
-    profile?.employeeNo?.trim() ||
+  const resolvedEmployeeUuid =
     profile?.employeeId?.trim() ||
     employeeId?.trim() ||
+    null;
+
+  const resolvedEmployeeNo =
+    profile?.employeeNo?.trim() ||
     'N/A';
+
+  const resolvedEmployeeId =
+    resolvedEmployeeNo !== 'N/A' ? resolvedEmployeeNo : (resolvedEmployeeUuid || 'N/A');
 
   const resolvedDepartment =
     profile?.departmentName?.trim() ||
@@ -372,6 +457,228 @@ export function FileOfficialTravelOrderScreen({
     profile?.positionName?.trim() ||
     positionName?.trim() ||
     'N/A';
+
+  const { isOnline } = useNetworkStatus();
+
+  // Approval Timeline & Reassignment State
+  const [workflowSteps, setWorkflowSteps] = useState<WorkflowStep[]>([
+    {
+      step_order: 1,
+      required_level: 2,
+      role_name: 'Store Manager',
+      approver_employee_id: null,
+      approver_name: 'STORE MANAGER / IMMEDIATE SUPERVISOR',
+      approver_position_name: 'Store Manager / Immediate Supervisor',
+      approver_employee_no: null,
+      status: 'pending',
+      is_reassigned: false,
+      approver_level: 2,
+      position_level: 2,
+    },
+    {
+      step_order: 2,
+      required_level: 5,
+      role_name: 'Area Operations Manager',
+      approver_employee_id: null,
+      approver_name: 'AREA OPERATIONS MANAGER',
+      approver_position_name: 'Area Operations Manager',
+      approver_employee_no: null,
+      status: 'waiting',
+      is_reassigned: false,
+      approver_level: 5,
+      position_level: 5,
+    },
+  ]);
+  const [isLoadingWorkflow, setIsLoadingWorkflow] = useState(false);
+  const defaultWorkflowStepsRef = useRef<WorkflowStep[]>([]);
+
+  // Reassign Modal State
+  const [isReassignModalOpen, setIsReassignModalOpen] = useState(false);
+  const [reassigningStep, setReassigningStep] = useState<WorkflowStep | null>(null);
+  const [candidateSearchQuery, setCandidateSearchQuery] = useState('');
+  const [approverCandidates, setApproverCandidates] = useState<ApproverCandidate[]>([]);
+  const [selectedCandidate, setSelectedCandidate] = useState<ApproverCandidate | null>(null);
+  const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
+
+  // Pre-cache candidates and position authorities
+  useEffect(() => {
+    loadApproverCandidates().catch(() => {});
+    loadPositionAuthorities().catch(() => {});
+  }, []);
+
+  // Initialize Travel Order approval workflow following default approval routes
+  useEffect(() => {
+    let isMounted = true;
+    async function initWorkflow() {
+      setIsLoadingWorkflow(true);
+      try {
+        const empQueryId = resolvedEmployeeUuid || (resolvedEmployeeId !== 'N/A' ? resolvedEmployeeId : null);
+        const empSteps = await loadStoreApprovalWorkflow(null, empQueryId, null, false).catch(() => [] as WorkflowStep[]);
+
+        if (!isMounted) return;
+
+        let resolvedSteps: WorkflowStep[] = [];
+        if (empSteps && empSteps.length > 0) {
+          resolvedSteps = empSteps.map((st, idx) => ({
+            ...st,
+            step_order: st.step_order || idx + 1,
+            status: idx === 0 ? 'pending' : 'waiting',
+            is_reassigned: Boolean(st.is_reassigned),
+          }));
+        } else {
+          resolvedSteps = [
+            {
+              step_order: 1,
+              required_level: 2,
+              role_name: 'Store Manager',
+              approver_employee_id: null,
+              approver_name: 'STORE MANAGER / IMMEDIATE SUPERVISOR',
+              approver_position_name: 'Store Manager / Immediate Supervisor',
+              approver_employee_no: null,
+              status: 'pending',
+              is_reassigned: false,
+              approver_level: 2,
+              position_level: 2,
+            },
+            {
+              step_order: 2,
+              required_level: 5,
+              role_name: 'Area Operations Manager',
+              approver_employee_id: null,
+              approver_name: 'AREA OPERATIONS MANAGER',
+              approver_position_name: 'Area Operations Manager',
+              approver_employee_no: null,
+              status: 'waiting',
+              is_reassigned: false,
+              approver_level: 5,
+              position_level: 5,
+            },
+          ];
+        }
+
+        defaultWorkflowStepsRef.current = resolvedSteps;
+
+        setWorkflowSteps((prev) => {
+          // If already customized by user, preserve custom reassignments
+          if (prev && prev.length > 0 && prev.some((s) => s.is_reassigned)) {
+            return prev.map((currStep, idx) => {
+              if (currStep.is_reassigned) return currStep;
+              return resolvedSteps[idx] || currStep;
+            });
+          }
+          return resolvedSteps;
+        });
+      } catch (err) {
+        console.warn('[FileOfficialTravelOrderScreen] Error initializing approval workflow:', err);
+      } finally {
+        if (isMounted) setIsLoadingWorkflow(false);
+      }
+    }
+
+    initWorkflow();
+    return () => {
+      isMounted = false;
+    };
+  }, [resolvedEmployeeUuid, resolvedEmployeeId]);
+
+  // Load approver candidates when reassign modal opens
+  useEffect(() => {
+    if (!isReassignModalOpen) return;
+    let isMounted = true;
+    async function fetchCandidates() {
+      setIsLoadingCandidates(true);
+      try {
+        const candidates = await loadApproverCandidates();
+        if (!isMounted) return;
+        setApproverCandidates(candidates);
+      } catch {
+        // non-fatal
+      } finally {
+        if (isMounted) setIsLoadingCandidates(false);
+      }
+    }
+    fetchCandidates();
+    return () => {
+      isMounted = false;
+    };
+  }, [isReassignModalOpen]);
+
+  // Filtered approver candidates (Strictly excludes level 1 rank-and-file employees)
+  const filteredApproverCandidates = useMemo(() => {
+    const approversOnly = approverCandidates.filter((c) => (c.authority_level ?? 0) > 1);
+    if (!candidateSearchQuery.trim()) return approversOnly;
+    const q = candidateSearchQuery.toLowerCase().trim();
+    return approversOnly.filter(
+      (c) =>
+        c.full_name.toLowerCase().includes(q) ||
+        (c.employee_no && c.employee_no.toLowerCase().includes(q)) ||
+        (c.position_name && c.position_name.toLowerCase().includes(q)) ||
+        (c.department_name && c.department_name.toLowerCase().includes(q)) ||
+        (c.store_name && c.store_name.toLowerCase().includes(q)) ||
+        (c.company_name && c.company_name.toLowerCase().includes(q))
+    );
+  }, [approverCandidates, candidateSearchQuery]);
+
+  const handleOpenReassignModal = (step: WorkflowStep) => {
+    setReassigningStep(step);
+    setSelectedCandidate(null);
+    setCandidateSearchQuery('');
+    setIsReassignModalOpen(true);
+  };
+
+  const handleConfirmReassign = () => {
+    if (!reassigningStep || !selectedCandidate) return;
+    const targetStepOrder = reassigningStep.step_order;
+    const candLevel = selectedCandidate.authority_level ?? (reassigningStep.required_level || (targetStepOrder === 1 ? 2 : 5));
+
+    setWorkflowSteps((prev) =>
+      prev.map((s) => {
+        if (s.step_order === targetStepOrder) {
+          return {
+            ...s,
+            approver_employee_id: selectedCandidate.employee_id,
+            approver_name: selectedCandidate.full_name,
+            approver_position_name: selectedCandidate.position_name || s.approver_position_name,
+            approver_employee_no: selectedCandidate.employee_no || s.approver_employee_no,
+            approver_level: candLevel,
+            position_level: candLevel,
+            required_level: candLevel,
+            is_reassigned: true,
+          };
+        }
+        return s;
+      })
+    );
+
+    onToast?.({
+      tone: 'success',
+      title: 'Approver Reassigned',
+      message: `Step ${targetStepOrder} approver set to ${selectedCandidate.full_name}`,
+    });
+
+    setIsReassignModalOpen(false);
+    setReassigningStep(null);
+    setSelectedCandidate(null);
+  };
+
+  const handleResetStepApprover = () => {
+    if (!reassigningStep) return;
+    const targetStepOrder = reassigningStep.step_order;
+    const def = defaultWorkflowStepsRef.current.find((s) => s.step_order === targetStepOrder);
+    if (def) {
+      setWorkflowSteps((prev) =>
+        prev.map((s) => (s.step_order === targetStepOrder ? { ...def, is_reassigned: false } : s))
+      );
+    }
+    onToast?.({
+      tone: 'success',
+      title: 'Approver Reset',
+      message: `Step ${targetStepOrder} approver reset to default.`,
+    });
+    setIsReassignModalOpen(false);
+    setReassigningStep(null);
+    setSelectedCandidate(null);
+  };
 
   // Multi-select store toggling
   const toggleDestinationStore = (storeNameStr: string) => {
@@ -476,6 +783,13 @@ export function FileOfficialTravelOrderScreen({
 
     setIsSubmitting(true);
     try {
+      const customApprovers = workflowSteps
+        .filter((s) => s.is_reassigned && s.approver_employee_id)
+        .map((s) => ({
+          step_order: s.step_order,
+          approver_employee_id: s.approver_employee_id!,
+        }));
+
       // Simulate/prepare payload
       const payload = {
         employeeName: resolvedEmployeeName,
@@ -495,19 +809,36 @@ export function FileOfficialTravelOrderScreen({
         costCenterCode: costCenterCode.trim() || null,
         chargeToStore: chargeToStore || null,
         submittedAt: new Date().toISOString(),
+        customApprovers: customApprovers.length > 0 ? customApprovers : null,
+        workflowSteps: workflowSteps.length > 0 ? workflowSteps : null,
       };
 
-      console.log('[FileOfficialTravelOrderScreen] Submitting Travel Order:', payload);
-      await submitLocalTravelOrder(payload);
+      if (editingRequest) {
+        console.log('[FileOfficialTravelOrderScreen] Updating Travel Order:', editingRequest.request_id, payload);
+        await updateOfficialTravelOrder(editingRequest.request_id, payload);
 
-      // Brief delay for user feedback
-      await new Promise((resolve) => setTimeout(resolve, 600));
+        // Brief delay for user feedback
+        await new Promise((resolve) => setTimeout(resolve, 600));
 
-      onToast?.({
-        tone: 'success',
-        title: 'Request Submitted',
-        message: 'Official Travel Order submitted successfully! Pending endorsement.',
-      });
+        onToast?.({
+          tone: 'success',
+          title: 'Request Updated',
+          message: 'Official Travel Order updated successfully!',
+        });
+      } else {
+        console.log('[FileOfficialTravelOrderScreen] Submitting Travel Order:', payload);
+        await submitOfficialTravelOrder(payload);
+
+        // Brief delay for user feedback
+        await new Promise((resolve) => setTimeout(resolve, 600));
+
+        onToast?.({
+          tone: 'success',
+          title: 'Request Submitted',
+          message:
+            'Official Travel Order submitted successfully! Sent to approver for review.',
+        });
+      }
 
       await onSubmitted?.();
       onBack();
@@ -523,7 +854,7 @@ export function FileOfficialTravelOrderScreen({
   };
 
   const handleCancel = () => {
-    onBack();
+    handleConfirmBack();
   };
 
   return (
@@ -542,8 +873,8 @@ export function FileOfficialTravelOrderScreen({
         username={username}
         photoUrl={photoUrl}
         notificationCount={notificationCount}
-        onBackHome={onBack}
-        backTitle="Official Travel Order"
+        onBackHome={handleConfirmBack}
+        backTitle={editingRequest ? 'Edit Travel Order' : 'Official Travel Order'}
         backAccessory="info"
         onBackAccessory={() => setShowPolicyModal(true)}
         onMessages={onAssistant}
@@ -1100,6 +1431,79 @@ export function FileOfficialTravelOrderScreen({
             </View>
           </View>
 
+          {/* Approval Timeline Card */}
+          <View style={styles.entryTimelineSubPanel}>
+            <View style={styles.entryTimelineHeaderRow}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Users size={14} color="#64748b" strokeWidth={2.2} />
+                <Text style={styles.entryTimelineHeaderTitle}>Approval Timeline</Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                {isLoadingWorkflow ? (
+                  <ActivityIndicator size="small" color="#1e40af" />
+                ) : null}
+              </View>
+            </View>
+
+            <View style={styles.entryStepperContainer}>
+              {workflowSteps.length > 1 ? <View style={styles.entryStepperLineTrack} /> : null}
+
+              <View style={styles.entryStepperColumnsRow}>
+                {workflowSteps.map((step, sIdx) => {
+                  const isReassigned = Boolean(step.is_reassigned);
+                  const isPending = sIdx === 0;
+                  const dotColor = isPending ? '#eab308' : '#cbd5e1';
+                  const effectiveLevel = resolveApproverLevel(step);
+                  const approverUpper = formatApproverDisplayName(
+                    step.approver_name,
+                    step.approver_position_name || step.role_name,
+                    effectiveLevel,
+                  );
+                  const levelLabel = `L${effectiveLevel}`;
+                  const statusLabel = isPending ? 'Pending to approve' : 'Not yet processed';
+
+                  return (
+                    <View key={step.step_order || sIdx} style={styles.entryStepperColumn}>
+                      <View style={[styles.entryStepperDot, { backgroundColor: dotColor }]} />
+                      <Text style={styles.entryStepTitleText} numberOfLines={2}>
+                        {approverUpper}
+                      </Text>
+                      <Text style={styles.entryStepSubtitleText} numberOfLines={1}>
+                        {`${levelLabel} • ${statusLabel}`}
+                      </Text>
+
+                      {/* Reassign action button */}
+                      <Pressable
+                        style={({ pressed }) => [
+                          styles.entryStepReassignBtn,
+                          isReassigned ? styles.entryStepReassignBtnActive : null,
+                          pressed ? { opacity: 0.7 } : null,
+                        ]}
+                        onPress={() => handleOpenReassignModal(step)}
+                        hitSlop={6}
+                        accessibilityLabel={`Reassign step ${step.step_order} approver`}
+                      >
+                        <ArrowRightLeft
+                          size={10}
+                          color={isReassigned ? '#1d4ed8' : '#64748b'}
+                          strokeWidth={2.2}
+                        />
+                        <Text
+                          style={[
+                            styles.entryStepReassignText,
+                            isReassigned ? styles.entryStepReassignedText : null,
+                          ]}
+                        >
+                          {isReassigned ? 'Reassigned' : 'Reassign'}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          </View>
+
           {/* ACTION BUTTONS: Cancel & Submit Request */}
           <View style={styles.actionButtonsRow}>
             <Pressable
@@ -1118,7 +1522,9 @@ export function FileOfficialTravelOrderScreen({
               {isSubmitting ? (
                 <ActivityIndicator size="small" color="#ffffff" />
               ) : (
-                <Text style={styles.submitButtonText}>Submit Request</Text>
+                <Text style={styles.submitButtonText}>
+                  {editingRequest ? 'Save Changes' : 'Submit Request'}
+                </Text>
               )}
             </Pressable>
           </View>
@@ -1667,6 +2073,185 @@ export function FileOfficialTravelOrderScreen({
             </Pressable>
           </View>
         </View>
+      </Modal>
+
+      {/* MODAL 5: Reassign Approver Modal */}
+      <Modal
+        visible={isReassignModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => {
+          setIsReassignModalOpen(false);
+          setReassigningStep(null);
+          setSelectedCandidate(null);
+        }}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.reassignModalBackdrop}
+        >
+          <View style={[styles.reassignModalCard, { paddingBottom: safeModalBottomPadding }]}>
+            {/* Header */}
+            <View style={styles.reassignModalHeader}>
+              <View style={styles.reassignModalHeaderLeft}>
+                <View style={styles.reassignModalIconBox}>
+                  <ArrowRightLeft size={20} color="#2563eb" strokeWidth={2.4} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.reassignModalTitle}>Reassign Approver</Text>
+                  <Text style={styles.reassignModalSub} numberOfLines={1}>
+                    Step {reassigningStep?.step_order}: {reassigningStep?.role_name}
+                    {reassigningStep?.approver_position_name ? ` • ${reassigningStep.approver_position_name}` : ''}
+                  </Text>
+                  {!isOnline ? (
+                    <View style={styles.reassignModalOfflineBadge}>
+                      <WifiOff size={10} color="#b45309" strokeWidth={2.4} />
+                      <Text style={styles.reassignModalOfflineText}>Offline Mode • Using cached approvers</Text>
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+              <Pressable
+                style={styles.sheetCloseButton}
+                onPress={() => {
+                  setIsReassignModalOpen(false);
+                  setReassigningStep(null);
+                  setSelectedCandidate(null);
+                }}
+                hitSlop={8}
+              >
+                <X size={18} color="#64748b" strokeWidth={2.4} />
+              </Pressable>
+            </View>
+
+            {/* Search Bar */}
+            <View style={styles.candidateSearchBox}>
+              <Search size={16} color="#94a3b8" strokeWidth={2.2} />
+              <TextInput
+                style={styles.candidateSearchInput}
+                placeholder="Search employee by name, ID, position, store..."
+                placeholderTextColor="#94a3b8"
+                value={candidateSearchQuery}
+                onChangeText={setCandidateSearchQuery}
+              />
+              {candidateSearchQuery ? (
+                <Pressable onPress={() => setCandidateSearchQuery('')} hitSlop={6}>
+                  <X size={15} color="#94a3b8" />
+                </Pressable>
+              ) : null}
+            </View>
+
+            {/* Candidate List */}
+            <ScrollView
+              style={styles.candidateListScroll}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {isLoadingCandidates ? (
+                <View style={styles.candidateEmptyWrap}>
+                  <ActivityIndicator size="small" color="#2563eb" />
+                  <Text style={styles.candidateEmptyTitle}>Loading employees...</Text>
+                </View>
+              ) : filteredApproverCandidates.length === 0 ? (
+                <View style={styles.candidateEmptyWrap}>
+                  <Users size={32} color="#cbd5e1" strokeWidth={1.8} />
+                  <Text style={styles.candidateEmptyTitle}>No matching employees found</Text>
+                  <Text style={styles.candidateEmptySub}>
+                    Try searching with a different name or employee number.
+                  </Text>
+                </View>
+              ) : (
+                filteredApproverCandidates.map((candidate) => {
+                  const isSelected = selectedCandidate?.employee_id === candidate.employee_id;
+                  const initials =
+                    candidate.full_name
+                      .split(' ')
+                      .map((part) => part[0])
+                      .filter(Boolean)
+                      .slice(0, 2)
+                      .join('')
+                      .toUpperCase() || 'EMP';
+
+                  return (
+                    <Pressable
+                      key={candidate.employee_id}
+                      style={[styles.candidateRow, isSelected ? styles.candidateRowSelected : null]}
+                      onPress={() => setSelectedCandidate(candidate)}
+                    >
+                      <View style={[styles.candidateAvatar, isSelected ? styles.candidateAvatarSelected : null]}>
+                        <Text style={[styles.candidateAvatarText, isSelected ? styles.candidateAvatarTextSelected : null]}>
+                          {initials}
+                        </Text>
+                      </View>
+
+                      <View style={styles.candidateInfoCol}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <Text style={[styles.candidateName, isSelected ? styles.candidateNameSelected : null]}>
+                            {candidate.full_name}
+                          </Text>
+                          {candidate.authority_level ? (
+                            <View style={styles.candidateLevelBadge}>
+                              <Text style={styles.candidateLevelBadgeText}>L{candidate.authority_level}</Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <Text style={styles.candidateRole} numberOfLines={1}>
+                          {[candidate.position_name, candidate.department_name].filter(Boolean).join(' • ')}
+                          {candidate.employee_no ? ` (${candidate.employee_no})` : ''}
+                        </Text>
+                        {candidate.store_name || candidate.company_name ? (
+                          <Text style={styles.candidateStore} numberOfLines={1}>
+                            {[candidate.store_name, candidate.company_name].filter(Boolean).join(' • ')}
+                          </Text>
+                        ) : null}
+                      </View>
+
+                      {isSelected ? (
+                        <CheckCircle2 size={20} color="#2563eb" strokeWidth={2.4} />
+                      ) : (
+                        <View style={{ width: 20, height: 20, borderRadius: 10, borderWidth: 1.5, borderColor: '#cbd5e1' }} />
+                      )}
+                    </Pressable>
+                  );
+                })
+              )}
+            </ScrollView>
+
+            {/* Footer Actions */}
+            <View style={styles.reassignModalActions}>
+              {reassigningStep?.is_reassigned ? (
+                <Pressable
+                  style={styles.reassignResetBtn}
+                  onPress={handleResetStepApprover}
+                >
+                  <Text style={styles.reassignResetText}>Reset Default</Text>
+                </Pressable>
+              ) : null}
+
+              <Pressable
+                style={styles.reassignCancelBtn}
+                onPress={() => {
+                  setIsReassignModalOpen(false);
+                  setReassigningStep(null);
+                  setSelectedCandidate(null);
+                }}
+              >
+                <Text style={styles.reassignCancelText}>Cancel</Text>
+              </Pressable>
+
+              <Pressable
+                disabled={!selectedCandidate}
+                style={[
+                  styles.reassignConfirmBtn,
+                  !selectedCandidate ? styles.reassignConfirmBtnDisabled : null,
+                ]}
+                onPress={handleConfirmReassign}
+              >
+                <Text style={styles.reassignConfirmText}>Confirm Reassign</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -2357,5 +2942,323 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
     fontWeight: fontWeights.bold,
+  },
+
+  /* Approval Timeline Card Styles */
+  entryTimelineSubPanel: {
+    backgroundColor: '#ffffff',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: spacing.md,
+    marginTop: 4,
+    marginBottom: 4,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 3,
+    elevation: 1,
+  },
+  entryTimelineHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  entryTimelineHeaderTitle: {
+    fontSize: 13,
+    fontWeight: fontWeights.heavy,
+    color: '#334155',
+  },
+  entryStepperContainer: {
+    marginTop: 4,
+    paddingVertical: 2,
+    position: 'relative',
+  },
+  entryStepperLineTrack: {
+    position: 'absolute',
+    top: 5,
+    left: 20,
+    right: 20,
+    height: 2,
+    backgroundColor: '#e2e8f0',
+    zIndex: 0,
+  },
+  entryStepperColumnsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    zIndex: 1,
+  },
+  entryStepperColumn: {
+    flex: 1,
+    alignItems: 'flex-start',
+    paddingRight: 6,
+  },
+  entryStepperDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginBottom: 6,
+    borderWidth: 1.5,
+    borderColor: '#ffffff',
+  },
+  entryStepTitleText: {
+    fontSize: 11,
+    fontWeight: fontWeights.heavy,
+    color: '#0f172a',
+  },
+  entryStepSubtitleText: {
+    fontSize: 10,
+    color: '#64748b',
+  },
+  entryStepReassignBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginTop: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  entryStepReassignBtnActive: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#bfdbfe',
+  },
+  entryStepReassignText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+  },
+  entryStepReassignedText: {
+    color: '#1d4ed8',
+  },
+
+  /* Reassign Modal Styles */
+  reassignModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.55)',
+    justifyContent: 'flex-end',
+  },
+  reassignModalCard: {
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '90%',
+    paddingBottom: 20,
+  },
+  reassignModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  reassignModalHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  reassignModalIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reassignModalTitle: {
+    fontSize: 17,
+    fontWeight: fontWeights.heavy,
+    color: '#0f172a',
+  },
+  reassignModalSub: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  reassignModalOfflineBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+    backgroundColor: '#fef3c7',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    alignSelf: 'flex-start',
+  },
+  reassignModalOfflineText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#b45309',
+  },
+  candidateLevelBadge: {
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  candidateLevelBadgeText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#1d4ed8',
+  },
+  candidateSearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginHorizontal: 16,
+    marginVertical: 12,
+    gap: 8,
+  },
+  candidateSearchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: '#0f172a',
+    padding: 0,
+  },
+  candidateListScroll: {
+    maxHeight: 380,
+    paddingHorizontal: 16,
+  },
+  candidateEmptyWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 36,
+  },
+  candidateEmptyTitle: {
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+    color: '#475569',
+    marginTop: 8,
+  },
+  candidateEmptySub: {
+    fontSize: 12,
+    color: '#94a3b8',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  candidateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+    backgroundColor: '#ffffff',
+    marginBottom: 8,
+    gap: 12,
+  },
+  candidateRowSelected: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#3b82f6',
+  },
+  candidateAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#e2e8f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  candidateAvatarSelected: {
+    backgroundColor: '#2563eb',
+  },
+  candidateAvatarText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#334155',
+  },
+  candidateAvatarTextSelected: {
+    color: '#ffffff',
+  },
+  candidateInfoCol: {
+    flex: 1,
+  },
+  candidateName: {
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+  },
+  candidateNameSelected: {
+    color: '#1d4ed8',
+  },
+  candidateRole: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 1,
+  },
+  candidateStore: {
+    fontSize: 11,
+    color: '#94a3b8',
+    marginTop: 2,
+  },
+  reassignModalActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+  },
+  reassignResetBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#ffffff',
+  },
+  reassignResetText: {
+    fontSize: 12.5,
+    fontWeight: fontWeights.bold,
+    color: '#475569',
+  },
+  reassignCancelBtn: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reassignCancelText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+  },
+  reassignConfirmBtn: {
+    flex: 1.5,
+    paddingVertical: 11,
+    borderRadius: 8,
+    backgroundColor: '#2563eb',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reassignConfirmBtnDisabled: {
+    backgroundColor: '#94a3b8',
+    opacity: 0.6,
+  },
+  reassignConfirmText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#ffffff',
   },
 });
