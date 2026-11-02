@@ -38,7 +38,7 @@ import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
 import { ScrollableTimePickerModal } from '../components/ScrollableTimePickerModal';
 import type { AppToastMessage } from '../components/AppToast';
 import { colors, fontWeights, radius, spacing } from '../theme';
-import { getSafeBottomInset, getScreenBottomPadding } from '../utils/safeArea';
+import { getSafeBottomInset, getScreenBottomPadding, isThreeKeyNavigation } from '../utils/safeArea';
 import { supabase } from '../lib/supabase';
 import { loadEmployeeProfile } from '../services/profile';
 import { loadEmployeeStoreOptions, type EmployeeStoreOption } from '../services/createProfile';
@@ -151,9 +151,9 @@ export function FileOfficialTravelOrderScreen({
 }: FileOfficialTravelOrderScreenProps) {
   const insets = useSafeAreaInsets();
   const safeModalBottomPadding = useMemo(() => {
-    return Platform.OS === 'android'
-      ? Math.max(insets.bottom, 24) + 16
-      : Math.max(insets.bottom, 16) + 12;
+    return isThreeKeyNavigation(insets.bottom)
+      ? insets.bottom + 16
+      : 24;
   }, [insets.bottom]);
   const [refreshing, setRefreshing] = useState(false);
   const [profile, setProfile] = useState<EmployeeProfileSummary | null>(
@@ -896,10 +896,10 @@ export function FileOfficialTravelOrderScreen({
                 Platform.OS === 'android'
                   ? (keyboardHeight > 0
                     ? keyboardHeight + 16
-                    : Math.max(getScreenBottomPadding(insets.bottom, false, 32), insets.bottom + 32))
+                    : Math.max(getScreenBottomPadding(insets.bottom, false, 32), getSafeBottomInset(insets.bottom, 0) + 32))
                   : (keyboardHeight > 0
                     ? 20
-                    : Math.max(getScreenBottomPadding(insets.bottom, false, 32), insets.bottom + 32)),
+                    : Math.max(getScreenBottomPadding(insets.bottom, false, 32), getSafeBottomInset(insets.bottom, 0) + 32)),
             },
           ]}
           keyboardShouldPersistTaps="handled"

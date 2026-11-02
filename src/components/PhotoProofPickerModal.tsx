@@ -22,6 +22,7 @@ import {
 import { getDirectProofImageUrl } from './EsarfDetailsView';
 import { platformAlert } from '../utils/platformAlert';
 import { colors, fontWeights, radius } from '../theme';
+import { getSafeBottomInset } from '../utils/safeArea';
 
 export type SelectedProofAttachment = {
   uri: string;
@@ -357,7 +358,7 @@ export function PhotoProofPickerModal({
                 )}
               </ScrollView>
 
-              <View style={[styles.bottomBar, { paddingBottom: Math.max(16, insets.bottom + 10) }]}>
+              <View style={[styles.bottomBar, { paddingBottom: Math.max(16, getSafeBottomInset(insets.bottom, 0) + 10) }]}>
                 <Pressable style={styles.doneBtn} onPress={onClose}>
                   <Check size={16} color="#ffffff" strokeWidth={2.4} />
                   <Text style={styles.doneBtnText}>

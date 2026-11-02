@@ -13,12 +13,31 @@ export const ANDROID_3BUTTON_NAV_HEIGHT = 48;
 export const FLOATING_TAB_BAR_HEIGHT = 56;
 
 /**
+ * Detects whether system navigation has the three physical or on-screen keys enabled
+ * (Android 3-button navigation: Back, Home, Recents).
+ * Works across Native Android as well as Web / PWA environments running on Android devices.
+ * When 3-button navigation is active, the system navigation bar reserves at least 36-48dp.
+ * Gesture navigation reserves much less (16-24dp) or 0dp.
+ * Safe area handling on system navigation bar only applies when the three keys are enabled.
+ */
+export function isThreeKeyNavigation(insetsBottom: number): boolean {
+  const isAndroid =
+    Platform.OS === 'android' ||
+    (Platform.OS === 'web' &&
+      typeof navigator !== 'undefined' &&
+      /android/i.test(navigator.userAgent || ''));
+
+  return isAndroid && insetsBottom >= 36;
+}
+
+/**
  * Calculates a safe bottom inset.
- * Returns the reported bottom inset (e.g. from react-native-safe-area-context / iOS home indicator / gesture bar),
- * or falls back to a minimum inset when unmeasured (e.g. 0 on web/desktop).
+ * Safe area handling on system navigation bar only applies when the three keys are enabled.
+ * When three keys are not enabled (gesture navigation, iOS, Web), system navigation
+ * safe area handling is omitted and the fallback is used.
  */
 export function getSafeBottomInset(insetsBottom: number, fallback = 0): number {
-  if (insetsBottom > 0) {
+  if (isThreeKeyNavigation(insetsBottom)) {
     return insetsBottom;
   }
   return fallback;
@@ -26,55 +45,15 @@ export function getSafeBottomInset(insetsBottom: number, fallback = 0): number {
 
 /**
  * Calculates safe bottom floating offset specifically for the floating bottom tab bar.
- * Ensures clean, responsive clearance above the home indicator, 3-button navigation, or screen bottom,
- * including seamless support for iOS Safari and standalone PWA modes.
+ * Safe area handling on the system navigation bar only applies when the three keys are enabled.
+ * - When the three keys are enabled: provides clearance above the 3-button system navigation bar (insetsBottom + 8).
+ * - When the three keys are not enabled (gesture navigation, iOS, Web): uses the standard floating offset (14dp).
  */
 export function getFloatingTabBarBottomOffset(insetsBottom: number): number {
-  if (Platform.OS === 'android') {
-    // When 3-button navigation or gesture nav is active in edge-to-edge mode:
-    if (insetsBottom > 0) {
-      return insetsBottom + 8;
-    }
-    return 14;
+  if (isThreeKeyNavigation(insetsBottom)) {
+    return insetsBottom + 8;
   }
-
-  // On native iOS:
-  if (Platform.OS === 'ios') {
-    if (insetsBottom > 0) {
-      return insetsBottom + 8;
-    }
-    return 14;
-  }
-
-  // On Web / PWA:
-  if (Platform.OS === 'web') {
-    if (insetsBottom > 0) {
-      return insetsBottom + 8;
-    }
-
-    // Detect if running on an iOS device (iPhone/iPad) in browser or installed PWA
-    const isIosWeb =
-      typeof navigator !== 'undefined' &&
-      (/iPad|iPhone|iPod/.test(navigator.userAgent || '') ||
-        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
-
-    if (isIosWeb) {
-      // Check if running in standalone PWA mode (added to home screen)
-      const isStandalonePwa =
-        (typeof window !== 'undefined' && (window.navigator as any)?.standalone === true) ||
-        (typeof window !== 'undefined' &&
-          window.matchMedia?.('(display-mode: standalone)').matches);
-
-      // In iOS standalone PWA with Face ID, the Home Indicator takes ~34px.
-      // Floating 8px above it yields 42px clearance.
-      // In Safari browser mode, 20px provides clean clearance above the toolbar.
-      return isStandalonePwa ? 42 : 20;
-    }
-
-    return 14;
-  }
-
-  return insetsBottom > 0 ? insetsBottom + 8 : 14;
+  return 14;
 }
 
 /**
@@ -107,21 +86,23 @@ export function getScreenBottomPadding(insetsBottom: number, hasTabBar = false, 
 }
 
 /**
- * Hook that returns safe area insets along with Android 3-button navigation-safe insets.
+ * Hook that returns safe area insets along with 3-button navigation-safe insets.
  */
 export function useAppSafeAreaInsets() {
   const insets = useSafeAreaInsets();
+  const isThreeKey = isThreeKeyNavigation(insets.bottom);
   const safeBottom = getSafeBottomInset(insets.bottom);
   const bottomTabBarHeight = getBottomTabBarHeight(insets.bottom);
 
   return {
     insets,
     top: insets.top,
-    bottom: insets.bottom,
+    bottom: isThreeKey ? insets.bottom : 0,
     left: insets.left,
     right: insets.right,
     safeBottom,
     bottomTabBarHeight,
+    isThreeKeyNavigation: isThreeKey,
     getScreenBottomPadding: (hasTabBar = false, extra = 20) =>
       getScreenBottomPadding(insets.bottom, hasTabBar, extra),
   };

@@ -10,6 +10,7 @@ import { Avatar } from './Avatar';
 import { useNetworkStatus, isOfflineSupported } from '../services/network';
 import { getPendingOfflineCount, syncAllOfflineItems } from '../services/offlineQueue';
 import { supabase } from '../lib/supabase';
+import { platformAlert } from '../utils/platformAlert';
 
 const hygHorizontalLogo = require('../../assets/hyghorizontal.png');
 const hygCoinsImage = require('../../assets/hygcoins.png');
@@ -77,12 +78,21 @@ export function TopBar({
   const notificationLabel = visibleNotificationCount > 99 ? '99+' : String(visibleNotificationCount);
   const containerSafeTop = Platform.OS === 'web' ? insets.top : Math.max(insets.top, 10);
   const openProfile = onOpenProfile ?? onAvatar;
-  const handleSignOut = onSignOut ?? (async () => {
-    try {
-      await supabase.auth.signOut();
-    } catch {
-      // ignore
-    }
+  const handleSignOut = onSignOut ?? (() => {
+    platformAlert('Sign Out', 'Are you sure you want to exit your account?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign Out',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await supabase.auth.signOut();
+          } catch {
+            // ignore
+          }
+        },
+      },
+    ]);
   });
 
   // Network connectivity and offline queue
@@ -210,7 +220,9 @@ export function TopBar({
 
   function openSidebarAction(action?: () => void) {
     closeSidebar();
-    action?.();
+    if (action) {
+      setTimeout(action, 220);
+    }
   }
 
   function handleOpenRewards() {

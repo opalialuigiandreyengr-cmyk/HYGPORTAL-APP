@@ -52,10 +52,10 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
 
   // 3. Ensure document root and body background color are dark brand navy
   if (document.documentElement) {
-    document.documentElement.style.backgroundColor = '#071426';
+    document.documentElement.style.backgroundColor = '#f8fafc';
   }
   if (document.body) {
-    document.body.style.backgroundColor = '#071426';
+    document.body.style.backgroundColor = '#f8fafc';
   }
 
   // 4. Ensure focused input is scrolled smoothly above on-screen keyboard on mobile web/PWA (iOS Safari only),

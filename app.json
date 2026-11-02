@@ -37,9 +37,9 @@
         "backgroundColor": "#071426"
       },
       "edgeToEdgeEnabled": false,
-      "navigationBarColor": "#071426",
-      "navigationBarDividerColor": "#071426",
-      "navigationBarIconStyle": "light",
+      "navigationBarColor": "#f8fafc",
+      "navigationBarDividerColor": "#f8fafc",
+      "navigationBarIconStyle": "dark",
       "predictiveBackGestureEnabled": false
     },
     "web": {

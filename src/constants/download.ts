@@ -69,8 +69,8 @@ export function registerPwaInstallSupport() {
   ensureLink('apple-touch-icon', '/apple-touch-icon.png');
   ensureMeta('apple-mobile-web-app-capable', 'yes');
   ensureMeta('apple-mobile-web-app-title', 'HYG Portal');
-  ensureMeta('apple-mobile-web-app-status-bar-style', 'black-translucent');
-  ensureMeta('theme-color', '#071426');
+  ensureMeta('apple-mobile-web-app-status-bar-style', 'default');
+  ensureMeta('theme-color', '#f8fafc');
   ensureMeta(
     'viewport',
     'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, shrink-to-fit=no, viewport-fit=cover, interactive-widget=resizes-content'

@@ -97,6 +97,7 @@ import {
 } from './src/services/team';
 import { AppToast, type AppToastMessage } from './src/components/AppToast';
 import { OffsetExpiryAlertModal } from './src/components/OffsetExpiryAlertModal';
+import { SignOutConfirmationModal } from './src/components/SignOutConfirmationModal';
 import {
   checkForAppUpdate,
   downloadAppUpdate,
@@ -241,6 +242,8 @@ export default function App() {
   const [showRecoveryConfirmPassword, setShowRecoveryConfirmPassword] = useState(false);
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
   const [updatePasswordError, setUpdatePasswordError] = useState('');
+  const [isSignOutModalVisible, setIsSignOutModalVisible] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
   const didAutoPromptBiometricRef = useRef(false);
   const canUseApprovals =
     profileResult?.status === 'linked' && Number(profileResult.profile.authorityLevel ?? 1) > 1;
@@ -622,6 +625,40 @@ export default function App() {
     }
   }
 
+  const executeSignOut = async () => {
+    setIsSigningOut(true);
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error('Error during sign out:', err);
+    } finally {
+      setSignedInUser(null);
+      setProfileResult(null);
+      setActiveTab('home');
+      setActiveQuickRequestScreen(null);
+      setAssistantDraft(null);
+      setAdminScreen('home');
+      setPassword('');
+      setDashboardSummary({
+        pending_requests: 0,
+        pending_approvals: 0,
+        offset_balance: 0,
+        leave_credit_remaining: 0,
+        annual_credit_days: 0,
+        leave_used_days: 0,
+        hyg_points_balance: 0,
+      });
+      setPendingApprovalCount(0);
+      setNotificationUnreadCount(0);
+      setIsSigningOut(false);
+      setIsSignOutModalVisible(false);
+    }
+  };
+
+  const requestSignOut = () => {
+    setIsSignOutModalVisible(true);
+  };
+
   function withToast(screen: ReactNode) {
     return (
       <SafeAreaProvider initialMetrics={initialWindowMetrics}>
@@ -631,6 +668,18 @@ export default function App() {
           <OffsetExpiryAlertModal
             userId={signedInUser?.id}
             employeeId={profileResult?.status === 'linked' ? profileResult.profile.employeeId : undefined}
+          />
+          <SignOutConfirmationModal
+            visible={isSignOutModalVisible}
+            isSigningOut={isSigningOut}
+            userName={profileResult?.status === 'linked' ? profileResult.profile.fullName : (signedInUser?.email ?? null)}
+            userEmail={signedInUser?.email ?? null}
+            onConfirm={executeSignOut}
+            onCancel={() => {
+              if (!isSigningOut) {
+                setIsSignOutModalVisible(false);
+              }
+            }}
           />
 
           <Modal
@@ -1316,16 +1365,7 @@ export default function App() {
           onOpenRoutes={() => setAdminScreen('routes')}
           onOpenApprovers={() => setAdminScreen('approvers')}
           onOpenClusters={() => setAdminScreen('clusters')}
-          onSignOut={async () => {
-            await supabase.auth.signOut();
-            setSignedInUser(null);
-            setProfileResult(null);
-            setActiveTab('home');
-            setActiveQuickRequestScreen(null);
-            setAssistantDraft(null);
-            setAdminScreen('home');
-            setPassword('');
-          }}
+          onSignOut={requestSignOut}
         />,
       );
     }
@@ -1358,18 +1398,7 @@ export default function App() {
       );
     }
 
-    const signOut = async () => {
-      await supabase.auth.signOut();
-      setSignedInUser(null);
-      setProfileResult(null);
-      setActiveTab('home');
-      setActiveQuickRequestScreen(null);
-      setAssistantDraft(null);
-      setPassword('');
-      setDashboardSummary({ pending_requests: 0, pending_approvals: 0, offset_balance: 0, leave_credit_remaining: 0, annual_credit_days: 0, leave_used_days: 0, hyg_points_balance: 0 });
-      setPendingApprovalCount(0);
-      setNotificationUnreadCount(0);
-    };
+    const signOut = requestSignOut;
     const openMyTeam = canUseMyTeam ? () => setActiveTab('my_team') : undefined;
     const openRewards = () => setActiveTab('rewards');
 
@@ -1744,7 +1773,7 @@ export default function App() {
     }
 
     return withToast(
-      <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
         {tabContent}
         {activeTab !== 'settings' && activeTab !== 'notifications' && activeTab !== 'my_team' && activeTab !== 'tutorials' ? (
           <BottomTabBar
@@ -6374,7 +6403,7 @@ const styles = StyleSheet.create({
     minHeight: '100%',
     maxWidth: '100%',
     overflow: 'hidden',
-    backgroundColor: '#071426',
+    backgroundColor: colors.background,
   },
   safeArea: {
     flex: 1,

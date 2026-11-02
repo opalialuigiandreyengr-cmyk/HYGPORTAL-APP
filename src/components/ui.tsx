@@ -31,7 +31,7 @@ export function AppScreen({
         styles.page,
         {
           paddingTop: Math.max(insets.top, spacing.md),
-          paddingBottom: Math.max(insets.bottom, spacing.md) + spacing.md,
+          paddingBottom: getSafeBottomInset(insets.bottom, spacing.md) + spacing.md,
         },
       ]}
       keyboardShouldPersistTaps={Platform.OS === 'web' ? 'always' : 'handled'}

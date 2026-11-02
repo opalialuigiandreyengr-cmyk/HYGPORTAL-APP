@@ -4281,7 +4281,7 @@ export function ApplyEsarfScreen({
                         </ScrollView>
 
                         {/* Bottom action bar */}
-                        <View style={[styles.proofPickerBottomBar, { paddingBottom: Math.max(16, insets.bottom + 10) }]}>
+                        <View style={[styles.proofPickerBottomBar, { paddingBottom: Math.max(16, getSafeBottomInset(insets.bottom, 0) + 10) }]}>
                           <Pressable
                             style={styles.proofPickerDoneBtn}
                             onPress={() => setActiveProofPickerIndex(null)}
@@ -4816,7 +4816,7 @@ export function ApplyEsarfScreen({
               <View
                 style={[
                   styles.eventModalSheet,
-                  { paddingBottom: Math.max(insets.bottom, 16) },
+                  { paddingBottom: Math.max(getSafeBottomInset(insets.bottom, 0), 16) },
                 ]}
               >
                 <View style={styles.eventModalHandle} />
@@ -5028,7 +5028,7 @@ export function ApplyEsarfScreen({
             }}
           >
             <View style={styles.reassignModalBackdrop}>
-              <View style={[styles.reassignModalCard, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+              <View style={[styles.reassignModalCard, { paddingBottom: Math.max(getSafeBottomInset(insets.bottom, 0), 16) }]}>
                 {/* Header */}
                 <View style={styles.reassignModalHeader}>
                   <View style={styles.reassignModalHeaderLeft}>
