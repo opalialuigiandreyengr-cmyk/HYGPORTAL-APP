@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 
-export const NATIVE_APP_VERSION = '1.7.3';
+export const NATIVE_APP_VERSION = '1.7.4';
 
 export type AppUpdateStatus =
   | 'unsupported'
@@ -62,7 +62,9 @@ export async function checkForAppUpdate(): Promise<AppUpdateState> {
   }
 
   try {
-    const response = await fetch('https://hygportal.vercel.app/app-version.json');
+    const response = await fetch(`https://hygportal.vercel.app/app-version.json?t=${Date.now()}`, {
+      headers: { 'Cache-Control': 'no-cache' },
+    });
     if (!response.ok) {
       throw new Error(`Failed to fetch version metadata (Status: ${response.status})`);
     }
@@ -73,7 +75,7 @@ export async function checkForAppUpdate(): Promise<AppUpdateState> {
     if (isNewerVersion(NATIVE_APP_VERSION, latestVersion)) {
       return {
         status: 'available',
-        message: `A new version (v${latestVersion}) is available. Download and install it now?`,
+        message: `A new version (v${latestVersion}) is available. Tap "Update APK" to download and install.`,
         checkedAt,
         runtimeVersion: latestVersion,
       };
@@ -103,7 +105,9 @@ export async function downloadAppUpdate(
   }
 
   try {
-    const response = await fetch('https://hygportal.vercel.app/app-version.json');
+    const response = await fetch(`https://hygportal.vercel.app/app-version.json?t=${Date.now()}`, {
+      headers: { 'Cache-Control': 'no-cache' },
+    });
     if (!response.ok) {
       throw new Error(`Failed to fetch version metadata (Status: ${response.status})`);
     }
@@ -148,7 +152,7 @@ export async function downloadAppUpdate(
 
     return {
       status: 'ready',
-      message: `v${data.version} downloaded. Install the update now?`,
+      message: `v${data.version} downloaded successfully. Tap "Install Update" to complete installation.`,
       checkedAt: new Date().toISOString(),
       currentUpdateId: uri,
       runtimeVersion: data.version,
@@ -172,10 +176,18 @@ export async function restartToApplyAppUpdate(localUri?: string | null) {
 
   try {
     const contentUri = await FileSystem.getContentUriAsync(localUri);
-    await IntentLauncher.startActivityAsync('android.intent.action.INSTALL_PACKAGE', {
-      data: contentUri,
-      flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
-    });
+    try {
+      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+        data: contentUri,
+        type: 'application/vnd.android.package-archive',
+        flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+      });
+    } catch {
+      await IntentLauncher.startActivityAsync('android.intent.action.INSTALL_PACKAGE', {
+        data: contentUri,
+        flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+      });
+    }
   } catch (error) {
     throw new Error(error instanceof Error ? error.message : 'Failed to launch package installer.');
   }

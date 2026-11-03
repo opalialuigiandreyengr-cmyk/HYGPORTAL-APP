@@ -3864,7 +3864,7 @@ function SettingsTabScreen({
   const canRestartForUpdate = appUpdateState.status === 'ready';
   const isWebApp = Platform.OS === 'web';
   const shouldShowUpdateActions = !isWebApp;
-  const shouldShowApkDownload = !isWebApp && (appUpdateState.status === 'unsupported' || appUpdateState.status === 'error');
+  const shouldShowApkDownload = !isWebApp && (appUpdateState.status === 'unsupported' || appUpdateState.status === 'error' || appUpdateState.status === 'up_to_date');
   const biometricLabel = biometricEnabled
     ? Platform.OS === 'ios'
       ? 'Enabled (Face ID / Touch ID)'
@@ -4057,12 +4057,12 @@ function SettingsTabScreen({
                     style={[styles.settingsUpdateButtonPrimary, isDownloadingUpdate ? styles.disabledButton : null]}
                     onPress={() => void handleDownloadUpdate()}
                   >
-                    <Text style={styles.settingsUpdateButtonPrimaryText}>{isDownloadingUpdate ? 'Downloading...' : 'Download'}</Text>
+                    <Text style={styles.settingsUpdateButtonPrimaryText}>{isDownloadingUpdate ? 'Downloading...' : 'Update APK'}</Text>
                   </Pressable>
                 ) : null}
                 {canRestartForUpdate ? (
                   <Pressable style={styles.settingsUpdateButtonPrimary} onPress={() => void handleRestartForUpdate()}>
-                    <Text style={styles.settingsUpdateButtonPrimaryText}>Restart</Text>
+                    <Text style={styles.settingsUpdateButtonPrimaryText}>Install Update</Text>
                   </Pressable>
                 ) : null}
                 {shouldShowApkDownload ? (
