@@ -892,27 +892,15 @@ export async function deleteMyPendingRequest(requestId: string, isPerk = false) 
     throw new Error('Missing Request ID.');
   }
 
-  const performOfflineDeletion = async () => {
-    await removeOfflineItem(requestId).catch(() => {});
-    await removeRequestFromLocalCache(requestId).catch(() => {});
+  // Deletion is strictly an online-only operation
+  if (!isAppOnline()) {
+    throw new Error('Deleting requests is only available in online mode. Please check your internet connection.');
+  }
 
-    // If a valid server online request is deleted while offline, queue a background deletion to sync when back online
-    if (isUUID(requestId) && !requestId.startsWith('offline_') && !requestId.includes('local')) {
-      await enqueueOfflineItem({
-        id: `offline_delete_${requestId}`,
-        type: 'delete_request',
-        createdAt: new Date().toISOString(),
-        payload: {
-          requestId,
-          isPerk,
-        },
-        syncAttempts: 0,
-      }).catch(() => {});
-    }
-
-    invalidateRequestsCache();
-    DeviceEventEmitter.emit('my_requests_updated');
-  };
+  // Requests must be synced server requests (valid UUID)
+  if (!isUUID(requestId) || requestId.startsWith('offline_') || requestId.includes('local')) {
+    throw new Error('This offline request has not been synced online yet. Requests can only be deleted once synced online.');
+  }
 
   const queue: OfflineQueueItem[] = await getOfflineQueue().catch(() => [] as OfflineQueueItem[]);
   const isQueued = queue.some(
@@ -921,14 +909,11 @@ export async function deleteMyPendingRequest(requestId: string, isPerk = false) 
       (q.type === 'esarf' && q.displayItem?.request_id === requestId) ||
       (q.type === 'leave' && q.displayItems?.some((d: MyRequest) => d.request_id === requestId)),
   );
-
-  // 1. If currently offline, or if this is not a server UUID, or if it is queued offline, handle locally immediately with 0 network calls/timeouts
-  if (!isAppOnline() || !isUUID(requestId) || requestId.startsWith('offline_') || requestId.includes('local') || isQueued) {
-    await performOfflineDeletion();
-    return;
+  if (isQueued) {
+    throw new Error('This request has pending offline changes. Please wait for it to sync before deleting.');
   }
 
-  // Also clean up any pending offline update for this online request
+  // Clean up any pending offline update/edit draft for this online request
   await removeOfflineItem(requestId).catch(() => {});
   await removeOfflineItem(`offline_update_${requestId}`).catch(() => {});
   await removeOfflineItem(`offline_edit_${requestId}`).catch(() => {});
@@ -999,7 +984,7 @@ export async function deleteMyPendingRequest(requestId: string, isPerk = false) 
       throw err;
     }
 
-    // If it's a network error, timeout, or connection failure, fall back seamlessly to offline deletion!
+    // Network errors: Fail fast with clear message since deletion is online-only
     const isNetworkError =
       !isAppOnline() ||
       msg.includes('network') ||
@@ -1010,9 +995,7 @@ export async function deleteMyPendingRequest(requestId: string, isPerk = false) 
       msg.includes('offline');
 
     if (isNetworkError) {
-      console.warn('[requests] Network issue during deletion, falling back to offline queue:', err);
-      await performOfflineDeletion();
-      return;
+      throw new Error('Unable to complete request deletion due to network issues. Deleting requests is only available in online mode.');
     }
 
     throw err;

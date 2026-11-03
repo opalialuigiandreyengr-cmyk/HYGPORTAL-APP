@@ -147,12 +147,21 @@ export function RequestsTabScreen({
   function handleDeleteRequest(item: MyRequest, sequence?: number) {
     const statusKey = normalizeStatus(item.status, item);
     if (statusKey !== 'pending') return;
+
+    if (!isOnline || !isAppOnline()) {
+      const msg = 'Deleting requests is only available in online mode. Please check your internet connection.';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(msg);
+      } else {
+        Alert.alert('Online Mode Required', msg);
+      }
+      return;
+    }
+
     if (!canDeleteRequest(item, isOnline)) {
-      const msg = !isOnline || !isAppOnline()
-        ? 'Deleting requests is only available in online mode once requests are synced.'
-        : isOfflineUnsyncedRequest(item)
-          ? 'This offline request has not been synced online yet. Requests can only be deleted once synced online.'
-          : 'This ESARF request has already received an approval in the timeline and can no longer be deleted.';
+      const msg = isOfflineUnsyncedRequest(item)
+        ? 'This offline request has not been synced online yet. Requests can only be deleted once synced online.'
+        : 'This request has already received an approval in the timeline or is partially approved and can no longer be deleted.';
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
         window.alert(msg);
       } else {
@@ -188,12 +197,22 @@ export function RequestsTabScreen({
       setSelectedRequest(null);
     }
 
+    if (!isOnline || !isAppOnline()) {
+      const msg = 'Deleting requests is only available in online mode. Please check your internet connection.';
+      setTimeout(() => {
+        if (Platform.OS === 'web' && typeof window !== 'undefined') {
+          window.alert(msg);
+        } else {
+          Alert.alert('Online Mode Required', msg);
+        }
+      }, 150);
+      return;
+    }
+
     if (!canDeleteRequest(item, isOnline)) {
-      const msg = !isOnline || !isAppOnline()
-        ? 'Deleting requests is only available in online mode once requests are synced.'
-        : isOfflineUnsyncedRequest(item)
-          ? 'This offline request has not been synced online yet. Requests can only be deleted once synced online.'
-          : 'This ESARF request has already received an approval in the timeline and can no longer be deleted.';
+      const msg = isOfflineUnsyncedRequest(item)
+        ? 'This offline request has not been synced online yet. Requests can only be deleted once synced online.'
+        : 'This request has already received an approval in the timeline or is partially approved and can no longer be deleted.';
       setTimeout(() => {
         if (Platform.OS === 'web' && typeof window !== 'undefined') {
           window.alert(msg);
@@ -225,11 +244,6 @@ export function RequestsTabScreen({
 
       if (isAppOnline()) {
         void refreshSilently();
-      } else {
-        const cached = await loadMyRequestsCached();
-        if (cached && cached.length) {
-          setItems(cached);
-        }
       }
     } catch (error) {
       setItems(previousItems);
@@ -795,7 +809,7 @@ export function RequestsTabScreen({
               isOnline={isOnline}
               onView={handleView}
               onEdit={onEditRequest ? handleEdit : undefined}
-              onDelete={undefined}
+              onDelete={handleDelete}
             />
           );
         })}
@@ -847,13 +861,18 @@ export function RequestsTabScreen({
         }
         profile={profile}
         isDeleting={Boolean(selectedRequest && deletingId === selectedRequest.item.request_id)}
+        isOnline={isOnline}
         onClose={() => setSelectedRequest(null)}
         onEdit={
           selectedRequest && canEditRequest(selectedRequest.item) && onEditRequest
             ? (req) => void handleEditRequest(req)
             : undefined
         }
-        onDelete={undefined}
+        onDelete={
+          selectedRequest && canDeleteRequest(selectedRequest.item, isOnline)
+            ? (req) => handleDeleteRequest(req, selectedRequest.sequence)
+            : undefined
+        }
         onProofAttached={async () => {
           setSelectedRequest(null);
           await refresh(true);
@@ -865,6 +884,7 @@ export function RequestsTabScreen({
         request={requestToDelete?.item ?? null}
         sequence={requestToDelete?.sequence ?? 1}
         isDeleting={Boolean(requestToDelete && deletingId === requestToDelete.item.request_id)}
+        isOnline={isOnline}
         onConfirm={() => void handleConfirmDelete()}
         onCancel={handleCancelDelete}
       />
@@ -985,7 +1005,16 @@ const RequestCard = memo(function RequestCard({
                     <Text style={styles.editText}>Edit</Text>
                   </Pressable>
                 ) : null}
-                {/* Delete button temporarily removed */}
+                {canDelete && onDelete ? (
+                  <Pressable
+                    style={styles.deleteButton}
+                    onPress={() => onDelete(item, sequence)}
+                    accessibilityLabel="Delete request"
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <Trash2 size={14} color="#dc2626" strokeWidth={2.3} />
+                  </Pressable>
+                ) : null}
               </>
             ) : null}
             <Pressable
@@ -1008,6 +1037,7 @@ function RequestDetailsSheet({
   request,
   profile,
   isDeleting,
+  isOnline = true,
   onClose,
   onEdit,
   onDelete,
@@ -1016,6 +1046,7 @@ function RequestDetailsSheet({
   request: { item: MyRequest; sequence: number } | null;
   profile: EmployeeProfileSummary | null;
   isDeleting?: boolean;
+  isOnline?: boolean;
   onClose: () => void;
   onEdit?: (request: MyRequest) => void;
   onDelete?: (request: MyRequest) => void;
@@ -1211,7 +1242,7 @@ function RequestDetailsSheet({
                     <FileText size={15} color={colors.muted} strokeWidth={2.2} />
                     <Text style={styles.panelTitle}>Reason / Details</Text>
                   </View>
-                  <Text style={styles.reasonText}>{item.reason || 'No reason provided.'}</Text>
+                  <Text style={styles.reasonText}>{cleanDisplayReason(item.reason, 'No reason provided.')}</Text>
                   {rejectedReason ? (
                     <View style={styles.rejectedReasonBox}>
                       <Text style={styles.rejectedReasonLabel}>Rejected reason</Text>
@@ -1268,7 +1299,7 @@ function RequestDetailsSheet({
                     <FileText size={15} color={colors.muted} strokeWidth={2.2} />
                     <Text style={styles.panelTitle}>Purpose & Directive Details</Text>
                   </View>
-                  <Text style={styles.reasonText}>{item.reason || 'Official Travel Order directive.'}</Text>
+                  <Text style={styles.reasonText}>{cleanDisplayReason(item.reason, 'Official Travel Order directive.')}</Text>
                   {rejectedReason ? (
                     <View style={styles.rejectedReasonBox}>
                       <Text style={styles.rejectedReasonLabel}>Rejected reason</Text>
@@ -1337,7 +1368,21 @@ function RequestDetailsSheet({
                     <Text style={styles.sheetEditText}>Edit Request</Text>
                   </Pressable>
                 ) : null}
-                {/* Delete button temporarily removed */}
+                {canDeleteRequest(item, isOnline) && onDelete ? (
+                  <Pressable
+                    style={styles.sheetDeleteButton}
+                    onPress={() => {
+                      const itemToDelete = item;
+                      onClose();
+                      setTimeout(() => {
+                        onDelete(itemToDelete);
+                      }, 100);
+                    }}
+                  >
+                    <Trash2 size={15} color={colors.semantic.danger} strokeWidth={2.4} />
+                    <Text style={styles.sheetDeleteText}>Delete Request</Text>
+                  </Pressable>
+                ) : null}
               </>
             ) : null}
             <Pressable style={styles.sheetCloseButton} onPress={onClose}>
@@ -1896,10 +1941,11 @@ function isEsarfRequest(item: MyRequest): boolean {
 function hasApprovedTimelineStatus(item: MyRequest): boolean {
   if (!item) return false;
   if (isPartialApproval(item)) return true;
-  if (!item.approval_summary || item.approval_summary.length === 0) return false;
-  return item.approval_summary.some((step) =>
-    (step.status || '').toLowerCase().includes('approved')
-  );
+  if (!item.approval_summary || !Array.isArray(item.approval_summary) || item.approval_summary.length === 0) return false;
+  return item.approval_summary.some((step) => {
+    const s = (step.status || '').toLowerCase().trim();
+    return s.includes('approved') && !s.includes('pre_approved') && !s.includes('pre-approved');
+  });
 }
 
 function canEditRequest(item: MyRequest): boolean {
@@ -1937,9 +1983,42 @@ function isOfflineUnsyncedRequest(item?: MyRequest | null): boolean {
   return false;
 }
 
-function canDeleteRequest(_item: MyRequest, _isOnline = true): boolean {
-  // Temporarily removed delete capability on requests
-  return false;
+function canDeleteRequest(item: MyRequest, isOnline = true): boolean {
+  if (!item) return false;
+  // Strictly enforce that deleting requests is only possible in online mode
+  if (!isOnline || !isAppOnline()) return false;
+  // Offline unsynced requests cannot be deleted online until synced
+  if (isOfflineUnsyncedRequest(item)) return false;
+  if (isPerkRequest(item)) return false;
+
+  const rawStatus = (item.status || '').toLowerCase().trim();
+  const statusKey = normalizeStatus(item.status, item);
+
+  const isPendingOrPreApproved =
+    statusKey === 'pending' ||
+    rawStatus === 'pending' ||
+    rawStatus === 'submitted' ||
+    rawStatus === 'waiting' ||
+    rawStatus === 'needs_admin_review' ||
+    rawStatus === 'pending_hr' ||
+    rawStatus.includes('pre_approved') ||
+    rawStatus.includes('pre-approved') ||
+    isScheduledOtRequest(item);
+
+  if (!isPendingOrPreApproved) return false;
+
+  // Cannot delete if already final approved, rejected, or validated
+  if (rawStatus === 'approved' || Boolean(item.final_approved_at)) return false;
+  if (rawStatus.includes('reject') || rawStatus.includes('denied')) return false;
+  if (rawStatus.includes('validat')) return false;
+
+  // Don't include requests that are partially approved
+  if (rawStatus.includes('partial') || isPartialApproval(item)) return false;
+
+  // Don't include requests that have at least one approved step in the approval timeline
+  if (hasApprovedTimelineStatus(item)) return false;
+
+  return true;
 }
 
 function formatEmployeeDisplayName(profile: EmployeeProfileSummary | null) {
@@ -2248,6 +2327,12 @@ function getRejectedReason(item: MyRequest) {
 
   const rejectedStep = (item.approval_summary ?? []).find((step) => normalizeStatus(step.status) === 'rejected');
   return normalizeDisplayValue(rejectedStep?.remarks) ?? 'No rejection reason provided.';
+}
+
+function cleanDisplayReason(reason?: string | null, fallback = 'No reason provided.'): string {
+  if (!reason) return fallback;
+  const cleaned = reason.replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '').trim();
+  return cleaned || fallback;
 }
 
 function timelineTone(status: string) {

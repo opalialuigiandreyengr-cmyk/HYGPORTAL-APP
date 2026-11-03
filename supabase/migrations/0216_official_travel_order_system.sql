@@ -81,7 +81,7 @@ insert into public.request_types (
   affects_offset_balance,
   is_active
 )
-select1q
+select
   'travel_order',
   'Official Travel Order',
   coalesce(

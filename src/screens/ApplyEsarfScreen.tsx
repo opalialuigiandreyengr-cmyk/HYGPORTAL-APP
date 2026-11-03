@@ -2045,7 +2045,7 @@ export function ApplyEsarfScreen({
             .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
-            .replace(/\[PreApproved(?::\s*[^\]]+)?\]\s*/gi, '')
+            .replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '')
             .trim();
           if (eventName && eventName.trim()) {
             const escaped = eventName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -2644,7 +2644,7 @@ export function ApplyEsarfScreen({
             .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
-            .replace(/\[PreApproved(?::\s*[^\]]+)?\]\s*/gi, '')
+            .replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '')
             .trim();
           if (eventName && eventName.trim()) {
             const escaped = eventName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

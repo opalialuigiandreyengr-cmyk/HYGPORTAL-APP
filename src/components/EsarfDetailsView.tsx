@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Pressable, TextInput, Image, Modal, Linking, ActivityIndicator, Platform } from 'react-native';
 import { CalendarDays, Camera, Check, Clock3, Edit3, ExternalLink, Eye, FileText, Image as ImageIcon, MapPin, Users, X } from 'lucide-react-native';
 import { colors, radius, fontWeights, spacing } from '../theme';
-import { computeWorkedMinutes, computeOffsetOvertimeHours, isFioOrObOnly } from '../utils/requestCalculations';
+import { computeWorkedMinutes, computeOffsetOvertimeHours, isFioOrObOnly, calculateCreditedOffsetHours } from '../utils/requestCalculations';
 import { parseEsarfDateRangeStringToYMD, stripSecondsFromTimeString } from '../utils/dateTime';
 import { fetchPhotoProofDetails, type PhotoProofItem } from '../services/photoProof';
 import { isAppOnline } from '../services/network';
@@ -585,6 +585,7 @@ export function parseEsarfEntries(item: {
           .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+          .replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '')
           .trim();
 
         if (parsedEventName) {
@@ -620,6 +621,16 @@ export function parseEsarfEntries(item: {
             actualHoursStr = actualMatch[1];
           } else if (computedOt !== null && computedOt > 0) {
             actualHoursStr = computedOt.toFixed(2);
+          }
+
+          if (!hoursStr || hoursStr === '0' || Number(hoursStr) <= 0) {
+            const otHrs = Number(actualHoursStr || computedOt || 0);
+            if (otHrs > 0) {
+              const credited = calculateCreditedOffsetHours(otHrs);
+              if (credited > 0) {
+                hoursStr = String(credited);
+              }
+            }
           }
         }
 
@@ -677,6 +688,7 @@ export function parseEsarfEntries(item: {
     .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+    .replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '')
     .trim();
 
   if (parsedEventName) {
@@ -687,7 +699,7 @@ export function parseEsarfEntries(item: {
 
   const timeFromStr = formatTime(item.time_from);
   const timeToStr = formatTime(item.time_to);
-  const totalHours = item.total_hours !== null && item.total_hours !== undefined ? String(item.total_hours) : '0';
+  let totalHours = item.total_hours !== null && item.total_hours !== undefined ? String(item.total_hours) : '0';
   let transactionLabel = 'ESARF Request';
   if (item.transaction_type && item.transaction_type.trim()) {
     const tokens = item.transaction_type.split(/[,/]+/).map((s) => normalizeTransactionToken(s)).filter(Boolean);
@@ -720,6 +732,27 @@ export function parseEsarfEntries(item: {
       actualHoursStr = actualMatch[1];
     } else if (computedOt !== null && computedOt > 0) {
       actualHoursStr = computedOt.toFixed(2);
+    }
+
+    if (!totalHours || totalHours === '0' || Number(totalHours) <= 0) {
+      const otHrs = Number(actualHoursStr || computedOt || 0);
+      if (otHrs > 0) {
+        const credited = calculateCreditedOffsetHours(otHrs);
+        if (credited > 0) {
+          totalHours = String(credited);
+        }
+      }
+    }
+  } else if ((!totalHours || totalHours === '0' || Number(totalHours) <= 0) && !isFioOrObOnly(transactionLabel)) {
+    const computedOt = computeOffsetOvertimeHours({
+      timeFrom: item.time_from || timeFromStr,
+      timeTo: item.time_to || timeToStr,
+      dateFrom: item.date_from,
+      timeSchedule: item.time_schedule,
+      dayOff: item.day_off,
+    });
+    if (computedOt !== null && computedOt > 0) {
+      totalHours = computedOt.toFixed(2);
     }
   }
 

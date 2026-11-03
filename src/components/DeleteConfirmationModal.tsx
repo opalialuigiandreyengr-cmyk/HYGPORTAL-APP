@@ -5,12 +5,14 @@ import { AlertTriangle, CalendarDays, FileText, Trash2, X } from 'lucide-react-n
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { formatUnifiedRequestCode, formatUnifiedRequestType } from './EsarfDetailsView';
 import type { MyRequest } from '../services/requests';
+import { isAppOnline } from '../services/network';
 
 type DeleteConfirmationModalProps = {
   visible: boolean;
   request: MyRequest | null;
   sequence?: number;
   isDeleting?: boolean;
+  isOnline?: boolean;
   useModal?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -35,10 +37,12 @@ export function DeleteConfirmationModal({
   request,
   sequence = 1,
   isDeleting = false,
+  isOnline = true,
   useModal = true,
   onConfirm,
   onCancel,
 }: DeleteConfirmationModalProps) {
+  const isCurrentlyOnline = Boolean(isOnline && isAppOnline());
   const lastRequestRef = React.useRef(request);
   if (request) {
     lastRequestRef.current = request;
@@ -155,26 +159,28 @@ export function DeleteConfirmationModal({
             style={[styles.cancelBtn, isDeleting ? styles.btnDisabled : null]}
             onPress={onCancel}
           >
-            <Text style={styles.cancelBtnText}>Cancel</Text>
+            <Text style={styles.cancelBtnText}>{isCurrentlyOnline ? 'Cancel' : 'Close'}</Text>
           </Pressable>
 
-          <Pressable
-            disabled={isDeleting}
-            style={[styles.deleteBtn, isDeleting ? styles.deleteBtnLoading : null]}
-            onPress={onConfirm}
-          >
-            {isDeleting ? (
-              <>
-                <ActivityIndicator size="small" color="#ffffff" />
-                <Text style={styles.deleteBtnText}>Deleting...</Text>
-              </>
-            ) : (
-              <>
-                <Trash2 size={16} color="#ffffff" strokeWidth={2.4} />
-                <Text style={styles.deleteBtnText}>Delete</Text>
-              </>
-            )}
-          </Pressable>
+          {isCurrentlyOnline ? (
+            <Pressable
+              disabled={isDeleting}
+              style={[styles.deleteBtn, isDeleting ? styles.deleteBtnLoading : null]}
+              onPress={onConfirm}
+            >
+              {isDeleting ? (
+                <>
+                  <ActivityIndicator size="small" color="#ffffff" />
+                  <Text style={styles.deleteBtnText}>Deleting...</Text>
+                </>
+              ) : (
+                <>
+                  <Trash2 size={16} color="#ffffff" strokeWidth={2.4} />
+                  <Text style={styles.deleteBtnText}>Delete</Text>
+                </>
+              )}
+            </Pressable>
+          ) : null}
         </View>
       </Pressable>
     </Pressable>

@@ -237,12 +237,45 @@ export async function markNotificationRead(id: string) {
     if (error) {
       throw new Error(error.message);
     }
+    lastServerNotificationLoadAt = 0;
+    lastServerNotifications = null;
     return loadAppNotifications();
   }
 
   const current = await loadLocalNotifications();
   const next = current.map((item) => (item.id === id ? { ...item, readAt: item.readAt ?? new Date().toISOString() } : item));
   await saveLocalNotifications(next);
+  return loadAppNotifications();
+}
+
+export async function markNotificationsRead(ids: string[]) {
+  if (ids.length === 0) {
+    return loadAppNotifications();
+  }
+
+  const serverIds = ids.filter((id) => id.startsWith('server:')).map((id) => id.slice('server:'.length));
+  const localIds = new Set(ids.filter((id) => id.startsWith('local:')));
+
+  if (serverIds.length > 0) {
+    await ensureFreshSession().catch(() => {});
+    for (let i = 0; i < serverIds.length; i += 5) {
+      const chunk = serverIds.slice(i, i + 5);
+      await Promise.allSettled(
+        chunk.map((sid) => supabase.rpc('mark_my_notification_read', { p_notification_id: sid }))
+      );
+    }
+    lastServerNotificationLoadAt = 0;
+    lastServerNotifications = null;
+  }
+
+  if (localIds.size > 0) {
+    const current = await loadLocalNotifications();
+    const next = current.map((item) =>
+      localIds.has(item.id) ? { ...item, readAt: item.readAt ?? new Date().toISOString() } : item
+    );
+    await saveLocalNotifications(next);
+  }
+
   return loadAppNotifications();
 }
 
@@ -253,12 +286,43 @@ export async function deleteNotification(id: string) {
     if (error) {
       throw new Error(error.message);
     }
+    lastServerNotificationLoadAt = 0;
+    lastServerNotifications = null;
     return loadAppNotifications();
   }
 
   const current = await loadLocalNotifications();
   const next = current.filter((item) => item.id !== id);
   await saveLocalNotifications(next);
+  return loadAppNotifications();
+}
+
+export async function deleteNotifications(ids: string[]) {
+  if (ids.length === 0) {
+    return loadAppNotifications();
+  }
+
+  const serverIds = ids.filter((id) => id.startsWith('server:')).map((id) => id.slice('server:'.length));
+  const localIds = new Set(ids.filter((id) => id.startsWith('local:')));
+
+  if (serverIds.length > 0) {
+    await ensureFreshSession().catch(() => {});
+    for (let i = 0; i < serverIds.length; i += 5) {
+      const chunk = serverIds.slice(i, i + 5);
+      await Promise.allSettled(
+        chunk.map((sid) => supabase.rpc('delete_my_notification', { p_notification_id: sid }))
+      );
+    }
+    lastServerNotificationLoadAt = 0;
+    lastServerNotifications = null;
+  }
+
+  if (localIds.size > 0) {
+    const current = await loadLocalNotifications();
+    const next = current.filter((item) => !localIds.has(item.id));
+    await saveLocalNotifications(next);
+  }
+
   return loadAppNotifications();
 }
 

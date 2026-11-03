@@ -1,7 +1,33 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Dimensions, Image, type LayoutChangeEvent, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Dimensions,
+  Image,
+  type LayoutChangeEvent,
+  Modal,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { Bell, CalendarDays, CheckCheck, ChevronRight, Gift, Hourglass, Trash2, X } from 'lucide-react-native';
+import {
+  Bell,
+  CalendarDays,
+  Check,
+  CheckCheck,
+  ChevronRight,
+  Gift,
+  Hourglass,
+  Minus,
+  Trash2,
+  X,
+} from 'lucide-react-native';
 
 import { TopBar } from '../components/TopBar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,8 +37,10 @@ import type { ProfileLoadResult } from '../types/domain';
 import {
   claimHygPointsNotification,
   deleteNotification,
+  deleteNotifications,
   loadAppNotifications,
   markNotificationRead,
+  markNotificationsRead,
   type AppNotification,
   unreadCount,
 } from '../services/notificationCenter';
@@ -49,6 +77,10 @@ export function NotificationsScreen({
   const insets = useSafeAreaInsets();
   const [items, setItems] = useState<AppNotification[]>([]);
   const [activeFilter, setActiveFilter] = useState<FilterKey>('unread');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [isMarkingRead, setIsMarkingRead] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [claimingIds, setClaimingIds] = useState<Set<string>>(() => new Set());
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [selectedGift, setSelectedGift] = useState<AppNotification | null>(null);
@@ -84,11 +116,184 @@ export function NotificationsScreen({
 
   useEffect(() => {
     setCurrentPage(1);
+    setSelectedIds(new Set());
+    setIsSelectionMode(false);
   }, [activeFilter]);
 
   const filtered = useMemo(() => {
     return items.filter((item) => (activeFilter === 'unread' ? !item.readAt : !!item.readAt));
   }, [activeFilter, items]);
+
+  const filteredCount = filtered.length;
+
+  const selectedCount = useMemo(() => {
+    let count = 0;
+    for (const item of filtered) {
+      if (selectedIds.has(item.id)) {
+        count += 1;
+      }
+    }
+    return count;
+  }, [filtered, selectedIds]);
+
+  const isAllSelected = filteredCount > 0 && selectedCount === filteredCount;
+  const isPartialSelected = selectedCount > 0 && !isAllSelected;
+
+  const unreadSelectedCount = useMemo(() => {
+    return filtered.filter((item) => selectedIds.has(item.id) && !item.readAt).length;
+  }, [filtered, selectedIds]);
+
+  const deletableSelectedCount = useMemo(() => {
+    return filtered.filter((item) => {
+      if (!selectedIds.has(item.id)) return false;
+      if (item.actionType === 'hyg_points_claim') {
+        return item.actionStatus === 'claimed' && Boolean(item.readAt);
+      }
+      return true;
+    }).length;
+  }, [filtered, selectedIds]);
+
+  const totalDeletableCount = useMemo(() => {
+    return filtered.filter((item) => {
+      if (item.actionType === 'hyg_points_claim') {
+        return item.actionStatus === 'claimed' && Boolean(item.readAt);
+      }
+      return true;
+    }).length;
+  }, [filtered]);
+
+  const isBulkActionRunning = isMarkingRead || isDeleting;
+  const canMarkRead = activeFilter === 'unread' && (selectedCount > 0 ? unreadSelectedCount > 0 : filteredCount > 0);
+  const canDeleteAny = selectedCount > 0 ? deletableSelectedCount > 0 : totalDeletableCount > 0;
+
+  function handleToggleSelectAll() {
+    if (isBulkActionRunning || filteredCount === 0) return;
+    if (!isSelectionMode) {
+      setIsSelectionMode(true);
+      setSelectedIds(new Set(filtered.map((item) => item.id)));
+      return;
+    }
+
+    if (isAllSelected) {
+      setSelectedIds(new Set());
+      setIsSelectionMode(false);
+    } else {
+      setSelectedIds(new Set(filtered.map((item) => item.id)));
+    }
+  }
+
+  function handleToggleSelectItem(id: string) {
+    if (isBulkActionRunning) return;
+    setSelectedIds((prev) => {
+      const nextSet = new Set(prev);
+      if (nextSet.has(id)) {
+        nextSet.delete(id);
+      } else {
+        nextSet.add(id);
+      }
+      if (nextSet.size === 0) {
+        setIsSelectionMode(false);
+      }
+      return nextSet;
+    });
+  }
+
+  async function handleBulkMarkRead() {
+    if (isBulkActionRunning) return;
+    setErrorMessage(null);
+
+    const targetItems = selectedCount > 0
+      ? filtered.filter((item) => selectedIds.has(item.id) && !item.readAt)
+      : filtered.filter((item) => !item.readAt);
+
+    if (targetItems.length === 0) return;
+
+    setIsMarkingRead(true);
+    try {
+      const idsToMark = targetItems.map((item) => item.id);
+      const next = await markNotificationsRead(idsToMark);
+      setItems(next);
+      onCountChange?.(unreadCount(next));
+      setSelectedIds((prev) => {
+        const nextSet = new Set(prev);
+        idsToMark.forEach((id) => nextSet.delete(id));
+        if (nextSet.size === 0) {
+          setIsSelectionMode(false);
+        }
+        return nextSet;
+      });
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to mark notifications as read');
+    } finally {
+      setIsMarkingRead(false);
+    }
+  }
+
+  function handleBulkDelete() {
+    if (isBulkActionRunning) return;
+    setErrorMessage(null);
+
+    const targetItems = selectedCount > 0
+      ? filtered.filter((item) => selectedIds.has(item.id))
+      : filtered;
+
+    const deletableItems = targetItems.filter((item) => {
+      if (item.actionType === 'hyg_points_claim') {
+        return item.actionStatus === 'claimed' && Boolean(item.readAt);
+      }
+      return true;
+    });
+
+    if (deletableItems.length === 0) {
+      const msg = targetItems.length > 0 && targetItems.some((i) => i.actionType === 'hyg_points_claim')
+        ? 'Unclaimed gift notifications cannot be deleted. Please claim the gift first.'
+        : 'No notifications available to delete.';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(msg);
+      } else {
+        Alert.alert('Cannot Delete', msg);
+      }
+      return;
+    }
+
+    const title = selectedCount > 0 ? 'Delete Selected Notifications' : 'Delete All Notifications';
+    const message = selectedCount > 0
+      ? `Are you sure you want to delete ${deletableItems.length} selected notification${deletableItems.length > 1 ? 's' : ''}? This action cannot be undone.`
+      : `Are you sure you want to delete all ${deletableItems.length} ${activeFilter} notification${deletableItems.length > 1 ? 's' : ''}? This action cannot be undone.`;
+
+    const executeDelete = async () => {
+      setIsDeleting(true);
+      try {
+        const idsToDelete = deletableItems.map((item) => item.id);
+        const next = await deleteNotifications(idsToDelete);
+        setItems(next);
+        onCountChange?.(unreadCount(next));
+        setSelectedIds((prev) => {
+          const nextSet = new Set(prev);
+          idsToDelete.forEach((id) => nextSet.delete(id));
+          if (nextSet.size === 0) {
+            setIsSelectionMode(false);
+          }
+          return nextSet;
+        });
+      } catch (err) {
+        setErrorMessage(err instanceof Error ? err.message : 'Failed to delete notifications');
+      } finally {
+        setIsDeleting(false);
+      }
+    };
+
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      if (window.confirm(message)) {
+        void executeDelete();
+      }
+    } else {
+      Alert.alert(title, message, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => void executeDelete() },
+      ]);
+    }
+  }
 
   const totalPages = Math.ceil(filtered.length / itemsPerPage) || 1;
 
@@ -108,6 +313,15 @@ export function NotificationsScreen({
     const next = await markNotificationRead(id);
     setItems(next);
     onCountChange?.(unreadCount(next));
+    setSelectedIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const nextSet = new Set(prev);
+      nextSet.delete(id);
+      if (nextSet.size === 0) {
+        setIsSelectionMode(false);
+      }
+      return nextSet;
+    });
   }
 
   async function handleDelete(id: string) {
@@ -115,6 +329,15 @@ export function NotificationsScreen({
     const next = await deleteNotification(id);
     setItems(next);
     onCountChange?.(unreadCount(next));
+    setSelectedIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const nextSet = new Set(prev);
+      nextSet.delete(id);
+      if (nextSet.size === 0) {
+        setIsSelectionMode(false);
+      }
+      return nextSet;
+    });
   }
 
   async function handleClaim(item: AppNotification) {
@@ -170,6 +393,92 @@ export function NotificationsScreen({
           />
         }
       >
+        {/* Top actions bar: Select all, Mark as read, Delete all */}
+        <View style={styles.topActionsBar}>
+          <Pressable
+            style={[
+              styles.topActionBtn,
+              styles.selectAllBtn,
+              (filteredCount === 0 || isBulkActionRunning) && styles.actionBtnDisabled,
+            ]}
+            disabled={filteredCount === 0 || isBulkActionRunning}
+            onPress={handleToggleSelectAll}
+            hitSlop={6}
+          >
+            <View
+              style={[
+                styles.batchCheckbox,
+                isSelectionMode && isAllSelected && styles.batchCheckboxActive,
+                isSelectionMode && isPartialSelected && styles.batchCheckboxPartial,
+              ]}
+            >
+              {isSelectionMode && isAllSelected ? (
+                <Check size={11} color="#ffffff" strokeWidth={3} />
+              ) : isSelectionMode && isPartialSelected ? (
+                <Minus size={11} color="#ffffff" strokeWidth={3} />
+              ) : null}
+            </View>
+            <Text
+              style={[styles.selectAllText, filteredCount === 0 && styles.actionTextDisabled]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.8}
+            >
+              {isSelectionMode && selectedCount > 0 ? `Select (${selectedCount})` : 'Select all'}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            style={[
+              styles.topActionBtn,
+              styles.markReadBtn,
+              (!canMarkRead || isBulkActionRunning) && styles.actionBtnDisabled,
+            ]}
+            disabled={!canMarkRead || isBulkActionRunning}
+            onPress={handleBulkMarkRead}
+            hitSlop={6}
+          >
+            {isMarkingRead ? (
+              <ActivityIndicator size="small" color="#166534" />
+            ) : (
+              <CheckCheck size={13} color={canMarkRead ? '#166534' : colors.muted} strokeWidth={2.4} />
+            )}
+            <Text
+              style={[styles.markReadText, !canMarkRead && styles.actionTextDisabled]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.8}
+            >
+              Mark All as Read
+            </Text>
+          </Pressable>
+
+          <Pressable
+            style={[
+              styles.topActionBtn,
+              styles.deleteAllBtn,
+              (!canDeleteAny || isBulkActionRunning) && styles.actionBtnDisabled,
+            ]}
+            disabled={!canDeleteAny || isBulkActionRunning}
+            onPress={handleBulkDelete}
+            hitSlop={6}
+          >
+            {isDeleting ? (
+              <ActivityIndicator size="small" color="#b91c1c" />
+            ) : (
+              <Trash2 size={13} color={canDeleteAny ? '#b91c1c' : colors.muted} strokeWidth={2.4} />
+            )}
+            <Text
+              style={[styles.deleteAllText, !canDeleteAny && styles.actionTextDisabled]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.8}
+            >
+              Delete All
+            </Text>
+          </Pressable>
+        </View>
+
         <View style={styles.headerCard}>
           <View style={styles.headerRow}>
             <View style={styles.headerIconBubble}>
@@ -210,6 +519,9 @@ export function NotificationsScreen({
               key={item.id}
               item={item}
               claimingIds={claimingIds}
+              showCheckbox={isSelectionMode}
+              isSelected={selectedIds.has(item.id)}
+              onToggleSelect={() => handleToggleSelectItem(item.id)}
               setSelectedGift={setSelectedGift}
               onMarkRead={handleMarkRead}
               onDelete={handleDelete}
@@ -335,6 +647,9 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 interface AnimatedNotificationCardProps {
   item: AppNotification;
   claimingIds: Set<string>;
+  showCheckbox?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: () => void;
   setSelectedGift: (item: AppNotification) => void;
   onMarkRead: (id: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
@@ -344,6 +659,9 @@ interface AnimatedNotificationCardProps {
 function AnimatedNotificationCard({
   item,
   claimingIds,
+  showCheckbox = false,
+  isSelected = false,
+  onToggleSelect,
   setSelectedGift,
   onMarkRead,
   onDelete,
@@ -366,6 +684,11 @@ function AnimatedNotificationCard({
   };
 
   const handleCardPress = () => {
+    if (showCheckbox) {
+      onToggleSelect?.();
+      return;
+    }
+
     if (!item.readAt) {
       void onMarkRead(item.id);
     }
@@ -474,7 +797,7 @@ function AnimatedNotificationCard({
   return (
     <Animated.View style={outerStyle} onLayout={handleLayout}>
       <Animated.View style={innerStyle}>
-        <View style={[styles.card, !item.readAt ? styles.cardUnread : null]}>
+        <View style={[styles.card, !item.readAt ? styles.cardUnread : null, showCheckbox && isSelected ? styles.cardSelected : null]}>
           <Pressable style={styles.cardTop} onPress={handleCardPress}>
             <View style={styles.cardIconBubble}>
               {item.actionType === 'hyg_points_claim' ? (
@@ -490,33 +813,48 @@ function AnimatedNotificationCard({
           </Pressable>
           <Text style={styles.cardDate}>{new Date(item.createdAt).toLocaleString()}</Text>
           <View style={styles.cardActions}>
-            {item.actionType === 'hyg_points_claim' && item.actionStatus === 'released' && item.actionId ? (
-              <Pressable
-                disabled={claimingIds.has(item.actionId) || isTransitioning}
-                style={[styles.claimInlineButton, (claimingIds.has(item.actionId) || isTransitioning) ? styles.actionDisabled : null]}
-                onPress={() => setSelectedGift(item)}
-              >
-                <CoinIcon size={34} />
-                <Text style={styles.claimInlineText}>{claimingIds.has(item.actionId) ? 'Claiming...' : item.actionLabel ?? 'Claim'}</Text>
-                <ChevronRight size={22} color="#a16207" strokeWidth={2.8} />
-              </Pressable>
-            ) : item.actionType === 'hyg_points_claim' && item.actionStatus === 'claimed' ? (
-              <View style={styles.claimedBadge}>
-                <CheckCheck size={15} color="#166534" strokeWidth={2.4} />
-                <Text style={styles.actionText}>Claimed</Text>
-              </View>
-            ) : !item.readAt ? (
-              <Pressable
-                disabled={isTransitioning}
-                style={[styles.actionButton, isTransitioning ? styles.actionDisabled : null]}
-                onPress={handlePressMarkRead}
-              >
-                <CheckCheck size={15} color="#166534" strokeWidth={2.4} />
-                <Text style={styles.actionText}>Mark read</Text>
-              </Pressable>
-            ) : (
-              <View style={styles.actionSpacer} />
-            )}
+            <View style={styles.cardActionsLeft}>
+              {showCheckbox ? (
+                <Pressable
+                  style={styles.cardBottomCheckboxTouch}
+                  onPress={onToggleSelect}
+                  hitSlop={8}
+                >
+                  <View style={[styles.batchCheckbox, isSelected && styles.batchCheckboxActive]}>
+                    {isSelected ? <Check size={11} color="#ffffff" strokeWidth={3} /> : null}
+                  </View>
+                </Pressable>
+              ) : null}
+
+              {item.actionType === 'hyg_points_claim' && item.actionStatus === 'released' && item.actionId ? (
+                <Pressable
+                  disabled={claimingIds.has(item.actionId) || isTransitioning}
+                  style={[styles.claimInlineButton, (claimingIds.has(item.actionId) || isTransitioning) ? styles.actionDisabled : null]}
+                  onPress={() => setSelectedGift(item)}
+                >
+                  <CoinIcon size={34} />
+                  <Text style={styles.claimInlineText}>{claimingIds.has(item.actionId) ? 'Claiming...' : item.actionLabel ?? 'Claim'}</Text>
+                  <ChevronRight size={22} color="#a16207" strokeWidth={2.8} />
+                </Pressable>
+              ) : item.actionType === 'hyg_points_claim' && item.actionStatus === 'claimed' ? (
+                <View style={styles.claimedBadge}>
+                  <CheckCheck size={15} color="#166534" strokeWidth={2.4} />
+                  <Text style={styles.actionText}>Claimed</Text>
+                </View>
+              ) : !item.readAt ? (
+                <Pressable
+                  disabled={isTransitioning}
+                  style={[styles.actionButton, isTransitioning ? styles.actionDisabled : null]}
+                  onPress={handlePressMarkRead}
+                >
+                  <CheckCheck size={15} color="#166534" strokeWidth={2.4} />
+                  <Text style={styles.actionText}>Mark read</Text>
+                </Pressable>
+              ) : (
+                !showCheckbox ? <View style={styles.actionSpacer} /> : null
+              )}
+            </View>
+
             {canDelete ? (
               <Pressable
                 disabled={isTransitioning}
@@ -580,6 +918,79 @@ function formatDateTime(value: string) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
   scroll: { padding: spacing.md, paddingBottom: 90 },
+  topActionsBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: spacing.xs,
+    paddingHorizontal: 0,
+    flexWrap: 'nowrap',
+    gap: 6,
+    width: '100%',
+  },
+  topActionBtn: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 34,
+    borderRadius: radius.sm,
+    paddingHorizontal: 4,
+    paddingVertical: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    borderWidth: 1,
+  },
+  selectAllBtn: {
+    backgroundColor: '#ffffff',
+    borderColor: colors.border,
+  },
+  batchCheckbox: {
+    width: 15,
+    height: 15,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: '#94a3b8',
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  batchCheckboxActive: {
+    borderColor: '#16a34a',
+    backgroundColor: '#16a34a',
+  },
+  batchCheckboxPartial: {
+    borderColor: '#16a34a',
+    backgroundColor: '#16a34a',
+  },
+  selectAllText: {
+    fontSize: 11.5,
+    fontWeight: fontWeights.bold,
+    color: colors.text,
+  },
+  markReadBtn: {
+    backgroundColor: '#ecfdf5',
+    borderColor: '#a7f3d0',
+  },
+  markReadText: {
+    color: '#166534',
+    fontSize: 11.5,
+    fontWeight: fontWeights.bold,
+  },
+  deleteAllBtn: {
+    backgroundColor: '#fef2f2',
+    borderColor: '#fecaca',
+  },
+  deleteAllText: {
+    color: '#b91c1c',
+    fontSize: 11.5,
+    fontWeight: fontWeights.bold,
+  },
+  actionBtnDisabled: {
+    opacity: 0.45,
+  },
+  actionTextDisabled: {
+    color: colors.muted,
+  },
   headerCard: {
     borderRadius: radius.md,
     borderWidth: 1,
@@ -635,7 +1046,23 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.surface,
   },
+  cardSelected: {
+    borderColor: '#93c5fd',
+    backgroundColor: '#f8fbff',
+  },
   cardTop: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  cardActionsLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  cardBottomCheckboxTouch: {
+    minHeight: 32,
+    minWidth: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   cardIconBubble: {
     width: 48,
     height: 48,

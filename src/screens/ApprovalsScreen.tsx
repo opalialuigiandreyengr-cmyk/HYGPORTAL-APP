@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -13,6 +13,7 @@ import {
   Eye,
   FileText,
   Funnel,
+  Minus,
   RefreshCcw,
   Save,
   Search,
@@ -67,6 +68,10 @@ const categoryTabs: { key: CategoryFilter; label: string }[] = [
 ];
 const pageSize = 15;
 
+function getItemKey(item: PendingApproval): string {
+  return item.step_id || (item as any).pending_step_id || item.request_id;
+}
+
 type Props = {
   profileResult?: ProfileLoadResult | null;
   notificationCount?: number;
@@ -113,6 +118,10 @@ export function ApprovalsScreen({
   const [page, setPage] = useState(1);
   const [selectedApproval, setSelectedApproval] = useState<{ item: PendingApproval; sequence: number } | null>(null);
   const [selectedApproved, setSelectedApproved] = useState<{ item: ApprovedApproval; sequence: number } | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [isBatchApproving, setIsBatchApproving] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
   const insets = useSafeAreaInsets();
 
@@ -399,6 +408,42 @@ export function ApprovalsScreen({
     setSelectedDepartment('all');
   }, [mainTab]);
 
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setIsSelectionMode(false);
+  }, [activeCategory, mainTab, selectedDepartment]);
+
+  useEffect(() => {
+    if (selectedIds.size > 0 && items.length > 0) {
+      const currentItemKeys = new Set(items.map(getItemKey));
+      setSelectedIds((prev) => {
+        let changed = false;
+        const next = new Set<string>();
+        prev.forEach((id) => {
+          if (currentItemKeys.has(id)) {
+            next.add(id);
+          } else {
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    } else if (items.length === 0 && selectedIds.size > 0) {
+      setSelectedIds(new Set());
+    }
+  }, [items]);
+
+  const filteredItemKeys = useMemo(() => {
+    return filteredItems.map(getItemKey);
+  }, [filteredItems]);
+
+  const areAllFilteredSelected = useMemo(() => {
+    if (filteredItemKeys.length === 0) return false;
+    return filteredItemKeys.every((key) => selectedIds.has(key));
+  }, [filteredItemKeys, selectedIds]);
+
+  const selectedCount = selectedIds.size;
+
   async function approve(
     item: PendingApproval,
     rejectedIndices: number[] = [],
@@ -558,6 +603,149 @@ export function ApprovalsScreen({
       });
       throw error;
     }
+  }
+
+  function handleToggleSelectAll() {
+    if (filteredItemKeys.length === 0 || isBatchApproving) return;
+
+    if (!isSelectionMode) {
+      setIsSelectionMode(true);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        filteredItemKeys.forEach((key) => next.add(key));
+        return next;
+      });
+      return;
+    }
+
+    if (areAllFilteredSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        filteredItemKeys.forEach((key) => next.delete(key));
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        filteredItemKeys.forEach((key) => next.add(key));
+        return next;
+      });
+    }
+  }
+
+  function handleCancelSelection() {
+    setSelectedIds(new Set());
+    setIsSelectionMode(false);
+  }
+
+  async function executeBatchApprove(itemsToApprove: PendingApproval[]) {
+    if (itemsToApprove.length === 0) return;
+    setIsBatchApproving(true);
+    setStatus(`Approving ${itemsToApprove.length} request${itemsToApprove.length === 1 ? '' : 's'}...`);
+    let successCount = 0;
+    let failCount = 0;
+    const failedErrors: string[] = [];
+
+    try {
+      const CHUNK_SIZE = 3;
+      for (let i = 0; i < itemsToApprove.length; i += CHUNK_SIZE) {
+        const chunk = itemsToApprove.slice(i, i + CHUNK_SIZE);
+        setBatchProgress({
+          current: Math.min(i + CHUNK_SIZE, itemsToApprove.length),
+          total: itemsToApprove.length,
+        });
+
+        await Promise.all(
+          chunk.map(async (item) => {
+            const stepId = item.step_id || (item as any).pending_step_id;
+            if (!stepId) {
+              failCount++;
+              failedErrors.push(`Step ID missing for ${item.request_id}`);
+              return;
+            }
+            try {
+              await decideApprovalStep(stepId, 'approved', 'Approved from mobile (batch).');
+              successCount++;
+            } catch (err: any) {
+              console.warn(`Failed to approve request ${item.request_id}:`, err);
+              failCount++;
+              failedErrors.push(err?.message || 'Approval failed');
+            }
+          }),
+        );
+      }
+
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        itemsToApprove.forEach((it) => next.delete(getItemKey(it)));
+        return next;
+      });
+
+      await refresh(true);
+
+      if (failCount === 0) {
+        onToast?.({
+          tone: 'success',
+          title: 'Batch Approval Complete',
+          message: `Successfully approved ${successCount} request${successCount === 1 ? '' : 's'}.`,
+        });
+      } else if (successCount > 0) {
+        onToast?.({
+          tone: 'warning',
+          title: 'Partially Approved',
+          message: `Approved ${successCount} request${successCount === 1 ? '' : 's'}, but ${failCount} failed.`,
+        });
+      } else {
+        onToast?.({
+          tone: 'error',
+          title: 'Batch Approval Failed',
+          message: failedErrors[0] || 'Unable to approve selected requests.',
+        });
+      }
+    } catch (error: any) {
+      const msg = error?.message || 'An error occurred during batch approval.';
+      setStatus(msg);
+      onToast?.({
+        tone: 'error',
+        title: 'Batch Approval Error',
+        message: msg,
+      });
+    } finally {
+      setIsBatchApproving(false);
+      setBatchProgress(null);
+      setStatus('');
+      setIsSelectionMode(false);
+    }
+  }
+
+  function handleBatchApprove() {
+    if (isBatchApproving) return;
+    const itemsToApprove = selectedCount > 0
+      ? items.filter((item) => selectedIds.has(getItemKey(item)))
+      : filteredItems;
+
+    if (itemsToApprove.length === 0) return;
+
+    const count = itemsToApprove.length;
+    const isAll = selectedCount === 0 || areAllFilteredSelected;
+    const title = isAll ? `Approve all ${count} requests?` : `Approve ${count} selected request${count === 1 ? '' : 's'}?`;
+    const message = isAll
+      ? `Are you sure you want to approve all ${count} pending requests in this list?`
+      : `Are you sure you want to approve the ${count} selected request${count === 1 ? '' : 's'} without viewing each one?`;
+
+    platformAlert(
+      title,
+      message,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: `Approve (${count})`,
+          onPress: () => {
+            void executeBatchApprove(itemsToApprove);
+          },
+        },
+      ],
+    );
   }
 
   return (
@@ -768,6 +956,82 @@ export function ApprovalsScreen({
               );
             })}
           </ScrollView>
+
+          {/* Below request type tabs: Batch Actions for Pending Approvals */}
+          {mainTab === 'pending' ? (
+            <View style={styles.batchActionsRow}>
+              {/* Select All Toggle */}
+              <Pressable
+                style={[
+                  styles.selectAllBtn,
+                  filteredItems.length === 0 && styles.batchBtnDisabled,
+                ]}
+                disabled={filteredItems.length === 0 || isBatchApproving}
+                onPress={handleToggleSelectAll}
+                hitSlop={6}
+              >
+                <View
+                  style={[
+                    styles.batchCheckbox,
+                    isSelectionMode && areAllFilteredSelected && styles.batchCheckboxActive,
+                    isSelectionMode && selectedCount > 0 && !areAllFilteredSelected && styles.batchCheckboxPartial,
+                  ]}
+                >
+                  {isSelectionMode && areAllFilteredSelected ? (
+                    <Check size={12} color="#ffffff" strokeWidth={3} />
+                  ) : isSelectionMode && selectedCount > 0 ? (
+                    <Minus size={12} color="#ffffff" strokeWidth={3} />
+                  ) : null}
+                </View>
+                <Text style={styles.selectAllText}>Select All</Text>
+                {isSelectionMode && selectedCount > 0 ? (
+                  <View style={styles.batchCountBadge}>
+                    <Text style={styles.batchCountBadgeText}>{selectedCount}</Text>
+                  </View>
+                ) : null}
+              </Pressable>
+
+              {/* Right side: Cancel selection + Approve All / Selected */}
+              <View style={styles.batchRightGroup}>
+                {isSelectionMode ? (
+                  <Pressable
+                    style={styles.batchDeselectBtn}
+                    onPress={handleCancelSelection}
+                    disabled={isBatchApproving}
+                    hitSlop={6}
+                  >
+                    <Text style={styles.batchDeselectText}>Cancel</Text>
+                  </Pressable>
+                ) : null}
+
+                <Pressable
+                  style={[
+                    styles.batchApproveBtn,
+                    (filteredItems.length === 0 || isBatchApproving) && styles.batchApproveBtnDisabled,
+                  ]}
+                  disabled={filteredItems.length === 0 || isBatchApproving}
+                  onPress={handleBatchApprove}
+                >
+                  {isBatchApproving ? (
+                    <ActivityIndicator size="small" color="#ffffff" />
+                  ) : (
+                    <CheckCircle2 size={15} color="#ffffff" strokeWidth={2.4} />
+                  )}
+                  <Text style={styles.batchApproveBtnText}>
+                    {isBatchApproving
+                      ? batchProgress
+                        ? `Approving (${batchProgress.current}/${batchProgress.total})...`
+                        : 'Approving...'
+                      : isSelectionMode && selectedCount > 0
+                      ? areAllFilteredSelected
+                        ? `Approve All (${filteredItems.length})`
+                        : `Approve Selected (${selectedCount})`
+                      : `Approve All (${filteredItems.length})`}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
         </View>
 
         {status ? <Text style={styles.status}>{status}</Text> : null}
@@ -801,12 +1065,27 @@ export function ApprovalsScreen({
         {mainTab === 'pending'
           ? (paginatedItems as PendingApproval[]).map((item, index) => {
             const sequence = (currentPage - 1) * pageSize + index + 1;
+            const itemKey = getItemKey(item);
             return (
               <ApprovalCard
-                key={item.step_id || (item as any).pending_step_id || item.request_id}
+                key={itemKey}
                 item={item}
                 profile={profile}
                 sequence={sequence}
+                showCheckbox={isSelectionMode}
+                isSelected={selectedIds.has(itemKey)}
+                onToggleSelect={() => {
+                  if (isBatchApproving) return;
+                  setSelectedIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(itemKey)) {
+                      next.delete(itemKey);
+                    } else {
+                      next.add(itemKey);
+                    }
+                    return next;
+                  });
+                }}
                 onView={() => setSelectedApproval({ item, sequence })}
               />
             );
@@ -894,11 +1173,17 @@ function ApprovalCard({
   profile,
   sequence,
   onView,
+  showCheckbox = false,
+  isSelected,
+  onToggleSelect,
 }: {
   item: PendingApproval;
   profile: EmployeeProfileSummary | null;
   sequence: number;
   onView: () => void;
+  showCheckbox?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: () => void;
 }) {
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
   const department = item.department_name || profile?.departmentName || profile?.storeName || 'Department';
@@ -909,11 +1194,32 @@ function ApprovalCard({
 
   return (
     <View style={styles.cardOuter}>
-      <View style={styles.cardAccent} />
-      <View style={styles.card}>
-        <View style={styles.avatar}>
-          <Avatar name={displayName} photoUrl={item.requester_photo_url ?? null} size={35} textSize={13} />
-        </View>
+      <View style={[styles.cardAccent, showCheckbox && isSelected ? styles.cardAccentSelected : null]} />
+      <Pressable
+        style={[styles.card, showCheckbox && isSelected ? styles.cardSelected : null]}
+        onPress={showCheckbox ? onToggleSelect : undefined}
+      >
+        {showCheckbox ? (
+          <View style={styles.cardLeftCol}>
+            <View style={styles.avatar}>
+              <Avatar name={displayName} photoUrl={item.requester_photo_url ?? null} size={35} textSize={13} />
+            </View>
+
+            <Pressable
+              style={styles.cardCheckboxContainer}
+              onPress={onToggleSelect}
+              hitSlop={8}
+            >
+              <View style={[styles.cardCheckbox, isSelected ? styles.cardCheckboxSelected : null]}>
+                {isSelected ? <Check size={13} color="#ffffff" strokeWidth={3} /> : null}
+              </View>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={styles.avatar}>
+            <Avatar name={displayName} photoUrl={item.requester_photo_url ?? null} size={35} textSize={13} />
+          </View>
+        )}
 
         <View style={styles.cardContent}>
           <View style={styles.cardTopRow}>
@@ -955,13 +1261,19 @@ function ApprovalCard({
             <View style={styles.typePill}>
               <Text style={styles.typePillText}>{formatApprovalType(item)}</Text>
             </View>
-            <Pressable style={styles.viewButton} onPress={onView}>
+            <Pressable
+              style={styles.viewButton}
+              onPress={(e) => {
+                e?.stopPropagation?.();
+                onView();
+              }}
+            >
               <Eye size={15} color={colors.text} strokeWidth={2.3} />
               <Text style={styles.viewText}>View</Text>
             </Pressable>
           </View>
         </View>
-      </View>
+      </Pressable>
     </View>
   );
 }
@@ -1399,7 +1711,7 @@ function ApprovalDetailsSheet({
                     <FileText size={15} color={colors.muted} strokeWidth={2.2} />
                     <Text style={styles.panelTitle}>Reason / Details</Text>
                   </View>
-                  <Text style={styles.sheetReasonText}>{item.reason || 'No reason provided.'}</Text>
+                  <Text style={styles.sheetReasonText}>{cleanDisplayReason(item.reason, 'No reason provided.')}</Text>
                 </View>
 
                 <View style={styles.timelineHeader}>
@@ -1783,7 +2095,7 @@ function ApprovedDetailsSheet({
                     <FileText size={15} color={colors.muted} strokeWidth={2.2} />
                     <Text style={styles.panelTitle}>Reason / Details</Text>
                   </View>
-                  <Text style={styles.sheetReasonText}>{item.reason || 'No reason provided.'}</Text>
+                  <Text style={styles.sheetReasonText}>{cleanDisplayReason(item.reason, 'No reason provided.')}</Text>
                 </View>
 
                 <View style={styles.timelineHeader}>
@@ -2005,6 +2317,12 @@ function formatApprovalCode(item: PendingApproval | ApprovedApproval, sequence: 
 
 function formatApprovalType(item: PendingApproval | ApprovedApproval) {
   return formatUnifiedRequestType(item);
+}
+
+function cleanDisplayReason(reason?: string | null, fallback = 'No reason provided.'): string {
+  if (!reason) return fallback;
+  const cleaned = reason.replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '').trim();
+  return cleaned || fallback;
 }
 
 function isUseOffsetApproval(item: PendingApproval | ApprovedApproval) {
@@ -2502,6 +2820,105 @@ const styles = StyleSheet.create({
   categoryCountTextActive: {
     color: colors.surface,
   },
+  batchActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 10,
+    marginTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    gap: 8,
+  },
+  selectAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: radius.sm,
+    backgroundColor: colors.background,
+  },
+  batchCheckbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 5,
+    borderWidth: 1.5,
+    borderColor: '#94a3b8',
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  batchCheckboxActive: {
+    borderColor: '#16a34a',
+    backgroundColor: '#16a34a',
+  },
+  batchCheckboxPartial: {
+    borderColor: '#16a34a',
+    backgroundColor: '#16a34a',
+  },
+  selectAllText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: colors.text,
+  },
+  batchCountBadge: {
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#dcfce7',
+    paddingHorizontal: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  batchCountBadgeText: {
+    fontSize: 11,
+    fontWeight: fontWeights.heavy,
+    color: '#15803d',
+  },
+  batchRightGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  batchDeselectBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: radius.sm,
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  batchDeselectText: {
+    fontSize: 12,
+    fontWeight: fontWeights.bold,
+    color: colors.muted,
+  },
+  batchApproveBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#16a34a',
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    borderRadius: radius.sm,
+    shadowColor: '#16a34a',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  batchApproveBtnDisabled: {
+    opacity: 0.5,
+  },
+  batchApproveBtnText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#ffffff',
+  },
+  batchBtnDisabled: {
+    opacity: 0.5,
+  },
   status: {
     fontSize: 13,
     color: colors.muted,
@@ -2586,9 +3003,14 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: radius.md,
     backgroundColor: colors.primary,
   },
+  cardAccentSelected: {
+    backgroundColor: '#16a34a',
+  },
   card: {
     backgroundColor: colors.surface,
     borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: 'transparent',
     paddingHorizontal: spacing.md,
     paddingVertical: 12,
     flexDirection: 'row',
@@ -2598,6 +3020,34 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.09,
     shadowRadius: 14,
     elevation: 2,
+  },
+  cardSelected: {
+    borderColor: '#86efac',
+    backgroundColor: '#f8fdf9',
+  },
+  cardLeftCol: {
+    width: 35,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  cardCheckboxContainer: {
+    height: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardCheckbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 5,
+    borderWidth: 1.5,
+    borderColor: '#94a3b8',
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardCheckboxSelected: {
+    borderColor: '#16a34a',
+    backgroundColor: '#16a34a',
   },
   avatar: {
     width: 35,
