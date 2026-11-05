@@ -18,12 +18,18 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import Svg, { Path } from 'react-native-svg';
 import {
+  Check,
+  ChevronDown,
   CircleHelp,
   Clapperboard,
+  Filter,
+  Folder,
+  Layers,
   Play,
   RefreshCw,
   Search,
   Sparkles,
+  Tag,
   Tv,
   X,
 } from 'lucide-react-native';
@@ -38,7 +44,9 @@ import {
   getYouTubeEmbedUrl,
   getYouTubeThumbnailUrl,
   loadPortalTutorials,
+  TUTORIAL_CATEGORIES,
   type PortalTutorial,
+  type TutorialCategory,
 } from '../services/tutorials';
 
 function YouTubeIcon({ size = 16, color = '#dc2626' }: { size?: number; color?: string }) {
@@ -82,6 +90,8 @@ export function TutorialsScreen({
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('All Categories');
+  const [isCategoryDropdownOpen, setIsCategoryDropdownOpen] = useState(false);
   const [selectedTutorial, setSelectedTutorial] = useState<PortalTutorial | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -109,18 +119,53 @@ export function TutorialsScreen({
     void fetchTutorials();
   }, [fetchTutorials]);
 
+  const availableCategories = useMemo(() => {
+    const list: string[] = [...TUTORIAL_CATEGORIES];
+    const hasGeneral = tutorials.some(
+      (t) => t.isActive && (t.category || 'General').toLowerCase() === 'general'
+    );
+    if (hasGeneral && !list.includes('General')) {
+      list.push('General');
+    }
+    return list;
+  }, [tutorials]);
+
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {
+      'All Categories': tutorials.filter((t) => t.isActive).length,
+    };
+    for (const cat of availableCategories) {
+      if (cat === 'All Categories') continue;
+      counts[cat] = tutorials.filter(
+        (t) => t.isActive && (t.category || 'General').toLowerCase() === cat.toLowerCase()
+      ).length;
+    }
+    return counts;
+  }, [tutorials, availableCategories]);
+
   const filteredTutorials = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return tutorials.filter((item) => {
       if (!item.isActive) return false;
+
+      // Filter by category
+      if (selectedCategory !== 'All Categories') {
+        const itemCat = (item.category || 'General').toLowerCase();
+        if (itemCat !== selectedCategory.toLowerCase()) {
+          return false;
+        }
+      }
+
+      // Filter by search query
       if (!q) return true;
       return (
         item.title.toLowerCase().includes(q) ||
         item.description.toLowerCase().includes(q) ||
+        (item.category && item.category.toLowerCase().includes(q)) ||
         item.youtubeUrl.toLowerCase().includes(q)
       );
     });
-  }, [tutorials, searchQuery]);
+  }, [tutorials, searchQuery, selectedCategory]);
 
   async function handleOpenVideo(tutorial: PortalTutorial) {
     const targetUrl = tutorial.youtubeUrl || (tutorial.videoId ? `https://www.youtube.com/watch?v=${tutorial.videoId}` : '');
@@ -227,6 +272,107 @@ export function TutorialsScreen({
               </TouchableOpacity>
             ) : null}
           </View>
+
+          {/* Category Dropdown & Quick Filter Carousel */}
+          <View style={styles.categorySection}>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              style={[
+                styles.categoryDropdownTrigger,
+                selectedCategory !== 'All Categories' && styles.categoryDropdownTriggerActive,
+              ]}
+              onPress={() => setIsCategoryDropdownOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel={`Category filter: ${selectedCategory}`}
+            >
+              <View style={styles.categoryTriggerLeft}>
+                <View
+                  style={[
+                    styles.categoryTriggerIconBox,
+                    selectedCategory !== 'All Categories' && styles.categoryTriggerIconBoxActive,
+                  ]}
+                >
+                  <Filter
+                    size={15}
+                    color={selectedCategory !== 'All Categories' ? '#ffffff' : colors.primary}
+                    strokeWidth={2.4}
+                  />
+                </View>
+                <View style={styles.categoryTriggerTextGroup}>
+                  <Text style={styles.categoryTriggerLabel}>CATEGORY</Text>
+                  <Text style={styles.categoryTriggerValue} numberOfLines={1}>
+                    {selectedCategory}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.categoryTriggerRight}>
+                <View
+                  style={[
+                    styles.categoryCountBadge,
+                    selectedCategory !== 'All Categories' && styles.categoryCountBadgeActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.categoryCountBadgeText,
+                      selectedCategory !== 'All Categories' && styles.categoryCountBadgeTextActive,
+                    ]}
+                  >
+                    {filteredTutorials.length}
+                  </Text>
+                </View>
+                <ChevronDown size={18} color={colors.muted} strokeWidth={2.4} />
+              </View>
+            </TouchableOpacity>
+
+            {/* Quick Category Chips Carousel */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.categoryPillsScroll}
+            >
+              {availableCategories.map((cat) => {
+                const isSelected = selectedCategory === cat;
+                const count = categoryCounts[cat] ?? 0;
+                return (
+                  <TouchableOpacity
+                    key={cat}
+                    activeOpacity={0.7}
+                    style={[
+                      styles.categoryPill,
+                      isSelected && styles.categoryPillActive,
+                    ]}
+                    onPress={() => setSelectedCategory(cat)}
+                  >
+                    <Text
+                      style={[
+                        styles.categoryPillText,
+                        isSelected && styles.categoryPillTextActive,
+                      ]}
+                    >
+                      {cat}
+                    </Text>
+                    <View
+                      style={[
+                        styles.categoryPillBadge,
+                        isSelected && styles.categoryPillBadgeActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.categoryPillBadgeText,
+                          isSelected && styles.categoryPillBadgeTextActive,
+                        ]}
+                      >
+                        {count}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
         </View>
 
         {/* Error Notification */}
@@ -252,17 +398,38 @@ export function TutorialsScreen({
               <Tv size={36} color="#94a3b8" strokeWidth={2} />
             </View>
             <Text style={styles.emptyTitle}>
-              {searchQuery ? 'No tutorials found' : 'No tutorials available yet'}
+              {searchQuery || selectedCategory !== 'All Categories'
+                ? 'No tutorials found'
+                : 'No tutorials available yet'}
             </Text>
             <Text style={styles.emptySub}>
               {searchQuery
-                ? `No guides matched "${searchQuery}". Try different keywords.`
+                ? `No guides matched "${searchQuery}"${
+                    selectedCategory !== 'All Categories' ? ` in category "${selectedCategory}"` : ''
+                  }. Try different keywords.`
+                : selectedCategory !== 'All Categories'
+                ? `No video tutorials found under "${selectedCategory}".`
                 : 'Tutorial videos published by administrators will appear here.'}
             </Text>
-            {searchQuery ? (
-              <TouchableOpacity style={styles.clearSearchBtn} onPress={() => setSearchQuery('')}>
-                <Text style={styles.clearSearchText}>Clear Search</Text>
-              </TouchableOpacity>
+            {searchQuery || selectedCategory !== 'All Categories' ? (
+              <View style={styles.emptyActionsRow}>
+                {selectedCategory !== 'All Categories' ? (
+                  <TouchableOpacity
+                    style={styles.clearCategoryBtn}
+                    onPress={() => setSelectedCategory('All Categories')}
+                  >
+                    <Text style={styles.clearCategoryText}>Show All Categories</Text>
+                  </TouchableOpacity>
+                ) : null}
+                {searchQuery ? (
+                  <TouchableOpacity
+                    style={styles.clearSearchBtn}
+                    onPress={() => setSearchQuery('')}
+                  >
+                    <Text style={styles.clearSearchText}>Clear Search</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
             ) : (
               <TouchableOpacity style={styles.clearSearchBtn} onPress={() => fetchTutorials()}>
                 <RefreshCw size={15} color="#ffffff" strokeWidth={2.4} />
@@ -273,9 +440,22 @@ export function TutorialsScreen({
         ) : (
           <View style={styles.listContainer}>
             <View style={styles.listHeaderRow}>
-              <Text style={styles.listCountText}>
-                {filteredTutorials.length} {filteredTutorials.length === 1 ? 'Tutorial' : 'Tutorials'} Available
-              </Text>
+              <View style={styles.listHeaderLeft}>
+                <Text style={styles.listCountText}>
+                  {filteredTutorials.length} {filteredTutorials.length === 1 ? 'Tutorial' : 'Tutorials'}{' '}
+                  {selectedCategory !== 'All Categories' ? `• ${selectedCategory}` : 'Available'}
+                </Text>
+                {selectedCategory !== 'All Categories' ? (
+                  <TouchableOpacity
+                    style={styles.activeFilterPill}
+                    onPress={() => setSelectedCategory('All Categories')}
+                    hitSlop={6}
+                  >
+                    <Text style={styles.activeFilterPillText}>{selectedCategory}</Text>
+                    <X size={12} color="#4338ca" strokeWidth={2.4} />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
               <Text style={styles.listTipText}>Tap any video to watch</Text>
             </View>
 
@@ -289,6 +469,121 @@ export function TutorialsScreen({
           </View>
         )}
       </ScrollView>
+
+      {/* Category Dropdown Picker Modal Sheet */}
+      <Modal
+        visible={isCategoryDropdownOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsCategoryDropdownOpen(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <Pressable
+            style={styles.absoluteFill}
+            onPress={() => setIsCategoryDropdownOpen(false)}
+          />
+          <View style={styles.categorySheetCard}>
+            <View style={styles.sheetHandle} />
+
+            <View style={styles.categorySheetHeader}>
+              <View style={styles.categorySheetTitleRow}>
+                <View style={styles.categorySheetIconBox}>
+                  <Folder size={18} color={colors.primary} strokeWidth={2.4} />
+                </View>
+                <View>
+                  <Text style={styles.categorySheetTitle}>Select Category</Text>
+                  <Text style={styles.categorySheetSubtitle}>
+                    Navigate tutorials by specific category
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                style={styles.categorySheetCloseBtn}
+                onPress={() => setIsCategoryDropdownOpen(false)}
+                hitSlop={10}
+              >
+                <X size={18} color="#64748b" strokeWidth={2.4} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              style={styles.categoryOptionsScroll}
+              showsVerticalScrollIndicator={false}
+            >
+              {availableCategories.map((cat) => {
+                const isSelected = selectedCategory === cat;
+                const count = categoryCounts[cat] ?? 0;
+                return (
+                  <TouchableOpacity
+                    key={cat}
+                    activeOpacity={0.7}
+                    style={[
+                      styles.categoryOptionItem,
+                      isSelected && styles.categoryOptionItemActive,
+                    ]}
+                    onPress={() => {
+                      setSelectedCategory(cat);
+                      setIsCategoryDropdownOpen(false);
+                    }}
+                  >
+                    <View style={styles.categoryOptionLeft}>
+                      <View
+                        style={[
+                          styles.categoryOptionRadio,
+                          isSelected && styles.categoryOptionRadioActive,
+                        ]}
+                      >
+                        {isSelected ? (
+                          <View style={styles.categoryOptionRadioInner} />
+                        ) : null}
+                      </View>
+                      <Text
+                        style={[
+                          styles.categoryOptionText,
+                          isSelected && styles.categoryOptionTextActive,
+                        ]}
+                      >
+                        {cat}
+                      </Text>
+                    </View>
+
+                    <View style={styles.categoryOptionRight}>
+                      <View
+                        style={[
+                          styles.categoryOptionCountBadge,
+                          isSelected && styles.categoryOptionCountBadgeActive,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.categoryOptionCountText,
+                            isSelected && styles.categoryOptionCountTextActive,
+                          ]}
+                        >
+                          {count} {count === 1 ? 'guide' : 'guides'}
+                        </Text>
+                      </View>
+                      {isSelected ? (
+                        <Check size={18} color={colors.primary} strokeWidth={2.6} />
+                      ) : (
+                        <View style={{ width: 18 }} />
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            <TouchableOpacity
+              activeOpacity={0.82}
+              style={styles.categorySheetDoneBtn}
+              onPress={() => setIsCategoryDropdownOpen(false)}
+            >
+              <Text style={styles.categorySheetDoneText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Video Preview / Playback Modal */}
       {selectedTutorial ? (
@@ -363,6 +658,14 @@ const TutorialCard = memo(function TutorialCard({
 
       {/* Card Info Content */}
       <View style={styles.cardContent}>
+        {/* Category Pill Tag */}
+        <View style={styles.cardCategoryRow}>
+          <View style={styles.cardCategoryBadge}>
+            <Tag size={11} color="#4338ca" strokeWidth={2.4} style={{ marginRight: 4 }} />
+            <Text style={styles.cardCategoryText}>{tutorial.category || 'General'}</Text>
+          </View>
+        </View>
+
         <TouchableOpacity activeOpacity={0.7} onPress={onPlay}>
           <Text style={styles.cardTitle} numberOfLines={2}>
             {tutorial.title}
@@ -604,6 +907,132 @@ const styles = StyleSheet.create({
   },
   searchClearBtn: {
     padding: 4,
+  },
+
+  /* Category Dropdown and Quick Filter Pills */
+  categorySection: {
+    marginTop: 12,
+    gap: 10,
+  },
+  categoryDropdownTrigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  categoryDropdownTriggerActive: {
+    borderColor: '#818cf8',
+    backgroundColor: '#f8faff',
+  },
+  categoryTriggerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
+  },
+  categoryTriggerIconBox: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#dbeafe',
+  },
+  categoryTriggerIconBoxActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  categoryTriggerTextGroup: {
+    flex: 1,
+    minWidth: 0,
+  },
+  categoryTriggerLabel: {
+    fontSize: 10,
+    fontWeight: fontWeights.heavy,
+    color: '#64748b',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  categoryTriggerValue: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: colors.text,
+    marginTop: 1,
+  },
+  categoryTriggerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  categoryCountBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 12,
+    backgroundColor: '#f1f5f9',
+  },
+  categoryCountBadgeActive: {
+    backgroundColor: '#e0e7ff',
+  },
+  categoryCountBadgeText: {
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+  },
+  categoryCountBadgeTextActive: {
+    color: '#4338ca',
+  },
+  categoryPillsScroll: {
+    gap: 6,
+    paddingVertical: 2,
+  },
+  categoryPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 20,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  categoryPillActive: {
+    backgroundColor: '#eef2ff',
+    borderColor: '#818cf8',
+  },
+  categoryPillText: {
+    fontSize: 12,
+    fontWeight: fontWeights.semibold,
+    color: '#475569',
+  },
+  categoryPillTextActive: {
+    color: '#4338ca',
+    fontWeight: fontWeights.bold,
+  },
+  categoryPillBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 10,
+    backgroundColor: '#e2e8f0',
+  },
+  categoryPillBadgeActive: {
+    backgroundColor: '#c7d2fe',
+  },
+  categoryPillBadgeText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#475569',
+  },
+  categoryPillBadgeTextActive: {
+    color: '#312e81',
   },
 
   /* Error */
@@ -1006,6 +1435,219 @@ const styles = StyleSheet.create({
   modalDismissBtnText: {
     color: colors.text,
     fontSize: 13,
+    fontWeight: fontWeights.bold,
+  },
+
+  /* Empty state actions */
+  emptyActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+  },
+  clearCategoryBtn: {
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  clearCategoryText: {
+    color: '#1d4ed8',
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+  },
+
+  /* Header filter row active pill */
+  listHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+    flex: 1,
+  },
+  activeFilterPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#eef2ff',
+    borderWidth: 1,
+    borderColor: '#c7d2fe',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  activeFilterPillText: {
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+    color: '#4338ca',
+  },
+
+  /* Card Category Tag */
+  cardCategoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  cardCategoryBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#eef2ff',
+    borderWidth: 1,
+    borderColor: '#c7d2fe',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  cardCategoryText: {
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+    color: '#4338ca',
+  },
+
+  /* Category Sheet Modal */
+  categorySheetCard: {
+    width: '100%',
+    maxWidth: 480,
+    maxHeight: '85%',
+    backgroundColor: colors.surface,
+    borderRadius: 18,
+    padding: 16,
+    paddingBottom: 20,
+    elevation: 20,
+    shadowColor: '#000',
+    shadowOpacity: 0.35,
+    shadowOffset: { width: 0, height: 10 },
+    shadowRadius: 20,
+  },
+  sheetHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#cbd5e1',
+    alignSelf: 'center',
+    marginBottom: 12,
+  },
+  categorySheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  categorySheetTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  categorySheetIconBox: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#dbeafe',
+  },
+  categorySheetTitle: {
+    fontSize: 16,
+    fontWeight: fontWeights.heavy,
+    color: colors.text,
+  },
+  categorySheetSubtitle: {
+    fontSize: 12,
+    color: colors.muted,
+    marginTop: 2,
+  },
+  categorySheetCloseBtn: {
+    padding: 4,
+  },
+  categoryOptionsScroll: {
+    marginTop: 12,
+    maxHeight: 380,
+  },
+  categoryOptionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginBottom: 4,
+  },
+  categoryOptionItemActive: {
+    backgroundColor: '#f5f3ff',
+  },
+  categoryOptionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  categoryOptionRadio: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    borderColor: '#cbd5e1',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryOptionRadioActive: {
+    borderColor: colors.primary,
+  },
+  categoryOptionRadioInner: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: colors.primary,
+  },
+  categoryOptionText: {
+    fontSize: 14,
+    fontWeight: fontWeights.medium,
+    color: colors.text,
+  },
+  categoryOptionTextActive: {
+    fontWeight: fontWeights.bold,
+    color: colors.primary,
+  },
+  categoryOptionRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  categoryOptionCountBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    backgroundColor: '#f1f5f9',
+  },
+  categoryOptionCountBadgeActive: {
+    backgroundColor: '#ede9fe',
+  },
+  categoryOptionCountText: {
+    fontSize: 11,
+    fontWeight: fontWeights.semibold,
+    color: '#64748b',
+  },
+  categoryOptionCountTextActive: {
+    color: colors.primary,
+    fontWeight: fontWeights.bold,
+  },
+  categorySheetDoneBtn: {
+    backgroundColor: colors.primary,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 14,
+  },
+  categorySheetDoneText: {
+    color: '#ffffff',
+    fontSize: 14,
     fontWeight: fontWeights.bold,
   },
 });

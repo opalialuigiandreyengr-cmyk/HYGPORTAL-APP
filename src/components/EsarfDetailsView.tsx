@@ -1609,7 +1609,7 @@ export function EsarfCardView({
         </View>
       </View>
 
-      {/* Attached Photo Proofs (up to 3) */}
+      {/* Attached Photo Proofs (up to 5) */}
       {(() => {
         const isEntryGallery =
           entry.proofSource === 'gallery' ||

@@ -1742,19 +1742,32 @@ begin
     end if;
   end if;
 
-  if v_paid_days > 0 and not v_is_birthday_leave then
-    select coalesce(lc.available_days, 0)
+  -- Ensure leave_balances record exists
+  insert into public.leave_balances (employee_id, annual_credit_days, used_days)
+  values (v_profile.employee_id, 0, 0)
+  on conflict (employee_id) do nothing;
+
+  v_available_days := public.get_available_leave_days(v_profile.employee_id, p_start_date);
+
+  -- Safety fallback: ensure v_available_days matches actual leave_balances
+  if coalesce(v_available_days, 0) = 0 then
+    select greatest(0, coalesce(annual_credit_days, 0) - coalesce(used_days, 0))
     into v_available_days
-    from public.leave_credits lc
-    where lc.employee_id = v_profile.employee_id
-    limit 1;
+    from public.leave_balances
+    where employee_id = v_profile.employee_id;
+  end if;
+  v_available_days := coalesce(v_available_days, 0);
 
-    v_credits_to_check := coalesce(v_available_days, 0);
+  -- For Birthday Leave with >= 1 year of service, 1 day is granted with pay (0 credits deducted from annual leave)
+  if v_is_birthday_leave and v_has_one_year_service then
+    v_credits_to_check := greatest(0, v_paid_days - 1);
+  else
+    v_credits_to_check := v_paid_days;
+  end if;
 
-    if v_credits_to_check < v_paid_days then
-      raise exception 'Insufficient leave credits. Available: %, Requested Paid Days: %',
-        v_credits_to_check, v_paid_days;
-    end if;
+  -- Only check against available leave credits if deduction > 0
+  if v_credits_to_check > 0 and v_credits_to_check > v_available_days then
+    raise exception 'Insufficient paid leave credits. Available paid leave: % day(s).', v_available_days;
   end if;
 
   select *

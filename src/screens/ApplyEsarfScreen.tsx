@@ -286,6 +286,15 @@ function WebNativeTimePicker({ value, onChange }: { value: string; onChange: (va
 
 const NO_SCHEDULE_LABEL = 'No schedule';
 const NO_DAY_OFF_LABEL = 'No day off';
+const DAY_FULL_NAMES: Record<string, string> = {
+  Mon: 'Monday',
+  Tue: 'Tuesday',
+  Wed: 'Wednesday',
+  Thu: 'Thursday',
+  Fri: 'Friday',
+  Sat: 'Saturday',
+  Sun: 'Sunday',
+};
 
 function getFriendlyErrorMessage(rawMessage: string): { title: string; message: string; isRetryable: boolean } {
   const lower = rawMessage.toLowerCase();
@@ -620,7 +629,13 @@ export function ApplyEsarfScreen({
     async function initDefaultWorkflow() {
       setIsLoadingDefaultWorkflow(true);
       try {
-        const steps = await loadStoreApprovalWorkflow(null, employeeId, null, false);
+        const steps = await loadStoreApprovalWorkflow(
+          null,
+          employeeId,
+          profileStoreName,
+          isOperationsDepartment,
+          profileDepartmentName,
+        );
         if (!isMounted) return;
         setDefaultWorkflowSteps(steps);
         // Hydrate any entries that don't have workflowSteps yet
@@ -642,7 +657,7 @@ export function ApplyEsarfScreen({
     return () => {
       isMounted = false;
     };
-  }, [employeeId]);
+  }, [employeeId, profileStoreName, isOperationsDepartment, profileDepartmentName]);
 
   // Load approver candidates when reassign modal opens
   useEffect(() => {
@@ -855,6 +870,7 @@ export function ApplyEsarfScreen({
   const [customStartTime, setCustomStartTime] = useState('09:00');
   const [customEndTime, setCustomEndTime] = useState('18:00');
   const [customTimePickerKind, setCustomTimePickerKind] = useState<'start' | 'end' | null>(null);
+  const [customScheduleTimePicker, setCustomScheduleTimePicker] = useState<'start' | 'end' | null>(null);
   const [tempCustomPickerDate, setTempCustomPickerDate] = useState(new Date());
   const [showSubmissionNotes, setShowSubmissionNotes] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -937,8 +953,8 @@ export function ApplyEsarfScreen({
     try {
       const targetEntry = entries[entryIndex];
       const existingProofs = getEntryProofs(targetEntry);
-      if (existingProofs.length >= 3) {
-        platformAlert('Limit Reached', 'You can attach up to 3 photo proofs per request entry.');
+      if (existingProofs.length >= 5) {
+        platformAlert('Limit Reached', 'You can attach up to 5 photo proofs per request entry.');
         return;
       }
 
@@ -948,7 +964,7 @@ export function ApplyEsarfScreen({
         return;
       }
 
-      const remainingSlots = Math.max(1, 3 - existingProofs.length);
+      const remainingSlots = Math.max(1, 5 - existingProofs.length);
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         quality: 0.85,
@@ -1002,7 +1018,7 @@ export function ApplyEsarfScreen({
         setPhotoProofsList((prev) => [savedProofItem, ...prev.filter((p) => p.id !== savedProofItem.id)]);
       }
 
-      const updatedProofs = [...existingProofs, ...newAttachments].slice(0, 3);
+      const updatedProofs = [...existingProofs, ...newAttachments].slice(0, 5);
       updateEntry(entryIndex, {
         proof: updatedProofs[0] || null,
         proofs: updatedProofs,
@@ -1070,8 +1086,8 @@ export function ApplyEsarfScreen({
       return;
     }
 
-    if (currentProofs.length >= 3) {
-      platformAlert('Limit Reached', 'You can select up to 3 photo proofs per request entry.');
+    if (currentProofs.length >= 5) {
+      platformAlert('Limit Reached', 'You can select up to 5 photo proofs per request entry.');
       return;
     }
 
@@ -1633,6 +1649,7 @@ export function ApplyEsarfScreen({
     setCustomStartTime(startTime);
     setCustomEndTime(endTime);
     setCustomTimePickerKind('start');
+    setCustomScheduleTimePicker(null);
     setIsCustomScheduleOpen(true);
   }
 
@@ -1641,19 +1658,19 @@ export function ApplyEsarfScreen({
     setSchedule(formatted);
     setIsUserCustomSchedule(true);
     setValidationErrors((current) => ({ ...current, schedule: undefined }));
+    setCustomScheduleTimePicker(null);
     setIsCustomScheduleOpen(false);
   }
 
   function openCustomTimePicker(kind: 'start' | 'end') {
-    const timeVal = kind === 'start' ? customStartTime : customEndTime;
-    const dateObj = timeStringToDate(timeVal);
-    setTempCustomPickerDate(dateObj);
     setCustomTimePickerKind(kind);
+    setCustomScheduleTimePicker(kind);
   }
 
   function handleCustomTimePickerChange(event: DateTimePickerEvent, selectedDate?: Date) {
     if (event.type === 'dismissed') {
       setCustomTimePickerKind(null);
+      setCustomScheduleTimePicker(null);
       return;
     }
     if (!selectedDate || !customTimePickerKind) return;
@@ -1668,6 +1685,7 @@ export function ApplyEsarfScreen({
       setCustomEndTime(formattedTime);
     }
     setCustomTimePickerKind(null);
+    setCustomScheduleTimePicker(null);
   }
 
   function confirmIosCustomTimePicker() {
@@ -1680,6 +1698,23 @@ export function ApplyEsarfScreen({
       }
     }
     setCustomTimePickerKind(null);
+    setCustomScheduleTimePicker(null);
+  }
+
+  function toggleDayOff(option: string) {
+    const currentList = parseDayOffList(dayOff);
+    const isSelected = currentList.includes(option);
+    let nextList: string[];
+    if (isSelected) {
+      nextList = currentList.filter((d) => d !== option);
+    } else {
+      nextList = [...currentList, option];
+    }
+    const ordered = dayOffOptions.filter((d) => nextList.includes(d));
+    const nextVal = ordered.length > 0 ? ordered.join(', ') : NO_DAY_OFF_LABEL;
+    setDayOff(nextVal);
+    setIsUserCustomDayOff(true);
+    setValidationErrors((current) => ({ ...current, dayOff: undefined }));
   }
 
   function chooseSelectOption(value: string) {
@@ -1759,6 +1794,7 @@ export function ApplyEsarfScreen({
     setShowSubmissionNotes(false);
     setIsCustomScheduleOpen(false);
     setCustomTimePickerKind(null);
+    setCustomScheduleTimePicker(null);
   }
 
   function confirmDiscard(action: () => void) {
@@ -3106,11 +3142,14 @@ export function ApplyEsarfScreen({
             <View style={styles.scheduleTwoColumnRow}>
               <View style={styles.scheduleColumnField}>
                 <Text style={styles.scheduleFieldLabel}>Day-off</Text>
-                <View
+                <Pressable
                   style={[
                     styles.scheduleInputBox,
                     validationErrors.dayOff ? styles.inputError : null,
                   ]}
+                  onPress={() => setActiveSelect('day_off')}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Day-off: ${dayOff || 'Select day off'}`}
                 >
                   <Text
                     style={[
@@ -3121,14 +3160,10 @@ export function ApplyEsarfScreen({
                   >
                     {dayOff || 'Select day off'}
                   </Text>
-                  <Pressable
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    style={styles.scheduleIconButton}
-                    onPress={() => setActiveSelect('day_off')}
-                  >
+                  <View style={styles.scheduleIconButton}>
                     <Repeat size={18} color="#64748b" strokeWidth={2} />
-                  </Pressable>
-                </View>
+                  </View>
+                </Pressable>
                 {validationErrors.dayOff ? (
                   <Text style={styles.fieldError}>{validationErrors.dayOff}</Text>
                 ) : null}
@@ -3843,11 +3878,11 @@ export function ApplyEsarfScreen({
                                   Photo Proof
                                 </Text>
                                 <Text style={styles.proofSectionCount}>
-                                  ({attachedProofs.length}/3)
+                                  ({attachedProofs.length}/5)
                                 </Text>
                               </View>
                               <Text style={styles.proofSectionSubtitle} numberOfLines={2}>
-                                Attach up to 3 Photo Proofs{requiresProof ? ' • 1 required' : ''}
+                                Attach up to 5 Photo Proofs{requiresProof ? ' • 1 required' : ''}
                               </Text>
                             </View>
                           </View>
@@ -3956,7 +3991,7 @@ export function ApplyEsarfScreen({
                               </View>
                             ))}
 
-                            {attachedProofs.length < 3 ? (
+                            {attachedProofs.length < 5 ? (
                               <View style={styles.addAnotherProofRow}>
                                 <Pressable
                                   style={({ pressed }) => [
@@ -3967,7 +4002,7 @@ export function ApplyEsarfScreen({
                                 >
                                   <Plus size={14} color="#2563eb" strokeWidth={2.4} />
                                   <Text style={styles.addAnotherProofBtnText}>
-                                    Add Another Photo ({attachedProofs.length}/3)
+                                    Add Another Photo ({attachedProofs.length}/5)
                                   </Text>
                                 </Pressable>
                               </View>
@@ -4123,7 +4158,7 @@ export function ApplyEsarfScreen({
             const requiresProof = isProofRequiredForTransactions(currentEntry?.transaction);
             const attachedProofs = getEntryProofs(currentEntry);
             const attachedCount = attachedProofs.length;
-            const remainingSlots = Math.max(0, 3 - attachedCount);
+            const remainingSlots = Math.max(0, 5 - attachedCount);
 
             return (
               <Modal
@@ -4137,7 +4172,7 @@ export function ApplyEsarfScreen({
                     <View style={styles.proofPickerModalHeader}>
                       <View>
                         <Text style={styles.proofPickerModalTitle}>
-                          Attach up to 3 Photo Proofs
+                          Attach up to 5 Photo Proofs
                         </Text>
                         <Text style={styles.proofPickerModalSubtitle}>
                           Request #{activeProofPickerIndex + 1}
@@ -4147,8 +4182,8 @@ export function ApplyEsarfScreen({
                               .map((t) => t.shortLabel || t.label)
                               .join(', ')}`
                             : ''}
-                          {requiresProof ? ' • 1 required, 2 optional' : ' • Optional'}
-                          {attachedCount > 0 ? ` (${attachedCount}/3 attached)` : ''}
+                          {requiresProof ? ' • 1 required, 4 optional' : ' • Optional'}
+                          {attachedCount > 0 ? ` (${attachedCount}/5 attached)` : ''}
                         </Text>
                       </View>
                       <Pressable
@@ -4182,7 +4217,7 @@ export function ApplyEsarfScreen({
                               ]}
                               onPress={() => {
                                 if (remainingSlots === 0) {
-                                  platformAlert('Limit Reached', 'You have already attached 3 photos. Remove one to upload another.');
+                                  platformAlert('Limit Reached', 'You have already attached 5 photos. Remove one to upload another.');
                                   return;
                                 }
                                 pickFromGallery(activeProofPickerIndex);
@@ -4193,10 +4228,10 @@ export function ApplyEsarfScreen({
                               </View>
                               <View style={{ flex: 1 }}>
                                 <Text style={styles.proofPickerQuickTitle}>
-                                  Upload from Gallery {remainingSlots > 0 ? `(${remainingSlots} remaining)` : '(Max 3 reached)'}
+                                  Upload from Gallery {remainingSlots > 0 ? `(${remainingSlots} remaining)` : '(Max 5 reached)'}
                                 </Text>
                                 <Text style={styles.proofPickerQuickDesc}>
-                                  {remainingSlots > 0 ? `Select up to ${remainingSlots} photo(s) from device gallery` : '3 of 3 photos selected'}
+                                  {remainingSlots > 0 ? `Select up to ${remainingSlots} photo(s) from device gallery` : '5 of 5 photos selected'}
                                 </Text>
                               </View>
                             </Pressable>
@@ -4288,7 +4323,7 @@ export function ApplyEsarfScreen({
                           >
                             <Check size={16} color="#ffffff" strokeWidth={2.4} />
                             <Text style={styles.proofPickerDoneBtnText}>
-                              {attachedCount > 0 ? `Done (${attachedCount}/3 Photos Selected)` : 'Done'}
+                              {attachedCount > 0 ? `Done (${attachedCount}/5 Photos Selected)` : 'Done'}
                             </Text>
                           </Pressable>
                         </View>
@@ -4415,34 +4450,82 @@ export function ApplyEsarfScreen({
                 <View style={styles.optionSheet}>
                   <View style={styles.sheetHandle} />
                   <Text style={styles.sheetTitle}>{selectSheet.title}</Text>
-                  {selectSheet.options.map((option) => {
-                    const selected = option === selectSheet.value;
-                    const isCustom = option === 'Custom schedule...';
-                    return (
-                      <Pressable
-                        key={option}
-                        style={[
-                          styles.optionRow,
-                          selected ? styles.optionRowActive : null,
-                          isCustom ? styles.customOptionRow : null,
-                        ]}
-                        onPress={() => chooseSelectOption(option)}
-                      >
-                        {isCustom ? (
-                          <View style={styles.customOptionWrap}>
-                            <Clock3 size={16} color={colors.primary} strokeWidth={2.2} />
-                            <Text style={[styles.optionText, styles.customOptionText]}>{option}</Text>
-                          </View>
-                        ) : (
-                          <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>{option}</Text>
-                        )}
-                        {selected ? <Check size={18} color={colors.brand.goldStrong} strokeWidth={3} /> : null}
+                  {activeSelect === 'day_off' ? (
+                    <>
+                      <View style={styles.dayOffHeaderRow}>
+                        <Text style={styles.sheetSubtitle}>Choose one or more day-off days.</Text>
+                        {parseDayOffList(dayOff).length > 0 ? (
+                          <Pressable
+                            hitSlop={8}
+                            onPress={() => {
+                              setDayOff(NO_DAY_OFF_LABEL);
+                              setIsUserCustomDayOff(true);
+                              setValidationErrors((current) => ({ ...current, dayOff: undefined }));
+                            }}
+                          >
+                            <Text style={styles.clearDayOffText}>Clear all</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                      {selectSheet.options.map((option) => {
+                        const selectedDays = parseDayOffList(dayOff);
+                        const isSelected = selectedDays.includes(option);
+                        return (
+                          <Pressable
+                            key={option}
+                            style={[
+                              styles.dayOffOptionRow,
+                              isSelected ? styles.dayOffOptionRowActive : null,
+                            ]}
+                            onPress={() => toggleDayOff(option)}
+                            accessibilityRole="checkbox"
+                            accessibilityState={{ checked: isSelected }}
+                          >
+                            <View style={[styles.checkbox, isSelected ? styles.checkboxActive : null]}>
+                              {isSelected ? <Check size={14} color="#0f172a" strokeWidth={3} /> : null}
+                            </View>
+                            <Text style={[styles.optionText, isSelected ? styles.optionTextActive : null]}>
+                              {option} • {DAY_FULL_NAMES[option] || option}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                      <Pressable style={styles.dayOffDoneButton} onPress={() => setActiveSelect(null)}>
+                        <Text style={styles.submitText}>Done</Text>
                       </Pressable>
-                    );
-                  })}
-                  <Pressable style={styles.sheetCancelButton} onPress={() => setActiveSelect(null)}>
-                    <Text style={styles.cancelText}>Cancel</Text>
-                  </Pressable>
+                    </>
+                  ) : (
+                    <>
+                      {selectSheet.options.map((option) => {
+                        const selected = option === selectSheet.value;
+                        const isCustom = option === 'Custom schedule...';
+                        return (
+                          <Pressable
+                            key={option}
+                            style={[
+                              styles.optionRow,
+                              selected ? styles.optionRowActive : null,
+                              isCustom ? styles.customOptionRow : null,
+                            ]}
+                            onPress={() => chooseSelectOption(option)}
+                          >
+                            {isCustom ? (
+                              <View style={styles.customOptionWrap}>
+                                <Clock3 size={16} color={colors.primary} strokeWidth={2.2} />
+                                <Text style={[styles.optionText, styles.customOptionText]}>{option}</Text>
+                              </View>
+                            ) : (
+                              <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>{option}</Text>
+                            )}
+                            {selected ? <Check size={18} color={colors.brand.goldStrong} strokeWidth={3} /> : null}
+                          </Pressable>
+                        );
+                      })}
+                      <Pressable style={styles.sheetCancelButton} onPress={() => setActiveSelect(null)}>
+                        <Text style={styles.cancelText}>Cancel</Text>
+                      </Pressable>
+                    </>
+                  )}
                 </View>
               </View>
             </Modal>
@@ -4472,7 +4555,9 @@ export function ApplyEsarfScreen({
                         styles.customTimeColCard,
                         customTimePickerKind === 'start' ? styles.customTimeColCardActive : null,
                       ]}
-                      onPress={() => setCustomTimePickerKind('start')}
+                      onPress={() => openCustomTimePicker('start')}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Shift Start: ${formatTimeDisplay(customStartTime)}. Tap to set time.`}
                     >
                       <Text
                         style={[
@@ -4499,7 +4584,9 @@ export function ApplyEsarfScreen({
                         styles.customTimeColCard,
                         customTimePickerKind === 'end' ? styles.customTimeColCardActive : null,
                       ]}
-                      onPress={() => setCustomTimePickerKind('end')}
+                      onPress={() => openCustomTimePicker('end')}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Shift End: ${formatTimeDisplay(customEndTime)}. Tap to set time.`}
                     >
                       <Text
                         style={[
@@ -4524,9 +4611,19 @@ export function ApplyEsarfScreen({
 
                   {customTimePickerKind ? (
                     <View style={styles.inlineTimePickerContainer}>
-                      <Text style={styles.inlineTimePickerHeader}>
-                        Selecting {customTimePickerKind === 'start' ? 'Shift Start Time' : 'Shift End Time'}:
-                      </Text>
+                      <View style={styles.inlineTimePickerHeaderRow}>
+                        <Text style={styles.inlineTimePickerHeader}>
+                          Selecting {customTimePickerKind === 'start' ? 'Shift Start Time' : 'Shift End Time'}:
+                        </Text>
+                        <Pressable
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          onPress={() => openCustomTimePicker(customTimePickerKind)}
+                          style={styles.openCustomTimePickerButton}
+                        >
+                          <Clock3 size={13} color={colors.primary} strokeWidth={2.2} />
+                          <Text style={styles.openCustomTimePickerText}>Custom time</Text>
+                        </Pressable>
+                      </View>
 
                       <ScrollView
                         horizontal
@@ -4534,6 +4631,52 @@ export function ApplyEsarfScreen({
                         style={styles.timePresetsScrollView}
                         contentContainerStyle={styles.timePresetsScroll}
                       >
+                        <Pressable
+                          style={[
+                            styles.presetTimePill,
+                            !(customTimePickerKind === 'start'
+                              ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                              : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                            ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                              ? styles.presetTimePillActive
+                              : null,
+                          ]}
+                          onPress={() => openCustomTimePicker(customTimePickerKind)}
+                        >
+                          <View style={styles.customPresetPillWrap}>
+                            <Clock3
+                              size={12}
+                              color={
+                                !(customTimePickerKind === 'start'
+                                  ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                                  : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                                ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                                  ? '#0f172a'
+                                  : colors.primary
+                              }
+                              strokeWidth={2.2}
+                            />
+                            <Text
+                              style={[
+                                styles.presetTimeText,
+                                !(customTimePickerKind === 'start'
+                                  ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                                  : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                                ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                                  ? styles.presetTimeTextActive
+                                  : null,
+                              ]}
+                            >
+                              {!(customTimePickerKind === 'start'
+                                ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                                : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                              ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                                ? formatTimeDisplay(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                                : 'Custom...'}
+                            </Text>
+                          </View>
+                        </Pressable>
+
                         {(customTimePickerKind === 'start'
                           ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
                           : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
@@ -4570,7 +4713,13 @@ export function ApplyEsarfScreen({
                   </View>
 
                   <View style={styles.customScheduleActions}>
-                    <Pressable style={styles.cancelButton} onPress={() => setIsCustomScheduleOpen(false)}>
+                    <Pressable
+                      style={styles.cancelButton}
+                      onPress={() => {
+                        setCustomScheduleTimePicker(null);
+                        setIsCustomScheduleOpen(false);
+                      }}
+                    >
                       <Text style={styles.cancelText}>Cancel</Text>
                     </Pressable>
                     <Pressable style={styles.submitButton} onPress={confirmCustomSchedule}>
@@ -4579,6 +4728,21 @@ export function ApplyEsarfScreen({
                   </View>
                 </View>
               </View>
+
+              <ScrollableTimePickerModal
+                visible={customScheduleTimePicker !== null}
+                title={customScheduleTimePicker === 'start' ? 'Select Shift Start Time' : 'Select Shift End Time'}
+                initialTime={customScheduleTimePicker === 'start' ? customStartTime : customEndTime}
+                onConfirm={(time24) => {
+                  if (customScheduleTimePicker === 'start') {
+                    setCustomStartTime(time24);
+                  } else if (customScheduleTimePicker === 'end') {
+                    setCustomEndTime(time24);
+                  }
+                  setCustomScheduleTimePicker(null);
+                }}
+                onCancel={() => setCustomScheduleTimePicker(null)}
+              />
             </Modal>
           ) : null}
 
@@ -6518,6 +6682,46 @@ const styles = StyleSheet.create({
   optionTextActive: {
     color: '#92400e',
   },
+  dayOffHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.sm,
+  },
+  sheetSubtitle: {
+    fontSize: 13,
+    color: colors.muted,
+  },
+  clearDayOffText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: colors.primary,
+  },
+  dayOffOptionRow: {
+    minHeight: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    marginBottom: 6,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#eef2f7',
+  },
+  dayOffOptionRowActive: {
+    backgroundColor: '#fffbeb',
+    borderColor: 'rgba(234, 179, 8, 0.4)',
+  },
+  dayOffDoneButton: {
+    minHeight: 48,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: spacing.sm,
+  },
   sheetCancelButton: {
     minHeight: 48,
     borderRadius: radius.md,
@@ -6812,7 +7016,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     marginBottom: 6,
     width: '100%',
   },
@@ -6820,8 +7024,23 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: fontWeights.bold,
     color: '#475569',
-    paddingHorizontal: 14,
-    marginBottom: 8,
+  },
+  openCustomTimePickerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+  },
+  openCustomTimePickerText: {
+    fontSize: 12,
+    fontWeight: fontWeights.bold,
+    color: colors.primary,
+  },
+  customPresetPillWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
   },
   webTimePickerRow: {
     marginBottom: 10,

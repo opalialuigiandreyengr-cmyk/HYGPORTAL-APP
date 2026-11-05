@@ -1501,11 +1501,11 @@ function ScheduledOtPhotoProofCard({
                 Photo Proof
               </Text>
               <Text style={styles.scheduledOtProofSectionCount}>
-                ({selectedProofs.length}/3)
+                ({selectedProofs.length}/5)
               </Text>
             </View>
             <Text style={styles.scheduledOtProofSectionSubtitle} numberOfLines={1}>
-              Attach up to 3 Photo Proofs
+              Attach up to 5 Photo Proofs
             </Text>
           </View>
         </View>
@@ -1585,7 +1585,7 @@ function ScheduledOtPhotoProofCard({
               <Camera size={15} color="#ffffff" strokeWidth={2.2} />
               <Text style={styles.scheduledOtPrimaryBtnText}>
                 {selectedProofs.length > 0
-                  ? `Manage Proofs (${selectedProofs.length}/3)`
+                  ? `Manage Proofs (${selectedProofs.length}/5)`
                   : 'Attach Photo Proof (1 Required)'}
               </Text>
             </Pressable>
@@ -1618,8 +1618,8 @@ function ScheduledOtPhotoProofCard({
           onSelectProofs={(proofs) => setSelectedProofs(proofs)}
           userInfo={userInfo}
           title="Attach Photo Proof for Scheduled OT"
-          subtitle="Select up to 3 photos from your Photo Log or upload from Gallery"
-          maxSlots={3}
+          subtitle="Select up to 5 photos from your Photo Log or upload from Gallery"
+          maxSlots={5}
         />
       ) : null}
     </View>

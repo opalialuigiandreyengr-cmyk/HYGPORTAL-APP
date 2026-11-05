@@ -55,7 +55,7 @@ import {
   type ApproverCandidate,
 } from '../services/storeApprovalWorkflow';
 import { resolveApproverLevel, loadPositionAuthorities } from '../services/positions';
-import { useNetworkStatus } from '../services/network';
+import { useNetworkStatus, isAppOnline } from '../services/network';
 
 export type FileOfficialTravelOrderScreenProps = {
   profileResult?: ProfileLoadResult | null;
@@ -415,8 +415,9 @@ export function FileOfficialTravelOrderScreen({
           loadStoreApprovalWorkflow(
             null,
             profile?.employeeId?.trim() || employeeId?.trim() || null,
-            null,
-            false,
+            profile?.storeName?.trim() || storeName?.trim() || null,
+            (profile?.departmentName || departmentName || '').toLowerCase().includes('operation'),
+            profile?.departmentName?.trim() || departmentName?.trim() || null,
           ),
         ]);
       } catch (_) { }
@@ -502,8 +503,8 @@ export function FileOfficialTravelOrderScreen({
 
   // Pre-cache candidates and position authorities
   useEffect(() => {
-    loadApproverCandidates().catch(() => {});
-    loadPositionAuthorities().catch(() => {});
+    loadApproverCandidates().catch(() => { });
+    loadPositionAuthorities().catch(() => { });
   }, []);
 
   // Initialize Travel Order approval workflow following default approval routes
@@ -513,7 +514,16 @@ export function FileOfficialTravelOrderScreen({
       setIsLoadingWorkflow(true);
       try {
         const empQueryId = resolvedEmployeeUuid || (resolvedEmployeeId !== 'N/A' ? resolvedEmployeeId : null);
-        const empSteps = await loadStoreApprovalWorkflow(null, empQueryId, null, false).catch(() => [] as WorkflowStep[]);
+        const resolvedStoreName = profile?.storeName?.trim() || storeName?.trim() || null;
+        const resolvedDept = profile?.departmentName?.trim() || departmentName?.trim() || null;
+        const isOps = (resolvedDept || '').toLowerCase().includes('operation');
+        const empSteps = await loadStoreApprovalWorkflow(
+          null,
+          empQueryId,
+          resolvedStoreName,
+          isOps,
+          resolvedDept,
+        ).catch(() => [] as WorkflowStep[]);
 
         if (!isMounted) return;
 
@@ -532,7 +542,7 @@ export function FileOfficialTravelOrderScreen({
               required_level: 2,
               role_name: 'Store Manager',
               approver_employee_id: null,
-              approver_name: 'STORE MANAGER / IMMEDIATE SUPERVISOR',
+              approver_name: resolvedStoreName ? `${resolvedStoreName.toUpperCase()} STORE MANAGER` : 'STORE MANAGER / IMMEDIATE SUPERVISOR',
               approver_position_name: 'Store Manager / Immediate Supervisor',
               approver_employee_no: null,
               status: 'pending',
@@ -543,10 +553,10 @@ export function FileOfficialTravelOrderScreen({
             {
               step_order: 2,
               required_level: 5,
-              role_name: 'Area Operations Manager',
+              role_name: isOps ? 'Area Operations Manager' : 'General Manager',
               approver_employee_id: null,
-              approver_name: 'AREA OPERATIONS MANAGER',
-              approver_position_name: 'Area Operations Manager',
+              approver_name: isOps ? 'AREA OPERATIONS MANAGER' : 'GENERAL MANAGER',
+              approver_position_name: isOps ? 'Area Operations Manager' : 'Executive Management',
               approver_employee_no: null,
               status: 'waiting',
               is_reassigned: false,
@@ -579,7 +589,7 @@ export function FileOfficialTravelOrderScreen({
     return () => {
       isMounted = false;
     };
-  }, [resolvedEmployeeUuid, resolvedEmployeeId]);
+  }, [resolvedEmployeeUuid, resolvedEmployeeId, profile?.storeName, storeName, profile?.departmentName, departmentName]);
 
   // Load approver candidates when reassign modal opens
   useEffect(() => {
@@ -772,6 +782,21 @@ export function FileOfficialTravelOrderScreen({
 
   // Submit Handler
   const handleSubmit = async () => {
+    if (!isOnline || !isAppOnline()) {
+      const actionText = editingRequest ? 'Updating an Official Travel Order' : 'Applying for an Official Travel Order';
+      onToast?.({
+        tone: 'warning',
+        title: 'Internet Connection Required',
+        message: `${actionText} requires an active internet connection. Offline submission is not supported for Travel Orders.`,
+      });
+      platformAlert(
+        'Internet Connection Required',
+        `${actionText} requires an active internet connection to synchronize with the server and notify approvers in real-time.\n\nPlease connect to Wi-Fi or mobile data to proceed.`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
     if (!validateForm()) {
       onToast?.({
         tone: 'error',
@@ -913,6 +938,21 @@ export function FileOfficialTravelOrderScreen({
           }
           showsVerticalScrollIndicator={false}
         >
+          {/* OFFLINE NOTICE (Top Banner) */}
+          {!isOnline ? (
+            <View style={styles.travelOfflineBanner}>
+              <WifiOff size={16} color="#b91c1c" strokeWidth={2.4} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.travelOfflineBannerTitle}>Internet Connection Required</Text>
+                <Text style={styles.travelOfflineBannerText}>
+                  {editingRequest
+                    ? 'Updating an Official Travel Order requires an active internet connection. Offline editing is not supported.'
+                    : 'Applying for an Official Travel Order requires an active internet connection to submit to the server and notify approvers in real-time. Offline submission is not supported for Travel Orders.'}
+                </Text>
+              </View>
+            </View>
+          ) : null}
+
           {/* Employee Info Card */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
@@ -1504,6 +1544,21 @@ export function FileOfficialTravelOrderScreen({
             </View>
           </View>
 
+          {/* OFFLINE NOTICE (Bottom Notice matching Apply Discount Screen) */}
+          {!isOnline ? (
+            <View style={styles.travelOfflineNotice}>
+              <WifiOff size={16} color="#b91c1c" strokeWidth={2.4} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.travelOfflineNoticeTitle}>Internet Connection Required</Text>
+                <Text style={styles.travelOfflineNoticeText}>
+                  {editingRequest
+                    ? 'Updating an Official Travel Order requires an active internet connection. Please connect to Wi-Fi or mobile data to save changes.'
+                    : 'Applying for an Official Travel Order requires an active internet connection. Offline submission is not supported for Travel Orders.'}
+                </Text>
+              </View>
+            </View>
+          ) : null}
+
           {/* ACTION BUTTONS: Cancel & Submit Request */}
           <View style={styles.actionButtonsRow}>
             <Pressable
@@ -1515,16 +1570,36 @@ export function FileOfficialTravelOrderScreen({
             </Pressable>
 
             <Pressable
-              style={[styles.submitButton, isSubmitting ? styles.submitButtonDisabled : null]}
+              style={[
+                styles.submitButton,
+                isSubmitting ? styles.submitButtonDisabled : null,
+                !isOnline ? styles.submitButtonOffline : null,
+              ]}
               onPress={handleSubmit}
               disabled={isSubmitting}
             >
               {isSubmitting ? (
                 <ActivityIndicator size="small" color="#ffffff" />
               ) : (
-                <Text style={styles.submitButtonText}>
-                  {editingRequest ? 'Save Changes' : 'Submit Request'}
-                </Text>
+                <View style={styles.submitButtonContent}>
+                  {!isOnline ? (
+                    <WifiOff size={15} color="#991b1b" strokeWidth={2.5} />
+                  ) : null}
+                  <Text
+                    style={[
+                      styles.submitButtonText,
+                      !isOnline ? styles.submitButtonTextOffline : null,
+                    ]}
+                  >
+                    {!isOnline
+                      ? editingRequest
+                        ? 'Internet Required'
+                        : 'Internet Required'
+                      : editingRequest
+                        ? 'Save Changes'
+                        : 'Submit Request'}
+                  </Text>
+                </View>
               )}
             </Pressable>
           </View>
@@ -2560,10 +2635,72 @@ const styles = StyleSheet.create({
   submitButtonDisabled: {
     opacity: 0.7,
   },
+  submitButtonOffline: {
+    backgroundColor: '#fee2e2',
+    borderColor: '#fca5a5',
+    borderWidth: 1,
+    shadowColor: 'transparent',
+  },
+  submitButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
   submitButtonText: {
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '700',
+  },
+  submitButtonTextOffline: {
+    color: '#991b1b',
+  },
+  travelOfflineBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  travelOfflineBannerTitle: {
+    color: '#991b1b',
+    fontSize: 14,
+    fontWeight: fontWeights.heavy,
+    marginBottom: 2,
+  },
+  travelOfflineBannerText: {
+    color: '#b91c1c',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: fontWeights.medium,
+  },
+  travelOfflineNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginTop: 4,
+    marginBottom: spacing.md,
+  },
+  travelOfflineNoticeTitle: {
+    color: '#991b1b',
+    fontSize: 14,
+    fontWeight: fontWeights.heavy,
+    marginBottom: 2,
+  },
+  travelOfflineNoticeText: {
+    color: '#b91c1c',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: fontWeights.medium,
   },
 
   // Modal Sheet common styles

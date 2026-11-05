@@ -57,9 +57,9 @@ export function PhotoProofPickerModal({
   selectedProofs,
   onSelectProofs,
   userInfo,
-  title = 'Attach up to 3 Photo Proofs',
+  title = 'Attach up to 5 Photo Proofs',
   subtitle,
-  maxSlots = 3,
+  maxSlots = 5,
 }: Props) {
   const insets = useSafeAreaInsets();
   const [photoProofsList, setPhotoProofsList] = useState<PhotoProofItem[]>([]);
