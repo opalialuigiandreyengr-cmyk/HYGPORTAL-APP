@@ -1,10 +1,10 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, type AppStateStatus, DeviceEventEmitter, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, type AppStateStatus, DeviceEventEmitter, Dimensions, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
-import { AlertTriangle, CalendarDays, Camera, Check, Clock3, Eye, FileText, Funnel, Lock, Pencil, Plus, RefreshCcw, Search, Trash2, Users, X } from 'lucide-react-native';
+import { AlertTriangle, CalendarDays, Camera, Check, Clock3, Download, Eye, FileText, Funnel, Lock, MoreVertical, Pencil, Plus, RefreshCcw, Search, Trash2, Users, X } from 'lucide-react-native';
 
 import { colors, fontWeights, spacing, radius } from '../theme';
 import { getSafeBottomInset, getScreenBottomPadding } from '../utils/safeArea';
@@ -46,6 +46,7 @@ import {
 } from '../components/EsarfDetailsView';
 import { lookupCachedApproverName, lookupCachedApproverByLevel } from '../services/storeApprovalWorkflow';
 import { TravelOrderDetailsContent } from '../components/TravelOrderDetailsView';
+import { downloadOfficialTravelOrderPdf } from '../services/travelOrderPdf';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
 type StatusFilter = 'all' | 'pending' | 'approved' | 'validated' | 'rejected';
@@ -116,9 +117,29 @@ export function RequestsTabScreen({
   const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [requestToDelete, setRequestToDelete] = useState<{ item: MyRequest; sequence: number } | null>(null);
+  const [downloadingTravelOrderId, setDownloadingTravelOrderId] = useState<string | null>(null);
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
   const insets = useSafeAreaInsets();
   const { isOnline } = useNetworkStatus();
+
+  const handleDownloadTravelOrder = useCallback(
+    async (item: MyRequest, seq?: number) => {
+      if (downloadingTravelOrderId) return;
+      setDownloadingTravelOrderId(item.request_id);
+      try {
+        await downloadOfficialTravelOrderPdf({
+          item,
+          profile,
+          sequence: seq ?? 1,
+        });
+      } catch (err) {
+        console.error('Error downloading travel order PDF:', err);
+      } finally {
+        setDownloadingTravelOrderId(null);
+      }
+    },
+    [downloadingTravelOrderId, profile],
+  );
 
   async function handleEditRequest(item: MyRequest) {
     if (!onEditRequest) return;
@@ -772,21 +793,21 @@ export function RequestsTabScreen({
               {activeCategory === 'travel_order'
                 ? 'No Travel Orders'
                 : activeCategory === 'leave'
-                ? 'No Leave Requests'
-                : activeCategory === 'esarf'
-                ? 'No ESARF Requests'
-                : activeCategory === 'perks'
-                ? 'No Perk Requests'
-                : 'No Requests Found'}
+                  ? 'No Leave Requests'
+                  : activeCategory === 'esarf'
+                    ? 'No ESARF Requests'
+                    : activeCategory === 'perks'
+                      ? 'No Perk Requests'
+                      : 'No Requests Found'}
             </Text>
             <Text style={styles.emptySubtitle}>
               {activeCategory === 'travel_order'
                 ? 'You have not submitted any official travel order requests yet.'
                 : query
-                ? `No requests match "${query}".`
-                : activeStatus !== 'all'
-                ? `No ${activeStatus} requests found.`
-                : 'You have no requests in this category.'}
+                  ? `No requests match "${query}".`
+                  : activeStatus !== 'all'
+                    ? `No ${activeStatus} requests found.`
+                    : 'You have no requests in this category.'}
             </Text>
             {activeCategory === 'travel_order' && onFileTravelOrder ? (
               <Pressable style={styles.emptyActionBtn} onPress={onFileTravelOrder}>
@@ -810,6 +831,8 @@ export function RequestsTabScreen({
               onView={handleView}
               onEdit={onEditRequest ? handleEdit : undefined}
               onDelete={handleDelete}
+              onDownload={handleDownloadTravelOrder}
+              isDownloading={downloadingTravelOrderId === item.request_id}
             />
           );
         })}
@@ -908,6 +931,8 @@ const RequestCard = memo(function RequestCard({
   onView,
   onEdit,
   onDelete,
+  onDownload,
+  isDownloading,
 }: {
   item: MyRequest;
   profile: EmployeeProfileSummary | null;
@@ -917,14 +942,72 @@ const RequestCard = memo(function RequestCard({
   onView: (item: MyRequest, sequence: number) => void;
   onEdit?: (item: MyRequest) => void;
   onDelete?: (item: MyRequest, sequence?: number) => void;
+  onDownload?: (item: MyRequest, sequence: number) => void;
+  isDownloading?: boolean;
 }) {
   const statusKey = normalizeStatus(item.status, item);
   const requestDate = getRequestDate(item);
   const displayName = formatEmployeeDisplayName(profile);
   const department = formatProfileWorkUnit(profile);
   const isPerk = isPerkRequest(item);
+  const isTravel = isTravelOrderRequest(item);
   const canEdit = canEditRequest(item);
   const canDelete = canDeleteRequest(item, isOnline);
+  const showEdit = Boolean(statusKey === 'pending' && !isPerk && canEdit && onEdit);
+  const showDelete = Boolean(statusKey === 'pending' && canDelete && onDelete);
+  const hasActions = showEdit || showDelete;
+
+  const kebabButtonRef = useRef<View>(null);
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<{ top: number; right: number } | null>(null);
+
+  const handleOpenMenu = useCallback(() => {
+    if (menuVisible) {
+      setMenuVisible(false);
+      return;
+    }
+    if (kebabButtonRef.current) {
+      kebabButtonRef.current.measureInWindow((x, y, width, height) => {
+        const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
+        if (width === 0 && height === 0) {
+          setMenuPosition(null);
+          setMenuVisible(true);
+          return;
+        }
+
+        const estimatedMenuHeight = (showEdit && showDelete ? 88 : 46) + 12;
+        const right = Math.max(12, screenWidth - (x + width));
+        const showAbove = y + height + estimatedMenuHeight > screenHeight - 40;
+        const top = showAbove
+          ? Math.max(20, y - estimatedMenuHeight - 4)
+          : Math.min(screenHeight - estimatedMenuHeight - 20, y + height + 4);
+
+        setMenuPosition({ top, right });
+        setMenuVisible(true);
+      });
+    } else {
+      setMenuPosition(null);
+      setMenuVisible(true);
+    }
+  }, [menuVisible, showEdit, showDelete]);
+
+  const handleEditPress = useCallback(() => {
+    setMenuVisible(false);
+    if (onEdit) {
+      setTimeout(() => {
+        onEdit(item);
+      }, 50);
+    }
+  }, [item, onEdit]);
+
+  const handleDeletePress = useCallback(() => {
+    setMenuVisible(false);
+    if (onDelete) {
+      setTimeout(() => {
+        onDelete(item, sequence);
+      }, 50);
+    }
+  }, [item, sequence, onDelete]);
 
   return (
     <View style={styles.cardOuter}>
@@ -992,30 +1075,22 @@ const RequestCard = memo(function RequestCard({
                 {formatRequestType(item)}
               </Text>
             </View>
-            {statusKey === 'pending' ? (
-              <>
-                {!isPerk && canEdit && onEdit ? (
-                  <Pressable
-                    style={styles.editButton}
-                    onPress={() => onEdit(item)}
-                    accessibilityLabel="Edit request"
-                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                  >
-                    <Pencil size={14} color="#92400e" strokeWidth={2.3} />
-                    <Text style={styles.editText}>Edit</Text>
-                  </Pressable>
-                ) : null}
-                {canDelete && onDelete ? (
-                  <Pressable
-                    style={styles.deleteButton}
-                    onPress={() => onDelete(item, sequence)}
-                    accessibilityLabel="Delete request"
-                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                  >
-                    <Trash2 size={14} color="#dc2626" strokeWidth={2.3} />
-                  </Pressable>
-                ) : null}
-              </>
+            {isTravel && onDownload ? (
+              <Pressable
+                style={styles.downloadButton}
+                onPress={() => onDownload(item, sequence)}
+                accessibilityLabel="Download travel order PDF"
+                disabled={isDownloading}
+                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              >
+                {isDownloading ? (
+                  <ActivityIndicator size="small" color="#1d4ed8" />
+                ) : (
+                  <>
+                    <Download size={14} color="#1d4ed8" strokeWidth={2.3} />
+                  </>
+                )}
+              </Pressable>
             ) : null}
             <Pressable
               style={styles.viewButton}
@@ -1026,9 +1101,75 @@ const RequestCard = memo(function RequestCard({
               <Eye size={15} color={colors.text} strokeWidth={2.3} />
               <Text style={styles.viewText}>View</Text>
             </Pressable>
+            {hasActions ? (
+              <Pressable
+                ref={kebabButtonRef}
+                collapsable={false}
+                style={({ pressed }) => [
+                  styles.kebabButton,
+                  (pressed || menuVisible) && styles.kebabButtonPressed,
+                ]}
+                onPress={handleOpenMenu}
+                accessibilityLabel="More options"
+                disabled={isDeleting}
+                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              >
+                <MoreVertical size={16} color={colors.text} strokeWidth={2.2} />
+              </Pressable>
+            ) : null}
           </View>
         </View>
       </View>
+
+      {hasActions && menuVisible ? (
+        <Modal
+          transparent
+          visible={menuVisible}
+          animationType="fade"
+          onRequestClose={() => setMenuVisible(false)}
+        >
+          <View style={styles.kebabModalOverlay} pointerEvents="box-none">
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => setMenuVisible(false)}
+            />
+            <View
+              style={[
+                styles.kebabDropdown,
+                menuPosition ? { top: menuPosition.top, right: menuPosition.right } : styles.kebabDropdownFallback,
+              ]}
+            >
+              {showEdit ? (
+                <Pressable
+                  style={({ pressed }) => [styles.kebabMenuItem, pressed && styles.kebabMenuItemPressed]}
+                  onPress={handleEditPress}
+                  accessibilityLabel="Edit request"
+                >
+                  <View style={[styles.kebabMenuIconContainer, { backgroundColor: '#fef3c7' }]}>
+                    <Pencil size={13} color="#92400e" strokeWidth={2.3} />
+                  </View>
+                  <Text style={styles.kebabMenuText}>Edit</Text>
+                </Pressable>
+              ) : null}
+
+              {showEdit && showDelete ? <View style={styles.kebabMenuDivider} /> : null}
+
+              {showDelete ? (
+                <Pressable
+                  style={({ pressed }) => [styles.kebabMenuItem, pressed && styles.kebabMenuItemPressed]}
+                  onPress={handleDeletePress}
+                  accessibilityLabel="Delete request"
+                >
+                  <View style={[styles.kebabMenuIconContainer, { backgroundColor: '#fef2f2' }]}>
+                    <Trash2 size={13} color="#dc2626" strokeWidth={2.3} />
+                  </View>
+                  <Text style={[styles.kebabMenuText, styles.kebabMenuTextDanger]}>Delete</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+        </Modal>
+      ) : null}
     </View>
   );
 });
@@ -1767,6 +1908,12 @@ function normalizeStatus(status: string, item?: MyRequest): StatusFilter {
     return 'approved';
   }
   const value = (status || '').toLowerCase().trim();
+  if (value === 'approved' || (item?.final_approved_at && !value.includes('reject') && !value.includes('denied'))) {
+    return 'approved';
+  }
+  if (value === 'rejected' || value.includes('reject') || value.includes('denied')) {
+    return 'rejected';
+  }
   // Scheduled OT awaiting proof or in pre_approved status:
   // Must map to 'pending' so it appears in 'All' and 'Pending' tabs, NOT 'approved'!
   if (item && isScheduledOtAwaitingProof(item)) {
@@ -3291,6 +3438,22 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.bold,
     color: '#1d4ed8',
   },
+  downloadButton: {
+    height: 28,
+    borderRadius: radius.sm,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    paddingHorizontal: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  downloadText: {
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+    color: '#1d4ed8',
+  },
   viewButton: {
     height: 28,
     borderRadius: radius.sm,
@@ -3332,6 +3495,72 @@ const styles = StyleSheet.create({
     borderColor: '#fecaca',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  kebabButton: {
+    width: 28,
+    height: 28,
+    borderRadius: radius.sm,
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  kebabButtonPressed: {
+    backgroundColor: '#f1f5f9',
+    borderColor: '#cbd5e1',
+  },
+  kebabModalOverlay: {
+    flex: 1,
+  },
+  kebabDropdown: {
+    position: 'absolute',
+    minWidth: 130,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    paddingVertical: 4,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  kebabDropdownFallback: {
+    top: '40%',
+    right: 20,
+  },
+  kebabMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    gap: 10,
+  },
+  kebabMenuItemPressed: {
+    backgroundColor: '#f8fafc',
+  },
+  kebabMenuIconContainer: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  kebabMenuText: {
+    fontSize: 13,
+    fontWeight: fontWeights.medium,
+    color: colors.text,
+  },
+  kebabMenuTextDanger: {
+    color: colors.semantic.danger,
+  },
+  kebabMenuDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#e2e8f0',
+    marginVertical: 2,
+    marginHorizontal: 8,
   },
   sheetEditButton: {
     flex: 1,

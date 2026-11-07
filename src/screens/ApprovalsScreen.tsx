@@ -9,6 +9,7 @@ import {
   Check,
   CheckCircle2,
   Clock3,
+  Download,
   Edit3,
   Eye,
   FileText,
@@ -53,6 +54,7 @@ import {
 } from '../components/EsarfDetailsView';
 import { lookupCachedApproverName, lookupCachedApproverByLevel } from '../services/storeApprovalWorkflow';
 import { TravelOrderDetailsContent } from '../components/TravelOrderDetailsView';
+import { downloadOfficialTravelOrderPdf } from '../services/travelOrderPdf';
 import { formatDateInput, stripSecondsFromTimeString } from '../utils/dateTime';
 import { isScheduledOtRequest, isScheduledTransaction } from '../utils/scheduledOt';
 import { parseTimeToMinutes } from '../utils/requestCalculations';
@@ -122,8 +124,25 @@ export function ApprovalsScreen({
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [isBatchApproving, setIsBatchApproving] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
+  const [downloadingTravelOrderId, setDownloadingTravelOrderId] = useState<string | null>(null);
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
   const insets = useSafeAreaInsets();
+
+  const handleDownloadTravelOrder = async (item: PendingApproval | ApprovedApproval, seq?: number) => {
+    if (downloadingTravelOrderId) return;
+    setDownloadingTravelOrderId(item.request_id);
+    try {
+      await downloadOfficialTravelOrderPdf({
+        item,
+        profile,
+        sequence: seq ?? 1,
+      });
+    } catch (err) {
+      console.error('[ApprovalsScreen] Failed to download travel order PDF:', err);
+    } finally {
+      setDownloadingTravelOrderId(null);
+    }
+  };
 
   async function refresh(forceRefresh = false) {
     const hasData = (mainTab === 'pending' ? items : approvedItems).length > 0;
@@ -1087,6 +1106,8 @@ export function ApprovalsScreen({
                   });
                 }}
                 onView={() => setSelectedApproval({ item, sequence })}
+                onDownload={handleDownloadTravelOrder}
+                isDownloading={downloadingTravelOrderId === item.request_id}
               />
             );
           })
@@ -1099,6 +1120,8 @@ export function ApprovalsScreen({
                 profile={profile}
                 sequence={sequence}
                 onView={() => setSelectedApproved({ item, sequence })}
+                onDownload={handleDownloadTravelOrder}
+                isDownloading={downloadingTravelOrderId === item.request_id}
               />
             );
           })}
@@ -1176,6 +1199,8 @@ function ApprovalCard({
   showCheckbox = false,
   isSelected,
   onToggleSelect,
+  onDownload,
+  isDownloading,
 }: {
   item: PendingApproval;
   profile: EmployeeProfileSummary | null;
@@ -1184,6 +1209,8 @@ function ApprovalCard({
   showCheckbox?: boolean;
   isSelected?: boolean;
   onToggleSelect?: () => void;
+  onDownload?: (item: PendingApproval, sequence: number) => void;
+  isDownloading?: boolean;
 }) {
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
   const department = item.department_name || profile?.departmentName || profile?.storeName || 'Department';
@@ -1261,16 +1288,36 @@ function ApprovalCard({
             <View style={styles.typePill}>
               <Text style={styles.typePillText}>{formatApprovalType(item)}</Text>
             </View>
-            <Pressable
-              style={styles.viewButton}
-              onPress={(e) => {
-                e?.stopPropagation?.();
-                onView();
-              }}
-            >
-              <Eye size={15} color={colors.text} strokeWidth={2.3} />
-              <Text style={styles.viewText}>View</Text>
-            </Pressable>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {isTravel && onDownload ? (
+                <Pressable
+                  style={styles.downloadButton}
+                  onPress={(e) => {
+                    e?.stopPropagation?.();
+                    onDownload(item, sequence);
+                  }}
+                  accessibilityLabel="Download travel order PDF"
+                  disabled={isDownloading}
+                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                >
+                  {isDownloading ? (
+                    <ActivityIndicator size="small" color="#1d4ed8" />
+                  ) : (
+                    <Download size={14} color="#1d4ed8" strokeWidth={2.3} />
+                  )}
+                </Pressable>
+              ) : null}
+              <Pressable
+                style={styles.viewButton}
+                onPress={(e) => {
+                  e?.stopPropagation?.();
+                  onView();
+                }}
+              >
+                <Eye size={15} color={colors.text} strokeWidth={2.3} />
+                <Text style={styles.viewText}>View</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </Pressable>
@@ -1283,11 +1330,15 @@ function ApprovedCard({
   profile,
   sequence,
   onView,
+  onDownload,
+  isDownloading,
 }: {
   item: ApprovedApproval;
   profile: EmployeeProfileSummary | null;
   sequence: number;
   onView: () => void;
+  onDownload?: (item: ApprovedApproval, sequence: number) => void;
+  isDownloading?: boolean;
 }) {
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
   const department = item.department_name || profile?.departmentName || profile?.storeName || 'Department';
@@ -1337,10 +1388,30 @@ function ApprovedCard({
             <View style={styles.typePill}>
               <Text style={styles.typePillText}>{formatApprovalType(item)}</Text>
             </View>
-            <Pressable style={styles.viewApprovedButton} onPress={onView}>
-              <Eye size={15} color="#000000ff" strokeWidth={2.3} />
-              <Text style={styles.viewApprovedText}>View</Text>
-            </Pressable>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {isTravel && onDownload ? (
+                <Pressable
+                  style={styles.downloadButton}
+                  onPress={(e) => {
+                    e?.stopPropagation?.();
+                    onDownload(item, sequence);
+                  }}
+                  accessibilityLabel="Download travel order PDF"
+                  disabled={isDownloading}
+                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                >
+                  {isDownloading ? (
+                    <ActivityIndicator size="small" color="#1d4ed8" />
+                  ) : (
+                    <Download size={14} color="#1d4ed8" strokeWidth={2.3} />
+                  )}
+                </Pressable>
+              ) : null}
+              <Pressable style={styles.viewApprovedButton} onPress={onView}>
+                <Eye size={15} color="#000000ff" strokeWidth={2.3} />
+                <Text style={styles.viewApprovedText}>View</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </View>
@@ -3196,6 +3267,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: fontWeights.bold,
     color: '#000000ff',
+  },
+  downloadButton: {
+    minHeight: 26,
+    height: 28,
+    borderRadius: radius.sm,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    paddingHorizontal: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   sheetBackdrop: {
     flex: 1,

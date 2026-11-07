@@ -31,6 +31,8 @@ export type MyRequest = {
   date_to: string | null;
   time_from: string | null;
   time_to: string | null;
+  break_from?: string | null;
+  break_to?: string | null;
   time_schedule?: string | null;
   day_off?: string | null;
   payroll_class?: string | null;
@@ -651,6 +653,8 @@ export type UpdatePendingRequestParams = {
   dateTo?: string | null;
   timeFrom?: string | null;
   timeTo?: string | null;
+  breakFrom?: string | null;
+  breakTo?: string | null;
   totalHours?: number | null;
   timeSchedule?: string | null;
   dayOff?: string | null;
@@ -706,6 +710,8 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
         p_date_to: params.dateTo || null,
         p_time_from: params.timeFrom || null,
         p_time_to: params.timeTo || null,
+        p_break_from: params.breakFrom || null,
+        p_break_to: params.breakTo || null,
         p_total_hours: params.totalHours ?? null,
         p_time_schedule: params.timeSchedule || null,
         p_day_off: params.dayOff || null,
@@ -807,7 +813,7 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
   }
 
   // Try updating time_request_details directly for ESARF
-  if (params.dateFrom || params.timeFrom || params.transactionType || params.timeSchedule) {
+  if (params.dateFrom || params.timeFrom || params.transactionType || params.timeSchedule || params.breakFrom !== undefined || params.breakTo !== undefined) {
     const { error: timeErr } = await supabase
       .from('time_request_details')
       .update({
@@ -815,6 +821,8 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
         ...(params.dateTo ? { date_to: params.dateTo } : {}),
         ...(params.timeFrom ? { time_from: params.timeFrom } : {}),
         ...(params.timeTo ? { time_to: params.timeTo } : {}),
+        ...(params.breakFrom !== undefined ? { break_from: params.breakFrom || null } : {}),
+        ...(params.breakTo !== undefined ? { break_to: params.breakTo || null } : {}),
         ...(params.totalHours !== undefined && params.totalHours !== null ? { total_hours: params.totalHours } : {}),
         ...(params.timeSchedule ? { time_schedule: params.timeSchedule } : {}),
         ...(params.dayOff ? { day_off: params.dayOff } : {}),

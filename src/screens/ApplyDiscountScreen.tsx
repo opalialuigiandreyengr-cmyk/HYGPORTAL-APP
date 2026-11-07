@@ -3,7 +3,7 @@ import { KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, Scrol
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
-import { BadgePercent, CalendarDays, Check, ChevronDown, Plus, ShoppingCart, WifiOff, X } from 'lucide-react-native';
+import { AlertTriangle, BadgePercent, CalendarDays, Check, ChevronDown, Plus, ShoppingCart, WifiOff, X } from 'lucide-react-native';
 
 import { TopBar } from '../components/TopBar';
 import type { AppToastMessage } from '../components/AppToast';
@@ -216,9 +216,20 @@ export function ApplyDiscountScreen({
     }
   }
 
+  function showSuspendedNotice() {
+    platformAlert(
+      'Service Suspended',
+      'Apply Discount is suspended for the time being due to abuse of product charging privilege.'
+    );
+    onToast?.({
+      tone: 'error',
+      title: 'Service Suspended',
+      message: 'Apply Discount is suspended for the time being due to abuse of product charging privilege.',
+    });
+  }
+
   function openDatePicker() {
-    setTempPickerDate(dateStringToDate(transactionDate));
-    setActivePicker(true);
+    showSuspendedNotice();
   }
 
   function handleDateChange(event: DateTimePickerEvent, selectedDate?: Date) {
@@ -244,19 +255,11 @@ export function ApplyDiscountScreen({
   }
 
   function addProductLine() {
-    setProductLines((current) => [
-      ...current,
-      { id: String(Date.now()), productName: 'Select product', quantity: '0', unitPrice: '0.00' },
-    ]);
+    showSuspendedNotice();
   }
 
   function removeLastProductLine() {
-    setProductLines((current) => {
-      if (current.length <= 1) {
-        return current.map((line) => ({ ...line, productName: 'Select product', quantity: '0', unitPrice: '0.00' }));
-      }
-      return current.slice(0, -1);
-    });
+    showSuspendedNotice();
   }
 
   function updateLine(id: string, patch: Partial<ProductLine>) {
@@ -307,94 +310,11 @@ export function ApplyDiscountScreen({
       return;
     }
 
-    const selectedProducts = buildProducts();
-    if (!transactionDate || !selectedProducts.length || totals.purchaseAmount <= 0) {
-      setSubmitStatus('Please complete the transaction date and product details.');
-      onToast?.({
-        tone: 'warning',
-        title: 'Incomplete discount',
-        message: 'Add at least one product with quantity and unit price.',
-      });
-      return;
-    }
-
-    setIsSubmitting(true);
-    setSubmitStatus('Sending approval code...');
-    try {
-      const started = await startPerkRequest({
-        formType: mode === 'cash' ? 'discount' : 'charge',
-        transactionDate,
-        products: selectedProducts,
-        email: emailInput,
-      });
-      setPendingVerification(started);
-      setShowEmailInput(false);
-      setSubmitStatus(`Approval code sent to ${started.email}.`);
-      onToast?.({
-        tone: 'success',
-        title: 'Code sent',
-        message: 'Check your registered email for the approval code.',
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to send approval code.';
-      setSubmitStatus(message);
-      if (message.toLowerCase().includes('registered email')) {
-        setShowEmailInput(true);
-      }
-      onToast?.({
-        tone: 'error',
-        title: 'Request not sent',
-        message,
-      });
-    } finally {
-      setIsSubmitting(false);
-    }
+    showSuspendedNotice();
   }
 
   async function verifyCode() {
-    if (!isAppOnline()) {
-      setSubmitStatus('Internet connection required to verify approval code.');
-      onToast?.({
-        tone: 'warning',
-        title: 'Internet Connection Required',
-        message: 'Verifying your approval code requires an active internet connection.',
-      });
-      platformAlert(
-        'Internet Connection Required',
-        'Verifying your approval code and generating your e-receipt requires an active internet connection.\n\nPlease connect to Wi-Fi or mobile data to proceed.',
-        [{ text: 'OK' }]
-      );
-      return;
-    }
-
-    if (!pendingVerification || !approvalCode.trim()) {
-      setSubmitStatus('Enter the approval code sent to your email.');
-      return;
-    }
-
-    setIsVerifying(true);
-    setSubmitStatus('Verifying approval code...');
-    try {
-      await verifyPerkRequest(pendingVerification.requestId, approvalCode.trim());
-      await refreshUsage();
-      setSubmitStatus('Request approved. E-receipt sent to your email.');
-      onToast?.({
-        tone: 'success',
-        title: 'Request approved',
-        message: 'Your e-receipt was sent to your registered email.',
-      });
-      await onSubmitted?.();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to verify approval code.';
-      setSubmitStatus(message);
-      onToast?.({
-        tone: 'error',
-        title: 'Code not accepted',
-        message,
-      });
-    } finally {
-      setIsVerifying(false);
-    }
+    showSuspendedNotice();
   }
 
   return (
@@ -442,20 +362,33 @@ export function ApplyDiscountScreen({
           />
         }
       >
+        {/* Suspended Notice Banner */}
+        <View style={styles.suspendedBanner}>
+          <View style={styles.suspendedIconBadge}>
+            <AlertTriangle size={18} color="#991b1b" strokeWidth={2.5} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.suspendedBannerTitle}>Service Suspended</Text>
+            <Text style={styles.suspendedBannerText}>
+              Apply Discount is suspended for the time being due to abuse of product charging privilege.
+            </Text>
+          </View>
+        </View>
+
         <View style={styles.modeGrid}>
           <ModeCard
             active={mode === 'cash'}
             icon={<BadgePercent size={20} color="#f97316" strokeWidth={2.7} />}
             title="Employee Discount (Cash)"
             detail="15% off, PHP 3,000 yearly cap"
-            onPress={() => setMode('cash')}
+            onPress={showSuspendedNotice}
           />
           <ModeCard
             active={mode === 'charge'}
             icon={<ShoppingCart size={20} color={colors.primary} strokeWidth={2.7} />}
             title="Employee Charge (Credit)"
             detail="PHP 3,000 per transaction"
-            onPress={() => setMode('charge')}
+            onPress={showSuspendedNotice}
           />
         </View>
 
@@ -511,16 +444,12 @@ export function ApplyDiscountScreen({
           {productLines.map((line) => (
             <View key={line.id} style={styles.productRow}>
               <Pressable
-                disabled={isLoadingProducts}
                 style={[
                   styles.productInput,
                   styles.productNameColumn,
-                  isLoadingProducts ? styles.productInputDisabled : null,
+                  styles.productInputDisabled,
                 ]}
-                onPress={() => {
-                  setProductQuery('');
-                  setActiveProductId(line.id);
-                }}
+                onPress={showSuspendedNotice}
               >
                 <Text
                   style={[
@@ -629,27 +558,16 @@ export function ApplyDiscountScreen({
               ) : null}
 
               <Pressable
-                disabled={isSubmitting}
                 style={[
                   styles.submitButton,
-                  isSubmitting ? styles.submitButtonDisabled : null,
-                  !isOnline ? styles.submitButtonOffline : null,
+                  styles.submitButtonDisabled,
+                  styles.submitButtonSuspended,
                 ]}
-                onPress={submit}
+                onPress={showSuspendedNotice}
               >
-                {!isOnline ? (
-                  <WifiOff size={16} color="#991b1b" strokeWidth={2.5} />
-                ) : (
-                  <BadgePercent size={16} color={colors.brand.ink} strokeWidth={2.8} />
-                )}
-                <Text style={[styles.submitText, !isOnline ? styles.submitTextOffline : null]}>
-                  {isSubmitting
-                    ? 'Sending code...'
-                    : isOnline
-                    ? mode === 'cash'
-                      ? 'Apply cash discount'
-                      : 'Apply employee charge'
-                    : 'Internet required to apply'}
+                <AlertTriangle size={16} color="#991b1b" strokeWidth={2.5} />
+                <Text style={[styles.submitText, styles.submitTextSuspended]}>
+                  Service Suspended
                 </Text>
               </Pressable>
             </>
@@ -1325,6 +1243,46 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   submitTextOffline: {
+    color: '#991b1b',
+  },
+  suspendedBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  suspendedIconBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: radius.sm,
+    backgroundColor: '#fee2e2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  suspendedBannerTitle: {
+    color: '#991b1b',
+    fontSize: 14,
+    fontWeight: fontWeights.heavy,
+    marginBottom: 2,
+  },
+  suspendedBannerText: {
+    color: '#b91c1c',
+    fontSize: 12.5,
+    lineHeight: 17,
+    fontWeight: fontWeights.medium,
+  },
+  submitButtonSuspended: {
+    backgroundColor: '#fee2e2',
+    borderColor: '#fca5a5',
+    borderWidth: 1,
+  },
+  submitTextSuspended: {
     color: '#991b1b',
   },
   emailPanel: {

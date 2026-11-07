@@ -24,6 +24,8 @@ export type OfflineEsarfPayload = {
   overallDateTo: string;
   overallTimeFrom: string | null;
   overallTimeTo: string | null;
+  breakFrom?: string | null;
+  breakTo?: string | null;
   totalHoursSum: number;
   combinedReason: string;
   schedule?: string | null;
@@ -695,6 +697,8 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
                     p_date_to: item.payload.overallDateTo,
                     p_time_from: item.payload.overallTimeFrom ? item.payload.overallTimeFrom : null,
                     p_time_to: item.payload.overallTimeTo ? item.payload.overallTimeTo : null,
+                    p_break_from: item.payload.breakFrom ? item.payload.breakFrom : null,
+                    p_break_to: item.payload.breakTo ? item.payload.breakTo : null,
                     p_total_hours: item.payload.totalHoursSum,
                     p_reason: reason,
                     p_time_schedule: item.payload.schedule,
@@ -772,6 +776,8 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
                     p_date_to: item.payload.overallDateTo,
                     p_time_from: item.payload.overallTimeFrom ? item.payload.overallTimeFrom : null,
                     p_time_to: item.payload.overallTimeTo ? item.payload.overallTimeTo : null,
+                    p_break_from: item.payload.breakFrom ? item.payload.breakFrom : null,
+                    p_break_to: item.payload.breakTo ? item.payload.breakTo : null,
                     p_total_hours: item.payload.totalHoursSum,
                     p_reason: reason,
                     p_time_schedule: item.payload.schedule,

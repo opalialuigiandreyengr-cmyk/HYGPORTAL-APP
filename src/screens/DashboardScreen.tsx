@@ -19,6 +19,7 @@ import {
 } from 'lucide-react-native';
 
 import { colors, fontWeights, spacing, radius } from '../theme';
+import { platformAlert } from '../utils/platformAlert';
 import { TopBar } from '../components/TopBar';
 import { BirthdayGreetingModal } from '../components/BirthdayGreetingModal';
 import { BalanceHistoryPage } from '../components/BalanceHistoryModal';
@@ -405,6 +406,17 @@ export function DashboardScreen({
     );
   }
 
+  const handleApplyPerks = () => {
+    if (onApplyPerks) {
+      onApplyPerks();
+      return;
+    }
+    platformAlert(
+      'Service Suspended',
+      'Apply Discount is suspended for the time being due to abuse of product charging privilege.'
+    );
+  };
+
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
@@ -478,8 +490,8 @@ export function DashboardScreen({
             {
               id: 'perks',
               label: 'Apply Perks',
-              accessibilityLabel: 'Apply Perks',
-              onPress: onApplyPerks,
+              accessibilityLabel: 'Apply Perks (Suspended)',
+              onPress: handleApplyPerks,
               Icon: ActionIconTag,
             },
             {

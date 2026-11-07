@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Pressable, TextInput, Image, Modal, Linking, ActivityIndicator, Platform } from 'react-native';
-import { CalendarDays, Camera, Check, Clock3, Edit3, ExternalLink, Eye, FileText, Image as ImageIcon, MapPin, Users, X } from 'lucide-react-native';
+import { CalendarDays, Camera, Check, Clock3, Coffee, Edit3, ExternalLink, Eye, FileText, Image as ImageIcon, MapPin, Users, X } from 'lucide-react-native';
 import { colors, radius, fontWeights, spacing } from '../theme';
 import { computeWorkedMinutes, computeOffsetOvertimeHours, isFioOrObOnly, calculateCreditedOffsetHours } from '../utils/requestCalculations';
 import { parseEsarfDateRangeStringToYMD, stripSecondsFromTimeString } from '../utils/dateTime';
@@ -57,6 +57,9 @@ export type ParsedEsarfEntry = {
   timeToStr: string;
   totalHours: string;
   actualHours?: string;
+  breakTimeFrom?: string;
+  breakTimeTo?: string;
+  breakTime?: string;
   reason: string;
   isRejected?: boolean;
   proofUrl?: string;
@@ -576,6 +579,11 @@ export function parseEsarfEntries(item: {
         const eventMatch = rawReasonText.match(/\[Event:\s*([^\]]+)\]/i);
         const parsedEventName = eventMatch ? eventMatch[1].trim() : undefined;
 
+        const breakMatch = rawReasonText.match(/\[Break:\s*([^\]-]+)\s*-\s*([^\]]+)\]/i);
+        const breakTimeFrom = breakMatch ? breakMatch[1].trim() : (item as any)?.break_from ? stripSecondsFromTimeString((item as any).break_from) : undefined;
+        const breakTimeTo = breakMatch ? breakMatch[2].trim() : (item as any)?.break_to ? stripSecondsFromTimeString((item as any).break_to) : undefined;
+        const breakTime = breakTimeFrom && breakTimeTo ? `${breakTimeFrom} - ${breakTimeTo}` : undefined;
+
         let cleanReasonText = rawReasonText
           .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
           .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
@@ -585,6 +593,7 @@ export function parseEsarfEntries(item: {
           .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+          .replace(/\[Break:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '')
           .trim();
 
@@ -615,6 +624,8 @@ export function parseEsarfEntries(item: {
             dateFrom: resolvedDate,
             timeSchedule: item.time_schedule,
             dayOff: item.day_off,
+            breakFrom: breakTimeFrom,
+            breakTo: breakTimeTo,
           });
 
           if (actualMatch) {
@@ -642,6 +653,9 @@ export function parseEsarfEntries(item: {
           timeToStr: timeToStr || '--',
           totalHours: hoursStr || '0',
           actualHours: actualHoursStr,
+          breakTimeFrom,
+          breakTimeTo,
+          breakTime,
           reason: cleanReasonText || 'No reason provided.',
           eventName: parsedEventName,
           isRejected: isEntryRejected,
@@ -679,6 +693,11 @@ export function parseEsarfEntries(item: {
   const eventMatch = rawReason.match(/\[Event:\s*([^\]]+)\]/i);
   const parsedEventName = eventMatch ? eventMatch[1].trim() : undefined;
 
+  const breakMatch = rawReason.match(/\[Break:\s*([^\]-]+)\s*-\s*([^\]]+)\]/i);
+  const breakTimeFrom = breakMatch ? breakMatch[1].trim() : (item as any)?.break_from ? stripSecondsFromTimeString((item as any).break_from) : undefined;
+  const breakTimeTo = breakMatch ? breakMatch[2].trim() : (item as any)?.break_to ? stripSecondsFromTimeString((item as any).break_to) : undefined;
+  const breakTime = breakTimeFrom && breakTimeTo ? `${breakTimeFrom} - ${breakTimeTo}` : undefined;
+
   let cleanReason = rawReason
     .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
     .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
@@ -688,6 +707,7 @@ export function parseEsarfEntries(item: {
     .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+    .replace(/\[Break:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '')
     .trim();
 
@@ -726,6 +746,8 @@ export function parseEsarfEntries(item: {
       dateFrom: item.date_from,
       timeSchedule: item.time_schedule,
       dayOff: item.day_off,
+      breakFrom: breakTimeFrom,
+      breakTo: breakTimeTo,
     });
 
     if (actualMatch) {
@@ -750,6 +772,8 @@ export function parseEsarfEntries(item: {
       dateFrom: item.date_from,
       timeSchedule: item.time_schedule,
       dayOff: item.day_off,
+      breakFrom: breakTimeFrom,
+      breakTo: breakTimeTo,
     });
     if (computedOt !== null && computedOt > 0) {
       totalHours = computedOt.toFixed(2);
@@ -765,6 +789,9 @@ export function parseEsarfEntries(item: {
       timeToStr,
       totalHours,
       actualHours: actualHoursStr,
+      breakTimeFrom,
+      breakTimeTo,
+      breakTime,
       reason: cleanReason || 'No reason provided.',
       eventName: parsedEventName,
       isRejected: rawReason.includes('[REJECTED]'),
@@ -1601,6 +1628,19 @@ export function EsarfCardView({
         </View>
       </View>
 
+      {/* Break Time (if set) */}
+      {(entry.breakTimeFrom && entry.breakTimeTo) || entry.breakTime ? (
+        <View style={styles.breakTimeDetailRow}>
+          <View style={styles.breakTimeDetailBadge}>
+            <Coffee size={13} color="#475569" strokeWidth={2.4} />
+            <Text style={styles.breakTimeDetailLabel}>Break Time:</Text>
+            <Text style={[styles.breakTimeDetailValue, isEntryRejected && styles.dashedText]}>
+              {entry.breakTime || `${stripSecondsFromTimeString(entry.breakTimeFrom)} - ${stripSecondsFromTimeString(entry.breakTimeTo)}`}
+            </Text>
+          </View>
+        </View>
+      ) : null}
+
       {/* Reason Box */}
       <View style={styles.reasonSection}>
         <Text style={styles.reasonLabel}>Reason</Text>
@@ -2064,6 +2104,33 @@ const styles = StyleSheet.create({
   },
   gridValue: {
     fontSize: 13,
+    fontWeight: fontWeights.heavy,
+    color: '#0f172a',
+  },
+  breakTimeDetailRow: {
+    marginTop: 6,
+    marginBottom: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  breakTimeDetailBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#f8fafc',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  breakTimeDetailLabel: {
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+  },
+  breakTimeDetailValue: {
+    fontSize: 11,
     fontWeight: fontWeights.heavy,
     color: '#0f172a',
   },

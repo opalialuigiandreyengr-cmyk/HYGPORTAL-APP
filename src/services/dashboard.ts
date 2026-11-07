@@ -42,37 +42,38 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
       empId = userProfile?.employee_id ?? undefined;
     }
 
-    const [rpcRes, pointsBal, leaveBal, offsetBal, reqCountRes] = await Promise.all([
+    // Single consolidated RPC fetch to minimize disk IO operations and prevent budget exhaustion
+    const [rpcRes, pointsBal] = await Promise.all([
       supabase.rpc('get_my_dashboard_summary'),
       loadHygPointsBalance(currentUserId, empId),
-      empId
-        ? supabase
-            .from('leave_balances')
-            .select('annual_credit_days, used_days')
-            .eq('employee_id', empId)
-            .maybeSingle<{ annual_credit_days: number | null; used_days: number | null }>()
-        : Promise.resolve({ data: null, error: null }),
-      empId
-        ? supabase
-            .from('offset_balances')
-            .select('balance_hours')
-            .eq('employee_id', empId)
-            .maybeSingle<{ balance_hours: number | null }>()
-        : Promise.resolve({ data: null, error: null }),
-      empId
-        ? supabase
-            .from('requests')
-            .select('id', { count: 'exact', head: true })
-            .eq('submitted_by_employee_id', empId)
-            .in('status', ['pending', 'pre_approved', 'submitted', 'waiting'])
-        : Promise.resolve({ data: null, count: null, error: null }),
     ]);
 
     rpcResult = rpcRes;
     hygPointsBalance = pointsBal;
-    leaveBalanceRow = leaveBal;
-    offsetBalanceRow = offsetBal;
-    requestsCountRow = reqCountRes;
+
+    // Fallback: If RPC failed, query tables directly
+    if (rpcRes.error && empId) {
+      const [leaveBal, offsetBal, reqCountRes] = await Promise.all([
+        supabase
+          .from('leave_balances')
+          .select('annual_credit_days, used_days')
+          .eq('employee_id', empId)
+          .maybeSingle<{ annual_credit_days: number | null; used_days: number | null }>(),
+        supabase
+          .from('offset_balances')
+          .select('balance_hours')
+          .eq('employee_id', empId)
+          .maybeSingle<{ balance_hours: number | null }>(),
+        supabase
+          .from('requests')
+          .select('id', { count: 'exact', head: true })
+          .eq('submitted_by_employee_id', empId)
+          .in('status', ['pending', 'pre_approved', 'submitted', 'waiting']),
+      ]);
+      leaveBalanceRow = leaveBal;
+      offsetBalanceRow = offsetBal;
+      requestsCountRow = reqCountRes;
+    }
   } catch (netErr) {
     console.log('[Dashboard] Network fetch failed (offline), returning cached summary:', netErr);
     if (cached) {
@@ -96,7 +97,11 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
   let leaveUsedDays = 0;
   let leaveCreditRemaining = 0;
 
-  if (leaveBalanceRow.data) {
+  if (first?.annual_credit_days !== undefined && first?.annual_credit_days !== null) {
+    annualCreditDays = Number(first.annual_credit_days ?? 0);
+    leaveUsedDays = Number(first.used_days ?? 0);
+    leaveCreditRemaining = Number(first.leave_credit_remaining ?? Math.max(0, annualCreditDays - leaveUsedDays));
+  } else if (leaveBalanceRow.data) {
     annualCreditDays = Number(leaveBalanceRow.data.annual_credit_days ?? 0);
     leaveUsedDays = Number(leaveBalanceRow.data.used_days ?? 0);
     leaveCreditRemaining = Math.max(0, annualCreditDays - leaveUsedDays);

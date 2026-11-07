@@ -107,6 +107,7 @@ import {
   NATIVE_APP_VERSION,
 } from './src/services/appUpdates';
 import { initNetworkService } from './src/services/network';
+import { platformAlert } from './src/utils/platformAlert';
 import { AssistantScreen } from './src/screens/AssistantScreen';
 import { ApplyDiscountScreen } from './src/screens/ApplyDiscountScreen';
 import { ApplyEsarfScreen } from './src/screens/ApplyEsarfScreen';
@@ -481,8 +482,8 @@ export default function App() {
   }, [notificationsEnabled, signedInUser]);
 
   useEffect(() => {
-    if (activeTab === 'approvals' && !canUseApprovals) {
-      setActiveTab('perks');
+    if ((activeTab === 'approvals' && !canUseApprovals) || activeTab === 'perks') {
+      setActiveTab('home');
     } else if (activeTab === 'my_team' && !canUseMyTeam) {
       setActiveTab('home');
     }
@@ -882,6 +883,18 @@ export default function App() {
     }
   }
 
+  function showDiscountSuspendedNotice() {
+    platformAlert(
+      'Service Suspended',
+      'Apply Discount is suspended for the time being due to abuse of product charging privilege.'
+    );
+    setAppToast({
+      tone: 'error',
+      title: 'Service Suspended',
+      message: 'Apply Discount is suspended for the time being due to abuse of product charging privilege.',
+    });
+  }
+
   function openAssistantDraft(draft: AssistantDraft) {
     setAssistantDraft(draft);
     if (signedInUser) {
@@ -892,7 +905,7 @@ export default function App() {
     } else if (draft.intent === 'draft_esarf_request') {
       setActiveQuickRequestScreen('apply_esarf');
     } else {
-      setActiveQuickRequestScreen('apply_discount');
+      showDiscountSuspendedNotice();
     }
   }
 
@@ -903,6 +916,10 @@ export default function App() {
   }
 
   function openQuickRequest(screen: QuickRequestScreen) {
+    if (screen === 'apply_discount') {
+      showDiscountSuspendedNotice();
+      return;
+    }
     setAssistantDraft(null);
     setEditingRequest(null);
     setActiveQuickRequestScreen(screen);
@@ -1760,7 +1777,7 @@ export default function App() {
           onApplyEsarf={() => openQuickRequest('apply_esarf')}
           onApplyPreApprovedOtOffset={() => openQuickRequest('apply_pre_approved_ot_offset')}
           onRequestLeave={() => openQuickRequest('request_leave')}
-          onApplyPerks={() => openQuickRequest('apply_discount')}
+          onApplyPerks={showDiscountSuspendedNotice}
           onFileTravelOrder={() => openQuickRequest('file_travel_order')}
           onPhotoProof={handleOpenPhotoProof}
           onPhotoLog={() => openQuickRequest('photo_log')}
@@ -1779,6 +1796,10 @@ export default function App() {
           <BottomTabBar
             activeTab={activeTab}
             onChange={(tab) => {
+              if (tab === 'perks') {
+                showDiscountSuspendedNotice();
+                return;
+              }
               closeQuickRequest();
               setActiveTab(tab);
             }}

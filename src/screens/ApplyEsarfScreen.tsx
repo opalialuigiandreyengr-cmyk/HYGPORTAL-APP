@@ -30,6 +30,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock3,
+  Coffee,
   ExternalLink,
   Eye,
   GitCommit,
@@ -99,6 +100,7 @@ import type { RequestTypeCode } from '../types/domain';
 import {
   calculateCreditedOffsetHours,
   calculateRequestHours,
+  computeBreakMinutes,
   getUseOffsetValidationWarning,
   HALF_DAY_OFFSET_HOURS,
   isFioOrObOnly,
@@ -145,6 +147,8 @@ export type EsarfEntry = {
   dateTo: string;
   timeFrom: string;
   timeTo: string;
+  breakFrom?: string;
+  breakTo?: string;
   reason: string;
   proof?: EsarfAttachment | null;
   proofs?: EsarfAttachment[];
@@ -259,6 +263,7 @@ const exclusiveTransactionGroups = [
   ['ut', 'use_offset'],
   ['ot', 'use_offset'],
   ['offset', 'use_offset'],
+  ['ot', 'offset'],
 ];
 function WebNativeTimePicker({ value, onChange }: { value: string; onChange: (val: string) => void }) {
   if (Platform.OS !== 'web') return null;
@@ -550,6 +555,8 @@ export function ApplyEsarfScreen({
             dateTo: dTo,
             timeFrom: parsedTimeFrom || editingRequest.time_from || '',
             timeTo: parsedTimeTo || editingRequest.time_to || '',
+            breakFrom: (p as any).breakTimeFrom || (editingRequest as any).break_from || '',
+            breakTo: (p as any).breakTimeTo || (editingRequest as any).break_to || '',
             reason: (p.reason || editingRequest.reason || '')
               .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
               .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
@@ -559,6 +566,7 @@ export function ApplyEsarfScreen({
               .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[Break:\s*[^\]]+\]\s*/gi, '')
               .trim(),
             eventName: p.eventName,
             proof: entryProofs[0] || null,
@@ -600,7 +608,7 @@ export function ApplyEsarfScreen({
   } | null>(null);
   const [activeTransactionSelectIndex, setActiveTransactionSelectIndex] = useState<number | null>(null);
   const [activeDateChoiceIndex, setActiveDateChoiceIndex] = useState<number | null>(null);
-  const [activeScrollableTimePicker, setActiveScrollableTimePicker] = useState<{ index: number; field: 'time_from' | 'time_to' } | null>(null);
+  const [activeScrollableTimePicker, setActiveScrollableTimePicker] = useState<{ index: number; field: 'time_from' | 'time_to' | 'break_from' | 'break_to' } | null>(null);
   const [availableEvents, setAvailableEvents] = useState<PortalEventActivity[]>([]);
   const [activeEventModalIndex, setActiveEventModalIndex] = useState<number | null>(null);
   const [eventSearchQuery, setEventSearchQuery] = useState('');
@@ -1251,6 +1259,8 @@ export function ApplyEsarfScreen({
               dateTo: dTo,
               timeFrom: parsedTimeFrom || editingRequest.time_from || '',
               timeTo: parsedTimeTo || editingRequest.time_to || '',
+              breakFrom: (p as any).breakTimeFrom || (editingRequest as any).break_from || '',
+              breakTo: (p as any).breakTimeTo || (editingRequest as any).break_to || '',
               reason: (p.reason || editingRequest.reason || '')
                 .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
                 .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
@@ -1259,6 +1269,7 @@ export function ApplyEsarfScreen({
                 .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
                 .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
                 .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+                .replace(/\[Break:\s*[^\]]+\]\s*/gi, '')
                 .trim(),
               eventName: p.eventName,
               proof: entryProofs[0] || null,
@@ -1448,9 +1459,10 @@ export function ApplyEsarfScreen({
       return 0;
     }
     const transKeys = parseEntryTransactions(entry.transaction);
-    const isOt = transKeys.includes('ot');
+    const isOt = transKeys.includes('ot') || isOvertimeTransaction(entry.transaction);
     const isUseOffset = transKeys.includes('use_offset');
-    const isOffsetEarn = transKeys.includes('offset');
+    const isOffsetEarn = transKeys.includes('offset') || isOffsetTransaction(entry.transaction);
+    const isOtOrOffset = isOt || isOffsetEarn;
     const hasFullHoursTransaction = transKeys.some((key) => key === 'fio' || key === 'ob' || key === 'ut');
     const isFullHours = (hasFullHoursTransaction && !isOt && !isOffsetEarn) || isUseOffset;
 
@@ -1473,6 +1485,8 @@ export function ApplyEsarfScreen({
       dayOff: dayOff === NO_DAY_OFF_LABEL ? '' : dayOff,
       isFullHours,
       isOvertime: isOt,
+      breakFrom: isOtOrOffset ? entry.breakFrom : undefined,
+      breakTo: isOtOrOffset ? entry.breakTo : undefined,
     });
   }
 
@@ -1491,6 +1505,8 @@ export function ApplyEsarfScreen({
       dayOff: dayOff === NO_DAY_OFF_LABEL ? '' : dayOff,
       isFullHours: false,
       isOvertime: true,
+      breakFrom: entry.breakFrom,
+      breakTo: entry.breakTo,
     });
   }
 
@@ -2081,6 +2097,7 @@ export function ApplyEsarfScreen({
             .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+            .replace(/\[Break:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '')
             .trim();
           if (eventName && eventName.trim()) {
@@ -2104,17 +2121,22 @@ export function ApplyEsarfScreen({
         if (groupEntries.length === 1) {
           const fEntry = groupEntries[0];
           const keys = parseEntryTransactions(fEntry.transaction);
+          const isOtOrOffset = keys.includes('ot') || keys.includes('offset') || isOvertimeTransaction(fEntry.transaction) || isOffsetTransaction(fEntry.transaction);
           const isOffset = keys.includes('offset');
           const hrs = getEntryTotalHours(fEntry);
           const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
           const cleanReason = cleanReasonText(fEntry.reason, fEntry.eventName);
           const eventTag = getEventTag(cleanReason, fEntry.eventName);
+          const breakTag = isOtOrOffset && fEntry.breakFrom && fEntry.breakTo
+            ? ` [Break: ${formatTimeDisplay(fEntry.breakFrom)} - ${formatTimeDisplay(fEntry.breakTo)}]`
+            : '';
           const proofTag = formatProofTags(getEntryProofs(fEntry));
-          combinedReason = `${cleanReason}${eventTag}${actualTag}${proofTag}`.trim();
+          combinedReason = `${cleanReason}${eventTag}${breakTag}${actualTag}${proofTag}`.trim();
         } else {
           combinedReason = groupEntries
             .map((e, idx) => {
               const keys = parseEntryTransactions(e.transaction);
+              const isOtOrOffset = keys.includes('ot') || keys.includes('offset') || isOvertimeTransaction(e.transaction) || isOffsetTransaction(e.transaction);
               const opts = transactionOptions.filter((t) => keys.includes(t.key));
               const transLabel = opts.map((t) => t.backendLabel || t.shortLabel || t.label).join('/') || e.transaction;
               const dateStr = formatEsarfDateRange(e.dateFrom, e.dateTo);
@@ -2125,11 +2147,14 @@ export function ApplyEsarfScreen({
               const creditedHrs = isOffset ? calculateCreditedOffsetHours(hrs) : hrs;
               const cleanReason = cleanReasonText(e.reason, e.eventName);
               const eventTag = getEventTag(cleanReason, e.eventName);
+              const breakTag = isOtOrOffset && e.breakFrom && e.breakTo
+                ? ` [Break: ${formatTimeDisplay(e.breakFrom)} - ${formatTimeDisplay(e.breakTo)}]`
+                : '';
               const proofTag = formatProofTags(getEntryProofs(e));
               const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
               const isFioOrOb = isFioOrObOnly(e.transaction);
               const hrsDisplay = isFioOrOb ? '' : ` (${creditedHrs.toFixed(2)} hrs)`;
-              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${eventTag}${actualTag}${proofTag}`;
+              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${eventTag}${breakTag}${actualTag}${proofTag}`;
             })
             .join('\n');
         }
@@ -2156,6 +2181,8 @@ export function ApplyEsarfScreen({
           date_to: overallDateTo,
           time_from: overallTimeFrom,
           time_to: overallTimeTo,
+          break_from: (groupEntries.find((e) => e.breakFrom && e.breakTo) || groupEntries[0])?.breakFrom || null,
+          break_to: (groupEntries.find((e) => e.breakFrom && e.breakTo) || groupEntries[0])?.breakTo || null,
           total_hours: totalHoursSum,
           time_schedule: schedule,
           day_off: dayOff,
@@ -2244,6 +2271,8 @@ export function ApplyEsarfScreen({
             overallDateTo,
             overallTimeFrom,
             overallTimeTo,
+            breakFrom: (groupEntries.find((e) => e.breakFrom && e.breakTo) || groupEntries[0])?.breakFrom || null,
+            breakTo: (groupEntries.find((e) => e.breakFrom && e.breakTo) || groupEntries[0])?.breakTo || null,
             totalHoursSum,
             combinedReason,
             schedule,
@@ -2457,7 +2486,10 @@ export function ApplyEsarfScreen({
               .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[ProofId:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
               .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[Break:\s*[^\]]+\]\s*/gi, '')
+              .replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '')
               .trim();
             if (eventName && eventName.trim()) {
               const escaped = eventName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -2504,17 +2536,22 @@ export function ApplyEsarfScreen({
           if (entries.length === 1) {
             const firstEntry = entries[0];
             const keys = parseEntryTransactions(firstEntry.transaction);
+            const isOtOrOffset = keys.includes('ot') || keys.includes('offset') || isOvertimeTransaction(firstEntry.transaction) || isOffsetTransaction(firstEntry.transaction);
             const isOffset = keys.includes('offset');
             const hrs = getEntryTotalHours(firstEntry);
             const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
             const cleanReason = cleanReasonText(firstEntry.reason, firstEntry.eventName);
             const eventTag = getEventTag(cleanReason, firstEntry.eventName);
+            const breakTag = isOtOrOffset && firstEntry.breakFrom && firstEntry.breakTo
+              ? ` [Break: ${formatTimeDisplay(firstEntry.breakFrom)} - ${formatTimeDisplay(firstEntry.breakTo)}]`
+              : '';
             const proofTag = formatProofTags(getEntryProofs(firstEntry));
-            combinedReason = `${cleanReason}${eventTag}${actualTag}${proofTag}`.trim();
+            combinedReason = `${cleanReason}${eventTag}${breakTag}${actualTag}${proofTag}`.trim();
           } else {
             combinedReason = entries
               .map((e, idx) => {
                 const keys = parseEntryTransactions(e.transaction);
+                const isOtOrOffset = keys.includes('ot') || keys.includes('offset') || isOvertimeTransaction(e.transaction) || isOffsetTransaction(e.transaction);
                 const opts = transactionOptions.filter((t) => keys.includes(t.key));
                 const transLabel = opts.map((t) => t.backendLabel || t.shortLabel || t.label).join('/') || e.transaction;
                 const dateStr = formatEsarfDateRange(e.dateFrom, e.dateTo);
@@ -2525,11 +2562,14 @@ export function ApplyEsarfScreen({
                 const creditedHrs = isOffset ? calculateCreditedOffsetHours(hrs) : hrs;
                 const cleanReason = cleanReasonText(e.reason, e.eventName);
                 const eventTag = getEventTag(cleanReason, e.eventName);
+                const breakTag = isOtOrOffset && e.breakFrom && e.breakTo
+                  ? ` [Break: ${formatTimeDisplay(e.breakFrom)} - ${formatTimeDisplay(e.breakTo)}]`
+                  : '';
                 const proofTag = formatProofTags(getEntryProofs(e));
                 const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
                 const isFioOrOb = isFioOrObOnly(e.transaction);
                 const hrsDisplay = isFioOrOb ? '' : ` (${creditedHrs.toFixed(2)} hrs)`;
-                return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${eventTag}${actualTag}${proofTag}`;
+                return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${eventTag}${breakTag}${actualTag}${proofTag}`;
               })
               .join('\n');
           }
@@ -2550,6 +2590,8 @@ export function ApplyEsarfScreen({
             }
           }
 
+          const entryWithBreak = entries.find((e) => e.breakFrom && e.breakTo);
+
           await withTimeout(
             updateMyPendingRequest({
               requestId: targetReqId,
@@ -2558,6 +2600,8 @@ export function ApplyEsarfScreen({
               dateTo: overallDateTo,
               timeFrom: overallTimeFrom,
               timeTo: overallTimeTo,
+              breakFrom: entryWithBreak?.breakFrom || firstEntry.breakFrom || null,
+              breakTo: entryWithBreak?.breakTo || firstEntry.breakTo || null,
               totalHours: totalHoursSum,
               timeSchedule: schedule,
               dayOff: dayOff,
@@ -2680,6 +2724,7 @@ export function ApplyEsarfScreen({
             .replace(/\[ProofSource:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[Store:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[Event:\s*[^\]]+\]\s*/gi, '')
+            .replace(/\[Break:\s*[^\]]+\]\s*/gi, '')
             .replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '')
             .trim();
           if (eventName && eventName.trim()) {
@@ -2727,17 +2772,22 @@ export function ApplyEsarfScreen({
         if (groupEntries.length === 1) {
           const firstEntry = groupEntries[0];
           const keys = parseEntryTransactions(firstEntry.transaction);
+          const isOtOrOffset = keys.includes('ot') || keys.includes('offset') || isOvertimeTransaction(firstEntry.transaction) || isOffsetTransaction(firstEntry.transaction);
           const isOffset = keys.includes('offset');
           const hrs = getEntryTotalHours(firstEntry);
           const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
           const cleanReason = cleanReasonText(firstEntry.reason, firstEntry.eventName);
           const eventTag = getEventTag(cleanReason, firstEntry.eventName);
+          const breakTag = isOtOrOffset && firstEntry.breakFrom && firstEntry.breakTo
+            ? ` [Break: ${formatTimeDisplay(firstEntry.breakFrom)} - ${formatTimeDisplay(firstEntry.breakTo)}]`
+            : '';
           const proofTag = formatProofTags(getEntryProofs(firstEntry));
-          combinedReason = `${cleanReason}${eventTag}${actualTag}${proofTag}`.trim();
+          combinedReason = `${cleanReason}${eventTag}${breakTag}${actualTag}${proofTag}`.trim();
         } else {
           combinedReason = groupEntries
             .map((e, idx) => {
               const keys = parseEntryTransactions(e.transaction);
+              const isOtOrOffset = keys.includes('ot') || keys.includes('offset') || isOvertimeTransaction(e.transaction) || isOffsetTransaction(e.transaction);
               const opts = transactionOptions.filter((t) => keys.includes(t.key));
               const transLabel = opts.map((t) => t.backendLabel || t.shortLabel || t.label).join('/') || e.transaction;
               const dateStr = formatEsarfDateRange(e.dateFrom, e.dateTo);
@@ -2748,11 +2798,14 @@ export function ApplyEsarfScreen({
               const creditedHrs = isOffset ? calculateCreditedOffsetHours(hrs) : hrs;
               const cleanReason = cleanReasonText(e.reason, e.eventName);
               const eventTag = getEventTag(cleanReason, e.eventName);
+              const breakTag = isOtOrOffset && e.breakFrom && e.breakTo
+                ? ` [Break: ${formatTimeDisplay(e.breakFrom)} - ${formatTimeDisplay(e.breakTo)}]`
+                : '';
               const proofTag = formatProofTags(getEntryProofs(e));
               const actualTag = isOffset && hrs >= MIN_OFFSETABLE_HOURS ? ` [Actual: ${hrs.toFixed(2)} hrs]` : '';
               const isFioOrOb = isFioOrObOnly(e.transaction);
               const hrsDisplay = isFioOrOb ? '' : ` (${creditedHrs.toFixed(2)} hrs)`;
-              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${eventTag}${actualTag}${proofTag}`;
+              return `[Entry ${idx + 1}] (${transLabel}) ${dateStr} ${timeFromStr}-${timeToStr}${hrsDisplay}: ${cleanReason}${eventTag}${breakTag}${actualTag}${proofTag}`;
             })
             .join('\n');
         }
@@ -2785,6 +2838,12 @@ export function ApplyEsarfScreen({
 
             const finalReason = isPreApprovedMode ? `${combinedReason} [PreApproved]`.trim() : combinedReason;
             const finalTransactionType = combinedTransactionType || (isPreApprovedMode ? 'OT' : '');
+            const firstEntryHasOtOrOffset = groupEntries[0] && (
+              parseEntryTransactions(groupEntries[0].transaction).includes('ot') ||
+              parseEntryTransactions(groupEntries[0].transaction).includes('offset') ||
+              isOvertimeTransaction(groupEntries[0].transaction) ||
+              isOffsetTransaction(groupEntries[0].transaction)
+            );
 
             const rpcPayload: Record<string, any> = {
               p_request_type_code: primaryRequestType,
@@ -2801,6 +2860,8 @@ export function ApplyEsarfScreen({
               p_store_id: null,
               p_custom_approvers: customApproversPayload.length > 0 ? customApproversPayload : null,
               p_is_pre_approved: isPreApprovedMode,
+              p_break_from: firstEntryHasOtOrOffset ? groupEntries[0]?.breakFrom || null : null,
+              p_break_to: firstEntryHasOtOrOffset ? groupEntries[0]?.breakTo || null : null,
             };
 
             res = await withTimeout<{ data: any; error: any }>(
@@ -2918,7 +2979,7 @@ export function ApplyEsarfScreen({
           ? successMessage
           : `${successMessage} Sent for approval.`,
       });
-      await removeCacheItem('my_requests_v1').catch(() => {});
+      await removeCacheItem('my_requests_v1').catch(() => { });
       await onSubmitted?.();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to submit ESARF.';
@@ -3242,6 +3303,11 @@ export function ApplyEsarfScreen({
               const entryTransKeys = parseEntryTransactions(entry.transaction);
               const isUseOffset = entryTransKeys.includes('use_offset');
               const isOffsetEarn = entryTransKeys.includes('offset');
+              const hasOtOrOffsetTransaction =
+                entryTransKeys.includes('ot') ||
+                entryTransKeys.includes('offset') ||
+                isOvertimeTransaction(entry.transaction) ||
+                isOffsetTransaction(entry.transaction);
               const selectedOptions = transactionOptions.filter((t) => entryTransKeys.includes(t.key));
               const transactionLabelText = selectedOptions.length
                 ? selectedOptions.map((t) => t.shortLabel || t.label).join(', ')
@@ -3704,7 +3770,7 @@ export function ApplyEsarfScreen({
                         <Pressable
                           style={styles.offsetAddBtn}
                           onPress={() => {
-                            const newKeys = Array.from(new Set([...entryTransKeys, 'offset'])).join(',');
+                            const newKeys = Array.from(new Set([...entryTransKeys.filter((k) => k !== 'ot'), 'offset'])).join(',');
                             const proofAllowed = isProofAllowedForTransactions(newKeys);
                             updateEntry(actualIndex, {
                               transaction: newKeys,
@@ -3724,6 +3790,99 @@ export function ApplyEsarfScreen({
                           <Text style={styles.offsetAddBtnText}>Select Offset</Text>
                         </Pressable>
                       </View>
+                    </View>
+                  ) : null}
+
+                  {/* Break Time Card (Optional) - Appears if OT or OT for Offset (or combined with OT/Offset) is selected */}
+                  {hasOtOrOffsetTransaction ? (
+                    <View style={styles.breakTimeCard}>
+                      <View style={styles.breakTimeCardHeader}>
+                        <View style={styles.breakTimeCardTitleRow}>
+                          <Coffee size={15} color="#1e293b" strokeWidth={2.4} />
+                          <Text style={styles.breakTimeCardTitle}>Break Time</Text>
+                          <View style={styles.breakTimeOptionalBadge}>
+                            <Text style={styles.breakTimeOptionalBadgeText}>Optional</Text>
+                          </View>
+                        </View>
+                        {entry.breakFrom || entry.breakTo ? (
+                          <Pressable
+                            style={styles.breakTimeClearBtn}
+                            onPress={() => {
+                              updateEntry(actualIndex, { breakFrom: '', breakTo: '' });
+                            }}
+                            hitSlop={6}
+                          >
+                            <X size={12} color="#64748b" strokeWidth={2.4} />
+                            <Text style={styles.breakTimeClearBtnText}>Clear</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+
+                      <Text style={styles.breakTimeCardSubtitle}>
+                        Set break time only outside of your time schedule.
+                      </Text>
+
+                      <View style={styles.breakTimeInputsRow}>
+                        <View style={styles.breakTimeField}>
+                          <Pressable
+                            style={styles.breakTimeBox}
+                            onPress={() =>
+                              setActiveScrollableTimePicker({ index: actualIndex, field: 'break_from' })
+                            }
+                          >
+                            <Text
+                              style={[
+                                styles.breakTimeBoxText,
+                                !entry.breakFrom ? styles.breakTimeBoxPlaceholder : null,
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {entry.breakFrom ? formatTimeDisplay(entry.breakFrom) : '--:-- --'}
+                            </Text>
+                            <Clock3 size={15} color="#64748b" strokeWidth={2} />
+                          </Pressable>
+                          <Text style={styles.breakTimeFieldLabel}>Time From</Text>
+                        </View>
+
+                        <View style={styles.breakTimeField}>
+                          <Pressable
+                            style={styles.breakTimeBox}
+                            onPress={() =>
+                              setActiveScrollableTimePicker({ index: actualIndex, field: 'break_to' })
+                            }
+                          >
+                            <Text
+                              style={[
+                                styles.breakTimeBoxText,
+                                !entry.breakTo ? styles.breakTimeBoxPlaceholder : null,
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {entry.breakTo ? formatTimeDisplay(entry.breakTo) : '--:-- --'}
+                            </Text>
+                            <Clock3 size={15} color="#64748b" strokeWidth={2} />
+                          </Pressable>
+                          <Text style={styles.breakTimeFieldLabel}>Time To</Text>
+                        </View>
+                      </View>
+
+                      {entry.breakFrom && entry.breakTo ? (
+                        <View style={styles.breakTimeDeductionBanner}>
+                          <Check size={12} color="#334155" strokeWidth={2.4} />
+                          <Text style={styles.breakTimeDeductionBannerText}>
+                            {(() => {
+                              const bMins = computeBreakMinutes(entry.breakFrom, entry.breakTo);
+                              const bHours = (bMins / 60).toFixed(2);
+                              const typeLabel = isOffsetEarn && !entryTransKeys.includes('ot') ? 'Offset' : 'OT';
+                              return `${bHours} hr break will be deducted from total ${typeLabel} hours`;
+                            })()}
+                          </Text>
+                        </View>
+                      ) : (entry.breakFrom || entry.breakTo) ? (
+                        <Text style={styles.breakTimeIncompleteHint}>
+                          Please select both Time From and Time To to apply the break deduction.
+                        </Text>
+                      ) : null}
                     </View>
                   ) : null}
 
@@ -4769,7 +4928,7 @@ export function ApplyEsarfScreen({
                     const selected = currentSelectedKeys.includes(option.key);
                     const isOtDisabled = option.key === 'ot' && !isOtAllowed(payrollClass);
                     const isOffsetDisabled = option.key === 'offset' && !isOffsetAllowed(payrollClass);
-                    const isConflictDisabled = !selected && !isPreApprovedMode && isTransactionDisabled(option.key, currentSelectedKeys);
+                    const isConflictDisabled = !selected && isTransactionDisabled(option.key, currentSelectedKeys);
                     const disabled = isOtDisabled || isOffsetDisabled || isConflictDisabled;
                     const activeEntryHours = getEntryTotalHours(entries[activeTransactionSelectIndex]);
                     const activeEntryOtHours = getEntryOffsetOvertimeHours(entries[activeTransactionSelectIndex]);
@@ -4797,11 +4956,17 @@ export function ApplyEsarfScreen({
                           const proofAllowed = !isPreApprovedMode && isProofAllowedForTransactions(newTransStr);
                           const proofRequired = !isPreApprovedMode && isProofRequiredForTransactions(newTransStr);
                           const isNowUseOffset = newKeys.includes('use_offset');
+                          const hasNowOtOrOffset =
+                            newKeys.includes('ot') ||
+                            newKeys.includes('offset') ||
+                            isOvertimeTransaction(newTransStr) ||
+                            isOffsetTransaction(newTransStr);
                           const activeEntry = entries[activeTransactionSelectIndex];
                           updateEntry(activeTransactionSelectIndex, {
                             transaction: newTransStr,
                             ...(!proofAllowed ? { proof: null } : {}),
                             ...(isNowUseOffset && activeEntry?.dateFrom ? { dateTo: activeEntry.dateFrom } : {}),
+                            ...(!hasNowOtOrOffset ? { breakFrom: '', breakTo: '' } : {}),
                           });
                           setValidationErrors((current) => ({
                             ...current,
@@ -4895,18 +5060,38 @@ export function ApplyEsarfScreen({
           {activeScrollableTimePicker !== null ? (
             <ScrollableTimePickerModal
               visible
-              title={activeScrollableTimePicker.field === 'time_from' ? 'Set Time From' : 'Set Time To'}
+              title={
+                activeScrollableTimePicker.field === 'time_from'
+                  ? 'Set Time From'
+                  : activeScrollableTimePicker.field === 'time_to'
+                    ? 'Set Time To'
+                    : activeScrollableTimePicker.field === 'break_from'
+                      ? 'Set Break Time From'
+                      : 'Set Break Time To'
+              }
               initialTime={
                 activeScrollableTimePicker.field === 'time_from'
                   ? entries[activeScrollableTimePicker.index]?.timeFrom || '09:00'
-                  : entries[activeScrollableTimePicker.index]?.timeTo || '18:00'
+                  : activeScrollableTimePicker.field === 'time_to'
+                    ? entries[activeScrollableTimePicker.index]?.timeTo || '18:00'
+                    : activeScrollableTimePicker.field === 'break_from'
+                      ? entries[activeScrollableTimePicker.index]?.breakFrom ||
+                      entries[activeScrollableTimePicker.index]?.timeFrom ||
+                      '18:00'
+                      : entries[activeScrollableTimePicker.index]?.breakTo ||
+                      entries[activeScrollableTimePicker.index]?.breakFrom ||
+                      '19:00'
               }
               onConfirm={(time24) => {
                 const idx = activeScrollableTimePicker.index;
                 if (activeScrollableTimePicker.field === 'time_from') {
                   updateEntry(idx, { timeFrom: time24 });
-                } else {
+                } else if (activeScrollableTimePicker.field === 'time_to') {
                   updateEntry(idx, { timeTo: time24 });
+                } else if (activeScrollableTimePicker.field === 'break_from') {
+                  updateEntry(idx, { breakFrom: time24 });
+                } else {
+                  updateEntry(idx, { breakTo: time24 });
                 }
                 setValidationErrors((current) => ({
                   ...current,
@@ -5191,7 +5376,10 @@ export function ApplyEsarfScreen({
               setSelectedCandidate(null);
             }}
           >
-            <View style={styles.reassignModalBackdrop}>
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              style={styles.reassignModalBackdrop}
+            >
               <View style={[styles.reassignModalCard, { paddingBottom: Math.max(getSafeBottomInset(insets.bottom, 0), 16) }]}>
                 {/* Header */}
                 <View style={styles.reassignModalHeader}>
@@ -5352,7 +5540,7 @@ export function ApplyEsarfScreen({
                   </Pressable>
                 </View>
               </View>
-            </View>
+            </KeyboardAvoidingView>
           </Modal>
 
         </ScrollView>
@@ -6203,6 +6391,124 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     fontWeight: fontWeights.heavy,
     marginTop: 4,
+  },
+  breakTimeCard: {
+    width: '100%',
+    backgroundColor: '#f8fafc',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 12,
+    marginTop: 6,
+    marginBottom: 8,
+  },
+  breakTimeCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  breakTimeCardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  breakTimeCardTitle: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+  },
+  breakTimeOptionalBadge: {
+    backgroundColor: '#f1f5f9',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  breakTimeOptionalBadgeText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+  },
+  breakTimeClearBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  breakTimeClearBtnText: {
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+  },
+  breakTimeCardSubtitle: {
+    fontSize: 11,
+    color: '#64748b',
+    marginBottom: 10,
+    lineHeight: 15,
+  },
+  breakTimeInputsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  breakTimeField: {
+    flex: 1,
+  },
+  breakTimeBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    minHeight: 40,
+  },
+  breakTimeBoxText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+  },
+  breakTimeBoxPlaceholder: {
+    color: '#94a3b8',
+    fontWeight: 'normal',
+  },
+  breakTimeFieldLabel: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+    marginTop: 3,
+  },
+  breakTimeDeductionBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: '#f1f5f9',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  breakTimeDeductionBannerText: {
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+    color: '#334155',
+  },
+  breakTimeIncompleteHint: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 6,
+    fontStyle: 'italic',
   },
   reasonFieldWrap: {
     width: '100%',

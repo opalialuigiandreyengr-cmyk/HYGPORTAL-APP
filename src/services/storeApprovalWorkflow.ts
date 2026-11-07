@@ -167,6 +167,52 @@ async function fetchWithSWR<T>(
 const SWR_KEY_STORES = 'swr_portal_active_stores_v2';
 const SWR_KEY_CANDIDATES = 'swr_portal_candidates_master_v3';
 const SWR_PREFIX_WORKFLOW = 'swr_portal_store_workflow_v4_';
+const AUTH_WORKFLOW_STORAGE_PREFIX = 'auth_portal_workflow_v1_';
+
+/**
+ * Loads the persisted authoritative workflow for an employee and store.
+ * Checked first on cold starts or network failures so the default timeline
+ * approvers remain rock-solid and never change to random candidates.
+ */
+export async function getAuthoritativeCachedWorkflow(
+  employeeId?: string | null,
+  storeId?: string | null,
+): Promise<WorkflowStep[] | null> {
+  const key = `${AUTH_WORKFLOW_STORAGE_PREFIX}${employeeId || 'me'}_${storeId || 'home'}`;
+  const mem = swrMemoryCache.get(key)?.data;
+  if (Array.isArray(mem) && mem.length > 0) {
+    return mem;
+  }
+  try {
+    const stored = await getCacheJSON<SWRCacheEntry<WorkflowStep[]>>(key);
+    if (stored?.data && Array.isArray(stored.data) && stored.data.length > 0) {
+      swrMemoryCache.set(key, stored);
+      return stored.data;
+    }
+  } catch {
+    // non-fatal
+  }
+  return null;
+}
+
+/**
+ * Saves a verified authoritative workflow to both L1 memory and L2 persistent storage.
+ */
+export async function saveAuthoritativeCachedWorkflow(
+  employeeId: string | null | undefined,
+  storeId: string | null | undefined,
+  steps: WorkflowStep[],
+): Promise<void> {
+  if (!Array.isArray(steps) || steps.length === 0) return;
+  const key = `${AUTH_WORKFLOW_STORAGE_PREFIX}${employeeId || 'me'}_${storeId || 'home'}`;
+  const entry: SWRCacheEntry<WorkflowStep[]> = { data: steps, timestamp: Date.now() };
+  swrMemoryCache.set(key, entry);
+  try {
+    await setCacheJSON(key, entry);
+  } catch {
+    // non-fatal
+  }
+}
 
 // Pre-hydrate in-memory candidates cache from local storage on startup for 0ms offline lookups
 getCacheJSON<SWRCacheEntry<ApproverCandidate[]>>(SWR_KEY_CANDIDATES)
@@ -962,10 +1008,13 @@ export async function resolveStoreWorkflowFromCandidates(
 
 /**
  * Resolves the approval workflow timeline for a selected store and requester.
- * Uses SWR caching (15-minute fresh TTL, background revalidation, local cache fallback).
+ * Uses persistent authoritative caching (2-hour fresh TTL, background revalidation, local cache fallback).
  * Fully works online and offline:
- * - Online: Uses get_store_approval_route RPC which follows approval_level_routes and find_request_approver.
- * - Offline / Fallback: Resolves real approvers directly from cached approver candidates with strict scoping.
+ * - Online: Uses get_store_approval_route RPC which follows approval_level_routes and find_request_approver,
+ *   persisting verified authoritative steps so future connection issues never change default approvers.
+ * - Offline / Connection Issue: Serves the last known authoritative route directly from persistent storage,
+ *   preventing default approvers from changing to random employees during database hiccups.
+ * - Strict Last Resort: Candidate resolution is ONLY invoked if the device is a fresh install with zero cached route.
  */
 export async function loadStoreApprovalWorkflow(
   storeId?: string | null,
@@ -974,123 +1023,77 @@ export async function loadStoreApprovalWorkflow(
   isOperations = false,
   fallbackDepartmentName?: string | null,
 ): Promise<WorkflowStep[]> {
-  const cacheKey = `${SWR_PREFIX_WORKFLOW}${storeId || 'original'}_${employeeId || 'me'}_${fallbackStoreName || 'nostore'}_${fallbackDepartmentName || 'nodept'}`;
+  const targetStoreId = storeId ? String(storeId) : null;
+  const targetEmployeeId = employeeId && employeeId !== 'N/A' ? String(employeeId) : null;
+  const cacheKey = `${SWR_PREFIX_WORKFLOW}${targetStoreId || 'original'}_${targetEmployeeId || 'me'}_${fallbackStoreName || 'nostore'}_${fallbackDepartmentName || 'nodept'}`;
 
   const { data } = await fetchWithSWR<WorkflowStep[]>(
     cacheKey,
     async () => {
-      // 1. If storeId is provided, resolve for this specific duty store
-      if (storeId) {
-        try {
-          const res: any = await withTimeout(
-            supabase.rpc('get_store_approval_route', {
-              p_store_id: String(storeId),
-              p_employee_id: employeeId ? String(employeeId) : null,
-            }),
-            10000,
-          );
-
-          if (res && !res.error && Array.isArray(res.data) && res.data.length > 0) {
-            const steps = (res.data as any[]).map((st) => {
-              const effLevel = resolveApproverLevel({
-                approver_level: st.approver_level,
-                position_level: st.position_level,
-                required_level: st.required_level,
-                approver_position_name: st.approver_position_name,
-                role_name: st.role_name,
-              });
-              return {
-                ...st,
-                required_level: effLevel,
-                approver_level: st.approver_level ?? effLevel,
-                position_level: st.position_level ?? effLevel,
-                approver_name: formatApproverDisplayName(st.approver_name, st.approver_position_name || st.role_name, effLevel),
-              } as WorkflowStep;
-            });
-
-            if (steps.length > 0) {
-              return steps;
-            }
-          }
-        } catch {
-          // ignore
-        }
-
-        // Direct Candidate Resolution Fallback for this store
-        const candidateResolved = await resolveStoreWorkflowFromCandidates(
-          storeId,
-          fallbackStoreName,
-          employeeId,
-          isOperations,
-          fallbackDepartmentName,
+      // Query database get_store_approval_route RPC which resolves the ladder via approval_level_routes & find_request_approver
+      try {
+        const res: any = await withTimeout(
+          supabase.rpc('get_store_approval_route', {
+            p_store_id: targetStoreId,
+            p_employee_id: targetEmployeeId,
+          }),
+          10000,
         );
-        if (candidateResolved && candidateResolved.length > 0) {
-          return candidateResolved;
-        }
-      }
 
-      // 2. Default workflow when storeId is not provided (requester's home route)
-      if (!storeId) {
-        // Query database get_store_approval_route RPC which resolves the ladder via approval_level_routes & find_request_approver
-        try {
-          const res: any = await withTimeout(
-            supabase.rpc('get_store_approval_route', {
-              p_store_id: null,
-              p_employee_id: employeeId ? String(employeeId) : null,
-            }),
-            10000,
-          );
-
-          if (res && !res.error && Array.isArray(res.data) && res.data.length > 0) {
-            const steps = (res.data as any[]).map((st) => {
-              const effLevel = resolveApproverLevel({
-                approver_level: st.approver_level,
-                position_level: st.position_level,
-                required_level: st.required_level,
-                approver_position_name: st.approver_position_name,
-                role_name: st.role_name,
-              });
-              return {
-                ...st,
-                required_level: effLevel,
-                approver_level: st.approver_level ?? effLevel,
-                position_level: st.position_level ?? effLevel,
-                approver_name: formatApproverDisplayName(st.approver_name, st.approver_position_name || st.role_name, effLevel),
-              } as WorkflowStep;
+        if (res && !res.error && Array.isArray(res.data) && res.data.length > 0) {
+          const steps = (res.data as any[]).map((st) => {
+            const effLevel = resolveApproverLevel({
+              approver_level: st.approver_level,
+              position_level: st.position_level,
+              required_level: st.required_level,
+              approver_position_name: st.approver_position_name,
+              role_name: st.role_name,
             });
+            return {
+              ...st,
+              required_level: effLevel,
+              approver_level: st.approver_level ?? effLevel,
+              position_level: st.position_level ?? effLevel,
+              approver_name: formatApproverDisplayName(st.approver_name, st.approver_position_name || st.role_name, effLevel),
+              is_reassigned: Boolean(st.is_reassigned),
+            } as WorkflowStep;
+          });
 
-            if (steps.length > 0) {
-              return steps;
-            }
+          if (steps.length > 0) {
+            // Persist as the authoritative source of truth for this employee & store
+            saveAuthoritativeCachedWorkflow(targetEmployeeId, targetStoreId, steps).catch(() => {});
+            return steps;
           }
-        } catch {
-          // ignore
         }
-
-        // Offline / fallback: resolve from approver candidates following the ladder
-        const candidateResolved = await resolveStoreWorkflowFromCandidates(
-          null,
-          fallbackStoreName,
-          employeeId,
-          isOperations,
-          fallbackDepartmentName,
-        );
-        if (candidateResolved && candidateResolved.length > 0) {
-          return candidateResolved;
-        }
+      } catch (err) {
+        // Silently catch network / timeout / DB issues.
+        // CRITICAL: We do NOT fall back to candidate guessing inside the SWR fetcher.
+        // Returning null tells SWR that revalidation could not fetch fresh data,
+        // which prevents SWR from overwriting the good authoritative cache with random candidates!
+        console.warn('[storeApprovalWorkflow] get_store_approval_route connection issue or timeout:', err);
       }
 
       return null;
     },
-    15 * 60 * 1000, // 15 mins fresh
+    2 * 60 * 60 * 1000, // 2 hours fresh TTL
     (steps) => Array.isArray(steps) && steps.length > 0,
   );
 
+  // 1. If SWR returned cached or freshly verified steps, return immediately
   if (data && data.length > 0) {
     return data;
   }
 
-  // Offline / cold-start fallback
+  // 2. Offline / cold start: check if we have a persisted authoritative route from a previous session
+  const authoritativeSteps = await getAuthoritativeCachedWorkflow(targetEmployeeId, targetStoreId);
+  if (authoritativeSteps && authoritativeSteps.length > 0) {
+    const entry: SWRCacheEntry<WorkflowStep[]> = { data: authoritativeSteps, timestamp: Date.now() };
+    swrMemoryCache.set(cacheKey, entry);
+    setCacheJSON(cacheKey, entry).catch(() => {});
+    return authoritativeSteps;
+  }
+
+  // 3. Strict last-resort fallback: only for brand-new install with zero cached route and no connection
   const candidateResolved = await resolveStoreWorkflowFromCandidates(
     storeId,
     fallbackStoreName,
@@ -1099,13 +1102,10 @@ export async function loadStoreApprovalWorkflow(
     fallbackDepartmentName,
   );
   if (candidateResolved && candidateResolved.length > 0) {
-    const entry: SWRCacheEntry<WorkflowStep[]> = { data: candidateResolved, timestamp: Date.now() };
-    swrMemoryCache.set(cacheKey, entry);
-    setCacheJSON(cacheKey, entry).catch(() => {});
     return candidateResolved;
   }
 
-  // Graceful default offline fallback for home route
+  // 4. Graceful default offline fallback for home route
   const defaultSteps: WorkflowStep[] = [
     {
       step_order: 1,
@@ -1119,6 +1119,7 @@ export async function loadStoreApprovalWorkflow(
       status: 'Pending to approve',
       store_id: null,
       store_name: fallbackStoreName || null,
+      is_reassigned: false,
     },
     {
       step_order: 2,
@@ -1132,6 +1133,7 @@ export async function loadStoreApprovalWorkflow(
       status: 'Not yet processed',
       store_id: null,
       store_name: null,
+      is_reassigned: false,
     },
   ];
 
@@ -1267,7 +1269,7 @@ export async function reassignRequestApprover(
  */
 export function invalidateApprovalWorkflowCache(): void {
   for (const key of Array.from(swrMemoryCache.keys())) {
-    if (key.startsWith(SWR_PREFIX_WORKFLOW)) {
+    if (key.startsWith(SWR_PREFIX_WORKFLOW) || key.startsWith(AUTH_WORKFLOW_STORAGE_PREFIX)) {
       swrMemoryCache.delete(key);
     }
   }

@@ -59,6 +59,8 @@ export function calculateRequestHours({
   dayOff,
   isFullHours = false,
   isOvertime = false,
+  breakFrom,
+  breakTo,
 }: {
   requestType: RequestTypeCode;
   dateFrom: string;
@@ -69,6 +71,8 @@ export function calculateRequestHours({
   dayOff: string;
   isFullHours?: boolean;
   isOvertime?: boolean;
+  breakFrom?: string | null;
+  breakTo?: string | null;
 }) {
   const workStart = parseTimeToMinutes(timeFrom);
   const workEnd = parseTimeToMinutes(timeTo);
@@ -81,19 +85,46 @@ export function calculateRequestHours({
     return 0;
   }
 
+  // Calculate optional break minutes to deduct from OT hours
+  let breakMinutes = 0;
+  if (breakFrom && breakTo) {
+    const breakStart = parseTimeToMinutes(breakFrom);
+    const breakEnd = parseTimeToMinutes(breakTo);
+    if (breakStart !== null && breakEnd !== null) {
+      breakMinutes = computeWorkedMinutes(breakStart, breakEnd, false);
+    }
+  }
+
   const roundFn = isOvertime ? roundOvertimeHours : roundHours;
 
   if (requestType === 'use_offset' || isFullHours || isDateDayOff(dateFrom, dayOff)) {
-    return roundFn(workedMinutes);
+    const effectiveWorked = (isOvertime || requestType === 'offset_earn') && breakMinutes > 0
+      ? Math.max(0, workedMinutes - breakMinutes)
+      : workedMinutes;
+    return roundFn(effectiveWorked);
   }
 
   const scheduleRange = parseScheduleRange(timeSchedule) || parseScheduleRange(DEFAULT_OFFICIAL_SCHEDULE);
   if (!scheduleRange) {
-    return roundFn(workedMinutes);
+    const effectiveWorked = (isOvertime || requestType === 'offset_earn') && breakMinutes > 0
+      ? Math.max(0, workedMinutes - breakMinutes)
+      : workedMinutes;
+    return roundFn(effectiveWorked);
   }
 
   const overtimeMinutes = computeOvertimeMinutes(scheduleRange, workStart, workEnd);
-  return roundFn(overtimeMinutes);
+  const effectiveOvertimeMinutes = breakMinutes > 0
+    ? Math.max(0, overtimeMinutes - breakMinutes)
+    : overtimeMinutes;
+  return roundFn(effectiveOvertimeMinutes);
+}
+
+export function computeBreakMinutes(breakFrom?: string | null, breakTo?: string | null): number {
+  if (!breakFrom || !breakTo) return 0;
+  const breakStart = parseTimeToMinutes(breakFrom);
+  const breakEnd = parseTimeToMinutes(breakTo);
+  if (breakStart === null || breakEnd === null) return 0;
+  return computeWorkedMinutes(breakStart, breakEnd, false);
 }
 
 export function getHoursHint(
@@ -422,12 +453,16 @@ export function computeOffsetOvertimeHours({
   dateFrom,
   timeSchedule,
   dayOff,
+  breakFrom,
+  breakTo,
 }: {
   timeFrom?: string | null;
   timeTo?: string | null;
   dateFrom?: string | null;
   timeSchedule?: string | null;
   dayOff?: string | null;
+  breakFrom?: string | null;
+  breakTo?: string | null;
 }): number | null {
   if (!timeFrom || !timeTo) return null;
 
@@ -439,6 +474,8 @@ export function computeOffsetOvertimeHours({
     timeSchedule: timeSchedule && timeSchedule !== 'No Schedule' ? timeSchedule : DEFAULT_OFFICIAL_SCHEDULE,
     dayOff: dayOff && dayOff !== 'No Day Off' ? dayOff : '',
     isOvertime: true,
+    breakFrom: breakFrom || undefined,
+    breakTo: breakTo || undefined,
   });
 
   return hours > 0 ? hours : null;

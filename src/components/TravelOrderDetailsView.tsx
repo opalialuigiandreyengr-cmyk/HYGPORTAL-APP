@@ -16,6 +16,7 @@ import {
   Compass,
   Contact,
   CreditCard,
+  Download,
   Pencil,
   Users,
   X,
@@ -26,6 +27,7 @@ import {
   fetchTravelOrderDetails,
   type TravelOrderDetailsData,
 } from '../services/travelOrder';
+import { downloadOfficialTravelOrderPdf } from '../services/travelOrderPdf';
 import type { MyRequest } from '../services/requests';
 import type { PendingApproval, ApprovedApproval } from '../services/approvals';
 import type { EmployeeProfileSummary } from '../types/domain';
@@ -114,6 +116,24 @@ export function TravelOrderDetailsContent({
 }: TravelOrderDetailsViewProps) {
   const [details, setDetails] = useState<TravelOrderDetailsData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isDownloading, setIsDownloading] = useState(false);
+
+  const handleDownload = async () => {
+    if (isDownloading) return;
+    setIsDownloading(true);
+    try {
+      await downloadOfficialTravelOrderPdf({
+        item,
+        profile,
+        sequence,
+        details,
+      });
+    } catch (err) {
+      console.error('[TravelOrderDetailsContent] Download failed:', err);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -226,6 +246,22 @@ export function TravelOrderDetailsContent({
                 <Text style={styles.headerEditText}>Edit</Text>
               </Pressable>
             ) : null}
+            <Pressable
+              style={styles.headerDownloadBtn}
+              onPress={handleDownload}
+              disabled={isDownloading}
+              hitSlop={6}
+              accessibilityLabel="Download travel order PDF"
+            >
+              {isDownloading ? (
+                <ActivityIndicator size="small" color="#1d4ed8" />
+              ) : (
+                <>
+                  <Download size={11} color="#1d4ed8" strokeWidth={2.4} />
+                  <Text style={styles.headerDownloadText}>PDF</Text>
+                </>
+              )}
+            </Pressable>
           </View>
         </View>
         <Pressable style={styles.closeIconButton} onPress={onClose} hitSlop={10}>
@@ -494,29 +530,60 @@ export function TravelOrderDetailsContent({
 
       {/* 7. Action Buttons */}
       {footerActions ? (
-        <View style={styles.footerActionsContainer}>{footerActions}</View>
-      ) : canUserEdit && onEdit ? (
+        <View style={styles.footerActionsContainer}>
+          <Pressable
+            style={styles.downloadFullButton}
+            onPress={handleDownload}
+            disabled={isDownloading}
+          >
+            {isDownloading ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <>
+                <Download size={15} color="#ffffff" strokeWidth={2.4} />
+                <Text style={styles.downloadFullButtonText}>Download PDF</Text>
+              </>
+            )}
+          </Pressable>
+          {footerActions}
+        </View>
+      ) : (
         <View style={styles.actionButtonsRow}>
           <Pressable
-            style={styles.editFullButton}
-            onPress={() => {
-              onClose();
-              setTimeout(() => {
-                onEdit(item as MyRequest);
-              }, 50);
-            }}
+            style={styles.downloadFullButton}
+            onPress={handleDownload}
+            disabled={isDownloading}
           >
-            <Pencil size={15} color="#92400e" strokeWidth={2.4} />
-            <Text style={styles.editFullButtonText}>Edit</Text>
+            {isDownloading ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <>
+                <Download size={15} color="#ffffff" strokeWidth={2.4} />
+                <Text style={styles.downloadFullButtonText}>Download PDF</Text>
+              </>
+            )}
           </Pressable>
-          <Pressable style={styles.closeHalfButton} onPress={onClose}>
+          {canUserEdit && onEdit ? (
+            <Pressable
+              style={styles.editFullButton}
+              onPress={() => {
+                onClose();
+                setTimeout(() => {
+                  onEdit(item as MyRequest);
+                }, 50);
+              }}
+            >
+              <Pencil size={15} color="#92400e" strokeWidth={2.4} />
+              <Text style={styles.editFullButtonText}>Edit</Text>
+            </Pressable>
+          ) : null}
+          <Pressable
+            style={canUserEdit && onEdit ? styles.closeHalfButton : styles.closeThirdButton}
+            onPress={onClose}
+          >
             <Text style={styles.closeFullButtonText}>Close</Text>
           </Pressable>
         </View>
-      ) : (
-        <Pressable style={styles.closeFullButton} onPress={onClose}>
-          <Text style={styles.closeFullButtonText}>Close</Text>
-        </Pressable>
       )}
     </ScrollView>
   );
@@ -1011,10 +1078,43 @@ const styles = StyleSheet.create({
     color: '#92400e',
     letterSpacing: 0.3,
   },
+  headerDownloadBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    marginLeft: 4,
+  },
+  headerDownloadText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#1d4ed8',
+    letterSpacing: 0.3,
+  },
   actionButtonsRow: {
     flexDirection: 'row',
     gap: 10,
     marginTop: 6,
+  },
+  downloadFullButton: {
+    flex: 1,
+    backgroundColor: '#1d4ed8',
+    borderRadius: 8,
+    paddingVertical: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
+  },
+  downloadFullButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
   },
   editFullButton: {
     flex: 1,
@@ -1036,6 +1136,14 @@ const styles = StyleSheet.create({
   closeHalfButton: {
     flex: 1,
     backgroundColor: '#0066cc',
+    borderRadius: 8,
+    paddingVertical: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeThirdButton: {
+    width: 100,
+    backgroundColor: '#64748b',
     borderRadius: 8,
     paddingVertical: 13,
     alignItems: 'center',

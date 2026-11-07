@@ -128,24 +128,10 @@ export function createAssistantReply(input: string, context: { leaveCreditRemain
   }
 
   if (containsAny(normalized, ['discount', 'charge', 'perk', 'employee purchase', 'employee discount', 'employee charge'])) {
-    const date = extractDate(normalized);
-    const amount = extractAmount(normalized);
-    const mode = containsAny(normalized, ['charge', 'credit']) ? 'charge' : 'cash';
-    const draft: AssistantDraft = {
-      intent: 'draft_perk_request',
-      confidence: 0.72,
-      fields: {
-        mode,
-        transactionDate: date,
-        unitPrice: amount,
-      },
-      missingFields: ['product name', 'quantity'],
-      summary: `${mode === 'cash' ? 'Cash discount' : 'Employee charge'}${date ? ` on ${date}` : ''}.`,
-    };
     return {
-      type: 'draft',
-      message: 'I made a perk request draft. Product details still need checking.',
-      draft,
+      type: 'answer',
+      intent: 'explain_request_type',
+      message: 'The Apply Discount service is suspended for the time being due to abuse of product charging privilege.',
     };
   }
 
