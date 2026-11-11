@@ -44,6 +44,7 @@ export type EmployeeCompanyOption = {
 export type EmployeeStoreOption = {
   store_name: string;
   company_name: string;
+  cluster_name?: string | null;
 };
 
 function optionalDate(value: string) {

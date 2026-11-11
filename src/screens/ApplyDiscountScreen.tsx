@@ -187,7 +187,7 @@ export function ApplyDiscountScreen({
         setProducts(cached);
         setProductStatus('');
       }
-    } catch (_) {}
+    } catch (_) { }
 
     try {
       const response = await fetchWithTimeout(inventoryUrl);
@@ -219,12 +219,12 @@ export function ApplyDiscountScreen({
   function showSuspendedNotice() {
     platformAlert(
       'Service Suspended',
-      'Apply Discount is suspended for the time being due to abuse of product charging privilege.'
+      'Product Charging and Discount is currently suspended until further notice due to the observed abuse of privilege.'
     );
     onToast?.({
       tone: 'error',
       title: 'Service Suspended',
-      message: 'Apply Discount is suspended for the time being due to abuse of product charging privilege.',
+      message: 'Product Charging and Discount is currently suspended until further notice due to the observed abuse of privilege.',
     });
   }
 
@@ -337,244 +337,244 @@ export function ApplyDiscountScreen({
         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
         style={styles.keyboardAvoider}
       >
-      <ScrollView
-        ref={formScrollRef}
-        contentContainerStyle={[
-          styles.scroll,
-          showEmailInput || pendingVerification ? styles.scrollWithKeyboardPanel : null,
-          {
-            paddingBottom: showEmailInput || pendingVerification
-              ? 280
-              : getScreenBottomPadding(insets.bottom, true, 28),
-          },
-        ]}
-        alwaysBounceVertical
-        keyboardDismissMode="on-drag"
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={isPullRefreshing}
-            onRefresh={handlePullRefresh}
-            colors={[colors.brand.gold, colors.primary]}
-            tintColor={colors.brand.gold}
-            progressBackgroundColor="#ffffff"
-          />
-        }
-      >
-        {/* Suspended Notice Banner */}
-        <View style={styles.suspendedBanner}>
-          <View style={styles.suspendedIconBadge}>
-            <AlertTriangle size={18} color="#991b1b" strokeWidth={2.5} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.suspendedBannerTitle}>Service Suspended</Text>
-            <Text style={styles.suspendedBannerText}>
-              Apply Discount is suspended for the time being due to abuse of product charging privilege.
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.modeGrid}>
-          <ModeCard
-            active={mode === 'cash'}
-            icon={<BadgePercent size={20} color="#f97316" strokeWidth={2.7} />}
-            title="Employee Discount (Cash)"
-            detail="15% off, PHP 3,000 yearly cap"
-            onPress={showSuspendedNotice}
-          />
-          <ModeCard
-            active={mode === 'charge'}
-            icon={<ShoppingCart size={20} color={colors.primary} strokeWidth={2.7} />}
-            title="Employee Charge (Credit)"
-            detail="PHP 3,000 per transaction"
-            onPress={showSuspendedNotice}
-          />
-        </View>
-
-        <View style={styles.formCard}>
-          <View style={styles.cardTitleRow}>
-            <View style={styles.modeIconSmall}>
-              {mode === 'cash' ? (
-                <BadgePercent size={17} color="#f97316" strokeWidth={2.7} />
-              ) : (
-                <ShoppingCart size={17} color={colors.primary} strokeWidth={2.7} />
-              )}
+        <ScrollView
+          ref={formScrollRef}
+          contentContainerStyle={[
+            styles.scroll,
+            showEmailInput || pendingVerification ? styles.scrollWithKeyboardPanel : null,
+            {
+              paddingBottom: showEmailInput || pendingVerification
+                ? 280
+                : getScreenBottomPadding(insets.bottom, true, 28),
+            },
+          ]}
+          alwaysBounceVertical
+          keyboardDismissMode="on-drag"
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={isPullRefreshing}
+              onRefresh={handlePullRefresh}
+              colors={[colors.brand.gold, colors.primary]}
+              tintColor={colors.brand.gold}
+              progressBackgroundColor="#ffffff"
+            />
+          }
+        >
+          {/* Suspended Notice Banner */}
+          <View style={styles.suspendedBanner}>
+            <View style={styles.suspendedIconBadge}>
+              <AlertTriangle size={18} color="#991b1b" strokeWidth={2.5} />
             </View>
-            <View style={styles.cardTitleBlock}>
-              <Text style={styles.cardTitle}>
-                {mode === 'cash' ? 'Employee Discount (Cash)' : 'Employee Charge (Credit)'}
-              </Text>
-              <Text style={styles.cardSubtitle}>
-                15% off, PHP 3,000 yearly cap, max 6 transactions
+            <View style={{ flex: 1 }}>
+              <Text style={styles.suspendedBannerTitle}>Service Suspended</Text>
+              <Text style={styles.suspendedBannerText}>
+                Product Charging and Discount is currently suspended until further notice due to the observed abuse of privilege.
               </Text>
             </View>
           </View>
 
-          <UsagePanel mode={mode} usage={usage} />
-
-          <FieldLabel label="Transaction date" />
-          <Pressable style={styles.dateButton} onPress={openDatePicker}>
-            <Text style={transactionDate ? styles.dateText : styles.placeholderText}>
-              {formatDateDisplay(transactionDate) || 'mm/dd/yyyy'}
-            </Text>
-            <CalendarDays size={16} color={colors.text} strokeWidth={2.4} />
-          </Pressable>
-
-          <View style={styles.productsHeader}>
-            <Text style={styles.productsTitle}>Products</Text>
-            <View style={styles.productHeaderActions}>
-              <Pressable style={styles.removeProductButton} onPress={removeLastProductLine}>
-                <X size={16} color={colors.semantic.danger} strokeWidth={2.8} />
-              </Pressable>
-              <Pressable style={styles.addProductButton} onPress={addProductLine}>
-                <Plus size={15} color={colors.text} strokeWidth={2.7} />
-                <Text style={styles.addProductText}>Add product</Text>
-              </Pressable>
-            </View>
-          </View>
-          {productStatus ? <Text style={styles.productStatus}>{productStatus}</Text> : null}
-
-          <View style={styles.productColumns}>
-            <Text style={[styles.productColumnLabel, styles.productNameColumn]}>Product name</Text>
-            <Text style={[styles.productColumnLabel, styles.quantityColumn]}>Quantity</Text>
-            <Text style={[styles.productColumnLabel, styles.priceColumn]}>Unit price (PHP)</Text>
+          <View style={styles.modeGrid}>
+            <ModeCard
+              active={mode === 'cash'}
+              icon={<BadgePercent size={20} color="#f97316" strokeWidth={2.7} />}
+              title="Employee Discount (Cash)"
+              detail="15% off, PHP 3,000 yearly cap"
+              onPress={showSuspendedNotice}
+            />
+            <ModeCard
+              active={mode === 'charge'}
+              icon={<ShoppingCart size={20} color={colors.primary} strokeWidth={2.7} />}
+              title="Employee Charge (Credit)"
+              detail="PHP 3,000 per transaction"
+              onPress={showSuspendedNotice}
+            />
           </View>
 
-          {productLines.map((line) => (
-            <View key={line.id} style={styles.productRow}>
-              <Pressable
-                style={[
-                  styles.productInput,
-                  styles.productNameColumn,
-                  styles.productInputDisabled,
-                ]}
-                onPress={showSuspendedNotice}
-              >
-                <Text
-                  style={[
-                    styles.productInputText,
-                    line.productName === 'Select product' ? styles.placeholderText : null,
-                    isLoadingProducts ? styles.productInputTextDisabled : null,
-                  ]}
-                  numberOfLines={1}
-                >
-                  {isLoadingProducts ? 'Loading products...' : line.productName}
+          <View style={styles.formCard}>
+            <View style={styles.cardTitleRow}>
+              <View style={styles.modeIconSmall}>
+                {mode === 'cash' ? (
+                  <BadgePercent size={17} color="#f97316" strokeWidth={2.7} />
+                ) : (
+                  <ShoppingCart size={17} color={colors.primary} strokeWidth={2.7} />
+                )}
+              </View>
+              <View style={styles.cardTitleBlock}>
+                <Text style={styles.cardTitle}>
+                  {mode === 'cash' ? 'Employee Discount (Cash)' : 'Employee Charge (Credit)'}
                 </Text>
-                <ChevronDown size={14} color={colors.muted} strokeWidth={2.5} />
-              </Pressable>
-              <View style={styles.productNumberRow}>
-                <TextInput
-                  value={line.quantity}
-                  onChangeText={(value) => updateLine(line.id, { quantity: value })}
-                  keyboardType="decimal-pad"
-                  placeholder="0"
-                  placeholderTextColor={colors.muted}
-                  style={[styles.productTextInput, styles.quantityColumn]}
-                />
-                <TextInput
-                  value={line.unitPrice}
-                  editable={false}
-                  placeholder="0.00"
-                  placeholderTextColor={colors.muted}
-                  style={[
-                    styles.productTextInput,
-                    styles.priceColumn,
-                    styles.productInputDisabled,
-                    { backgroundColor: colors.surface },
-                  ]}
-                />
+                <Text style={styles.cardSubtitle}>
+                  15% off, PHP 3,000 yearly cap, max 6 transactions
+                </Text>
               </View>
             </View>
-          ))}
 
-          <View style={styles.amountPanel}>
-            <AmountRow label="Purchase amount" value={formatMoney(totals.purchaseAmount)} />
-            <AmountRow
-              label={totals.discountAmount > 0 ? 'Discount 15%' : 'Discount'}
-              value={formatMoney(totals.discountAmount)}
-            />
-            <AmountRow label={mode === 'cash' ? 'Cash total' : 'Charge total'} value={formatMoney(totals.finalAmount)} />
-          </View>
+            <UsagePanel mode={mode} usage={usage} />
 
-          {showEmailInput ? (
-            <View style={styles.emailPanel}>
-              <Text style={styles.emailTitle}>Email required</Text>
-              <Text style={styles.emailHint}>Enter your email address. It will be saved to your employee profile before sending the approval code.</Text>
-              <TextInput
-                value={emailInput}
-                onChangeText={setEmailInput}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                placeholder="name@email.com"
-                placeholderTextColor={colors.muted}
-                style={styles.emailInput}
-                onFocus={() => {
-                  setTimeout(() => formScrollRef.current?.scrollToEnd({ animated: true }), 120);
-                }}
-              />
+            <FieldLabel label="Transaction date" />
+            <Pressable style={styles.dateButton} onPress={openDatePicker}>
+              <Text style={transactionDate ? styles.dateText : styles.placeholderText}>
+                {formatDateDisplay(transactionDate) || 'mm/dd/yyyy'}
+              </Text>
+              <CalendarDays size={16} color={colors.text} strokeWidth={2.4} />
+            </Pressable>
+
+            <View style={styles.productsHeader}>
+              <Text style={styles.productsTitle}>Products</Text>
+              <View style={styles.productHeaderActions}>
+                <Pressable style={styles.removeProductButton} onPress={removeLastProductLine}>
+                  <X size={16} color={colors.semantic.danger} strokeWidth={2.8} />
+                </Pressable>
+                <Pressable style={styles.addProductButton} onPress={addProductLine}>
+                  <Plus size={15} color={colors.text} strokeWidth={2.7} />
+                  <Text style={styles.addProductText}>Add product</Text>
+                </Pressable>
+              </View>
             </View>
-          ) : null}
+            {productStatus ? <Text style={styles.productStatus}>{productStatus}</Text> : null}
 
-          {pendingVerification ? (
-            <View style={styles.verifyPanel}>
-              <Text style={styles.emailTitle}>Approval code</Text>
-              <Text style={styles.emailHint}>Code sent to {pendingVerification.email}. Verify it to auto-approve this request and send your e-receipt.</Text>
-              <TextInput
-                value={approvalCode}
-                onChangeText={setApprovalCode}
-                keyboardType="number-pad"
-                maxLength={6}
-                placeholder="000000"
-                placeholderTextColor={colors.muted}
-                style={styles.codeInput}
-                onFocus={() => {
-                  setTimeout(() => formScrollRef.current?.scrollToEnd({ animated: true }), 120);
-                }}
-              />
-              <Pressable
-                disabled={isVerifying}
-                style={[styles.submitButton, isVerifying ? styles.submitButtonDisabled : null]}
-                onPress={verifyCode}
-              >
-                <Check size={16} color={colors.brand.ink} strokeWidth={2.8} />
-                <Text style={styles.submitText}>{isVerifying ? 'Verifying...' : 'Verify and approve'}</Text>
-              </Pressable>
+            <View style={styles.productColumns}>
+              <Text style={[styles.productColumnLabel, styles.productNameColumn]}>Product name</Text>
+              <Text style={[styles.productColumnLabel, styles.quantityColumn]}>Quantity</Text>
+              <Text style={[styles.productColumnLabel, styles.priceColumn]}>Unit price (PHP)</Text>
             </View>
-          ) : null}
 
-          {!pendingVerification ? (
-            <>
-              {!isOnline ? (
-                <View style={styles.perksOfflineNotice}>
-                  <WifiOff size={16} color="#b91c1c" strokeWidth={2.4} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.perksOfflineNoticeTitle}>Internet Connection Required</Text>
-                    <Text style={styles.perksOfflineNoticeText}>
-                      Applying for {mode === 'cash' ? 'Cash Discount' : 'Employee Charge'} requires an active internet connection to receive the 6-digit approval code sent to your registered email.
-                    </Text>
-                  </View>
+            {productLines.map((line) => (
+              <View key={line.id} style={styles.productRow}>
+                <Pressable
+                  style={[
+                    styles.productInput,
+                    styles.productNameColumn,
+                    styles.productInputDisabled,
+                  ]}
+                  onPress={showSuspendedNotice}
+                >
+                  <Text
+                    style={[
+                      styles.productInputText,
+                      line.productName === 'Select product' ? styles.placeholderText : null,
+                      isLoadingProducts ? styles.productInputTextDisabled : null,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {isLoadingProducts ? 'Loading products...' : line.productName}
+                  </Text>
+                  <ChevronDown size={14} color={colors.muted} strokeWidth={2.5} />
+                </Pressable>
+                <View style={styles.productNumberRow}>
+                  <TextInput
+                    value={line.quantity}
+                    onChangeText={(value) => updateLine(line.id, { quantity: value })}
+                    keyboardType="decimal-pad"
+                    placeholder="0"
+                    placeholderTextColor={colors.muted}
+                    style={[styles.productTextInput, styles.quantityColumn]}
+                  />
+                  <TextInput
+                    value={line.unitPrice}
+                    editable={false}
+                    placeholder="0.00"
+                    placeholderTextColor={colors.muted}
+                    style={[
+                      styles.productTextInput,
+                      styles.priceColumn,
+                      styles.productInputDisabled,
+                      { backgroundColor: colors.surface },
+                    ]}
+                  />
                 </View>
-              ) : null}
+              </View>
+            ))}
 
-              <Pressable
-                style={[
-                  styles.submitButton,
-                  styles.submitButtonDisabled,
-                  styles.submitButtonSuspended,
-                ]}
-                onPress={showSuspendedNotice}
-              >
-                <AlertTriangle size={16} color="#991b1b" strokeWidth={2.5} />
-                <Text style={[styles.submitText, styles.submitTextSuspended]}>
-                  Service Suspended
-                </Text>
-              </Pressable>
-            </>
-          ) : null}
-          {submitStatus ? <Text style={styles.submitStatus}>{submitStatus}</Text> : null}
-        </View>
-      </ScrollView>
+            <View style={styles.amountPanel}>
+              <AmountRow label="Purchase amount" value={formatMoney(totals.purchaseAmount)} />
+              <AmountRow
+                label={totals.discountAmount > 0 ? 'Discount 15%' : 'Discount'}
+                value={formatMoney(totals.discountAmount)}
+              />
+              <AmountRow label={mode === 'cash' ? 'Cash total' : 'Charge total'} value={formatMoney(totals.finalAmount)} />
+            </View>
+
+            {showEmailInput ? (
+              <View style={styles.emailPanel}>
+                <Text style={styles.emailTitle}>Email required</Text>
+                <Text style={styles.emailHint}>Enter your email address. It will be saved to your employee profile before sending the approval code.</Text>
+                <TextInput
+                  value={emailInput}
+                  onChangeText={setEmailInput}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  placeholder="name@email.com"
+                  placeholderTextColor={colors.muted}
+                  style={styles.emailInput}
+                  onFocus={() => {
+                    setTimeout(() => formScrollRef.current?.scrollToEnd({ animated: true }), 120);
+                  }}
+                />
+              </View>
+            ) : null}
+
+            {pendingVerification ? (
+              <View style={styles.verifyPanel}>
+                <Text style={styles.emailTitle}>Approval code</Text>
+                <Text style={styles.emailHint}>Code sent to {pendingVerification.email}. Verify it to auto-approve this request and send your e-receipt.</Text>
+                <TextInput
+                  value={approvalCode}
+                  onChangeText={setApprovalCode}
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  placeholder="000000"
+                  placeholderTextColor={colors.muted}
+                  style={styles.codeInput}
+                  onFocus={() => {
+                    setTimeout(() => formScrollRef.current?.scrollToEnd({ animated: true }), 120);
+                  }}
+                />
+                <Pressable
+                  disabled={isVerifying}
+                  style={[styles.submitButton, isVerifying ? styles.submitButtonDisabled : null]}
+                  onPress={verifyCode}
+                >
+                  <Check size={16} color={colors.brand.ink} strokeWidth={2.8} />
+                  <Text style={styles.submitText}>{isVerifying ? 'Verifying...' : 'Verify and approve'}</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {!pendingVerification ? (
+              <>
+                {!isOnline ? (
+                  <View style={styles.perksOfflineNotice}>
+                    <WifiOff size={16} color="#b91c1c" strokeWidth={2.4} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.perksOfflineNoticeTitle}>Internet Connection Required</Text>
+                      <Text style={styles.perksOfflineNoticeText}>
+                        Applying for {mode === 'cash' ? 'Cash Discount' : 'Employee Charge'} requires an active internet connection to receive the 6-digit approval code sent to your registered email.
+                      </Text>
+                    </View>
+                  </View>
+                ) : null}
+
+                <Pressable
+                  style={[
+                    styles.submitButton,
+                    styles.submitButtonDisabled,
+                    styles.submitButtonSuspended,
+                  ]}
+                  onPress={showSuspendedNotice}
+                >
+                  <AlertTriangle size={16} color="#991b1b" strokeWidth={2.5} />
+                  <Text style={[styles.submitText, styles.submitTextSuspended]}>
+                    Service Suspended
+                  </Text>
+                </Pressable>
+              </>
+            ) : null}
+            {submitStatus ? <Text style={styles.submitStatus}>{submitStatus}</Text> : null}
+          </View>
+        </ScrollView>
       </KeyboardAvoidingView>
 
       {activePicker ? (

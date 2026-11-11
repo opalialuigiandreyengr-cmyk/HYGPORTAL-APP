@@ -104,6 +104,7 @@ import {
   getUseOffsetValidationWarning,
   HALF_DAY_OFFSET_HOURS,
   isFioOrObOnly,
+  isObAloneTransaction,
   isValidUseOffsetHours,
   MIN_OFFSETABLE_HOURS,
   parse12HourToken,
@@ -255,6 +256,7 @@ export {
   getUseOffsetValidationWarning,
   roundOvertimeHours,
   isFioOrObOnly,
+  isObAloneTransaction,
 } from '../utils/requestCalculations';
 
 const exclusiveTransactionGroups = [
@@ -810,8 +812,10 @@ export function ApplyEsarfScreen({
   }, []);
 
   function handleSelectEvent(index: number, event: PortalEventActivity) {
-    if (!isPreApprovedMode && !isEventPassedOrDone(event)) {
-      const msg = 'In Apply ESARF, you cannot select events or activities ahead of time. You can only select events that have already passed or ended. For upcoming events, please use Apply Pre-approved OT/Offset.';
+    const currentEntry = entries[index];
+    const isEntryObAlone = isObAloneTransaction(currentEntry?.transaction);
+    if (!isPreApprovedMode && !isEventPassedOrDone(event) && !isEntryObAlone) {
+      const msg = 'In Apply ESARF, you cannot select events or activities ahead of time. You can only select events that have already passed or ended (unless the transaction type is OB alone). For upcoming events, please use Apply Pre-approved OT/Offset.';
       if (onToast) {
         onToast({ tone: 'warning', title: 'Event Not Yet Ended', message: msg });
       } else {
@@ -1577,6 +1581,10 @@ export function ApplyEsarfScreen({
   function applyEntryPickerValue(index: number, kind: 'date_from' | 'date_to' | 'time_from' | 'time_to', selectedDate: Date) {
     const entry = entries[index];
     const isUseOffset = entry ? parseEntryTransactions(entry.transaction).includes('use_offset') : false;
+    const isNowObAlone = entry ? isObAloneTransaction(entry.transaction) : false;
+    const entryTransKeys = parseEntryTransactions(entry?.transaction);
+    const todayStr = formatDateInput(new Date());
+
     if (kind === 'date_from') {
       const val = formatDateInput(selectedDate);
       const currentTo = entries[index]?.dateTo;
@@ -1586,29 +1594,47 @@ export function ApplyEsarfScreen({
       if (!isUseOffset && getDaysBetweenYMD(val, nextTo) > 1) {
         nextTo = val;
       }
+      const isFuture = (val && val > todayStr) || (nextTo && nextTo > todayStr);
+      const futureNotAllowed = !isPreApprovedMode && isFuture && entryTransKeys.length > 0 && !isUseOffset && !isNowObAlone;
+
       updateEntry(index, { dateFrom: val, dateTo: nextTo });
       setValidationErrors((current) => ({
         ...current,
-        [`entry_${index}_dateFrom`]: undefined,
+        [`entry_${index}_dateFrom`]: futureNotAllowed
+          ? (entryTransKeys.includes('ob')
+            ? `Request #${index + 1}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`
+            : `Request #${index + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT or Offset ahead of time, please use Apply Pre-approved OT/Offset.`)
+          : undefined,
         [`entry_${index}_dateTo`]: undefined,
         [`entry_${index}_offsetHours`]: undefined,
         [`entry_${index}_offsetBalance`]: undefined,
       }));
     } else if (kind === 'date_to') {
       const val = formatDateInput(selectedDate);
+      let nextFrom = entries[index]?.dateFrom;
+      let nextTo = val;
       if (isUseOffset) {
+        nextFrom = val;
+        nextTo = val;
         updateEntry(index, { dateFrom: val, dateTo: val });
       } else {
         const currentFrom = entries[index]?.dateFrom;
-        let nextFrom = currentFrom && dateStringToDate(currentFrom).getTime() <= dateStringToDate(val).getTime() ? currentFrom : val;
+        nextFrom = currentFrom && dateStringToDate(currentFrom).getTime() <= dateStringToDate(val).getTime() ? currentFrom : val;
         if (getDaysBetweenYMD(nextFrom, val) > 1) {
           nextFrom = val;
         }
         updateEntry(index, { dateFrom: nextFrom, dateTo: val });
       }
+      const isFuture = (nextFrom && nextFrom > todayStr) || (nextTo && nextTo > todayStr);
+      const futureNotAllowed = !isPreApprovedMode && isFuture && entryTransKeys.length > 0 && !isUseOffset && !isNowObAlone;
+
       setValidationErrors((current) => ({
         ...current,
-        [`entry_${index}_dateFrom`]: undefined,
+        [`entry_${index}_dateFrom`]: futureNotAllowed
+          ? (entryTransKeys.includes('ob')
+            ? `Request #${index + 1}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`
+            : `Request #${index + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT or Offset ahead of time, please use Apply Pre-approved OT/Offset.`)
+          : undefined,
         [`entry_${index}_dateTo`]: undefined,
         [`entry_${index}_offsetHours`]: undefined,
         [`entry_${index}_offsetBalance`]: undefined,
@@ -1886,8 +1912,19 @@ export function ApplyEsarfScreen({
             errors[`entry_${i}_dateFrom`] = `Request #${num}: Pre-approved OT/Offset must be scheduled for today or a future date.`;
           }
         } else {
-          if (!transKeys.includes('use_offset') && (entry.dateFrom > todayStr || entry.dateTo > todayStr)) {
-            errors[`entry_${i}_dateFrom`] = `Request #${num}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT or Offset ahead of time, please use Apply Pre-approved OT/Offset.`;
+          const isEntryUseOffset = transKeys.includes('use_offset');
+          const isEntryObAlone = isObAloneTransaction(entry.transaction);
+          const hasFutureDate = Boolean(
+            (entry.dateFrom && entry.dateFrom > todayStr) ||
+            (entry.dateTo && entry.dateTo > todayStr)
+          );
+          if (hasFutureDate && !isEntryUseOffset && !isEntryObAlone) {
+            const hasOb = transKeys.includes('ob') || (entry.transaction && entry.transaction.toLowerCase().includes('ob'));
+            if (hasOb) {
+              errors[`entry_${i}_dateFrom`] = `Request #${num}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`;
+            } else {
+              errors[`entry_${i}_dateFrom`] = `Request #${num}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT or Offset ahead of time, please use Apply Pre-approved OT/Offset.`;
+            }
           }
         }
       }
@@ -4956,12 +4993,21 @@ export function ApplyEsarfScreen({
                           const proofAllowed = !isPreApprovedMode && isProofAllowedForTransactions(newTransStr);
                           const proofRequired = !isPreApprovedMode && isProofRequiredForTransactions(newTransStr);
                           const isNowUseOffset = newKeys.includes('use_offset');
+                          const isNowObAlone = isObAloneTransaction(newTransStr);
                           const hasNowOtOrOffset =
                             newKeys.includes('ot') ||
                             newKeys.includes('offset') ||
                             isOvertimeTransaction(newTransStr) ||
                             isOffsetTransaction(newTransStr);
                           const activeEntry = entries[activeTransactionSelectIndex];
+                          const todayStr = formatDateInput(new Date());
+                          const hasFutureDate = Boolean(
+                            activeEntry &&
+                            ((activeEntry.dateFrom && activeEntry.dateFrom > todayStr) ||
+                             (activeEntry.dateTo && activeEntry.dateTo > todayStr))
+                          );
+                          const futureNotAllowed = !isPreApprovedMode && hasFutureDate && !isNowUseOffset && !isNowObAlone;
+
                           updateEntry(activeTransactionSelectIndex, {
                             transaction: newTransStr,
                             ...(!proofAllowed ? { proof: null } : {}),
@@ -4971,6 +5017,11 @@ export function ApplyEsarfScreen({
                           setValidationErrors((current) => ({
                             ...current,
                             [`entry_${activeTransactionSelectIndex}_transaction`]: undefined,
+                            [`entry_${activeTransactionSelectIndex}_dateFrom`]: futureNotAllowed
+                              ? (newKeys.includes('ob')
+                                ? `Request #${activeTransactionSelectIndex + 1}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`
+                                : `Request #${activeTransactionSelectIndex + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT or Offset ahead of time, please use Apply Pre-approved OT/Offset.`)
+                              : undefined,
                             [`entry_${activeTransactionSelectIndex}_offsetHours`]: undefined,
                             [`entry_${activeTransactionSelectIndex}_offsetBalance`]: undefined,
                             [`entry_${activeTransactionSelectIndex}_dateTo`]: undefined,
@@ -5026,7 +5077,8 @@ export function ApplyEsarfScreen({
               const currentEntry = entries[activeDateChoiceIndex];
               const entryTransKeys = parseEntryTransactions(currentEntry?.transaction);
               const isEntryUseOffset = entryTransKeys.includes('use_offset');
-              const allowFutureDates = isPreApprovedMode || isEntryUseOffset || entryTransKeys.length === 0;
+              const isEntryObAlone = isObAloneTransaction(currentEntry?.transaction);
+              const allowFutureDates = isPreApprovedMode || isEntryUseOffset || isEntryObAlone || entryTransKeys.length === 0;
               const todayStr = formatDateInput(new Date());
               const minDate = isPreApprovedMode ? todayStr : undefined;
               return (
@@ -5042,9 +5094,16 @@ export function ApplyEsarfScreen({
                     const idx = activeDateChoiceIndex;
                     const finalEnd = isEntryUseOffset ? startYMD : endYMD;
                     updateEntry(idx, { dateFrom: startYMD, dateTo: finalEnd });
+                    const isFuture = (startYMD && startYMD > todayStr) || (finalEnd && finalEnd > todayStr);
+                    const futureNotAllowed = !isPreApprovedMode && isFuture && entryTransKeys.length > 0 && !isEntryUseOffset && !isEntryObAlone;
+
                     setValidationErrors((current) => ({
                       ...current,
-                      [`entry_${idx}_dateFrom`]: undefined,
+                      [`entry_${idx}_dateFrom`]: futureNotAllowed
+                        ? (entryTransKeys.includes('ob')
+                          ? `Request #${idx + 1}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`
+                          : `Request #${idx + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT or Offset ahead of time, please use Apply Pre-approved OT/Offset.`)
+                        : undefined,
                       [`entry_${idx}_dateTo`]: undefined,
                       [`entry_${idx}_offsetHours`]: undefined,
                       [`entry_${idx}_offsetBalance`]: undefined,
@@ -5248,10 +5307,13 @@ export function ApplyEsarfScreen({
                       );
                     }
 
+                    const currentEntry = activeEventModalIndex !== null ? entries[activeEventModalIndex] : undefined;
+                    const isEntryObAlone = isObAloneTransaction(currentEntry?.transaction);
+
                     // Sort: selectable events first, followed by disabled events
                     const sorted = [...filtered].sort((a, b) => {
-                      const aClickable = isPreApprovedMode ? !isEventPassedOrDone(a) : isEventPassedOrDone(a);
-                      const bClickable = isPreApprovedMode ? !isEventPassedOrDone(b) : isEventPassedOrDone(b);
+                      const aClickable = isPreApprovedMode ? !isEventPassedOrDone(a) : (isEntryObAlone ? true : isEventPassedOrDone(a));
+                      const bClickable = isPreApprovedMode ? !isEventPassedOrDone(b) : (isEntryObAlone ? true : isEventPassedOrDone(b));
                       if (aClickable && !bClickable) return -1;
                       if (!aClickable && bClickable) return 1;
                       return 0;
@@ -5260,7 +5322,7 @@ export function ApplyEsarfScreen({
                     return sorted.map((ev) => {
                       const isEvent = ev.type?.toLowerCase() === 'event';
                       const isPassed = isEventPassedOrDone(ev);
-                      const isClickable = isPreApprovedMode ? !isPassed : isPassed;
+                      const isClickable = isPreApprovedMode ? !isPassed : (isEntryObAlone ? true : isPassed);
                       const statusTagLabel = isPassed ? 'ALREADY ENDED' : 'UPCOMING';
 
                       return (
@@ -5276,7 +5338,7 @@ export function ApplyEsarfScreen({
                               const title = isPreApprovedMode ? 'Event Already Ended' : 'Event Not Yet Ended';
                               const message = isPreApprovedMode
                                 ? 'This event or activity has already ended. For past events, please file using regular Apply ESARF.'
-                                : 'In Apply ESARF, you cannot select events or activities ahead of time. You can only select events that have already passed or ended. For upcoming events, please use Apply Pre-approved OT/Offset.';
+                                : 'In Apply ESARF, you cannot select events or activities ahead of time. You can only select events that have already passed or ended (unless the transaction type is OB alone). For upcoming events, please use Apply Pre-approved OT/Offset.';
                               if (onToast) {
                                 onToast({ tone: 'warning', title, message });
                               } else {

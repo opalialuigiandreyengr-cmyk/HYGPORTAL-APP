@@ -131,7 +131,7 @@ export function createAssistantReply(input: string, context: { leaveCreditRemain
     return {
       type: 'answer',
       intent: 'explain_request_type',
-      message: 'The Apply Discount service is suspended for the time being due to abuse of product charging privilege.',
+      message: 'Product Charging and Discount is currently suspended until further notice due to the observed abuse of privilege.',
     };
   }
 

@@ -421,6 +421,26 @@ export function isFioOrObOnly(transactionStr?: string | null): boolean {
   return validTokens.length > 0;
 }
 
+/**
+ * Checks if a transaction string represents ONLY Official Business (OB alone),
+ * without any other transaction types (no OT, Offset, UT, FIO, Use Offset, etc.).
+ */
+export function isObAloneTransaction(transactionStr?: string | null): boolean {
+  if (!transactionStr || !transactionStr.trim()) return false;
+  const raw = transactionStr.toLowerCase();
+  const parts = raw.split(/[,/&+]+|\band\b/).map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0) return false;
+
+  for (const part of parts) {
+    const isOb = part === 'ob' || part.includes('official business') || part.includes('(ob)');
+    if (!isOb) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export const MIN_OFFSETABLE_HOURS = 4;
 export const WHOLE_DAY_OFFSET_HOURS = 8;
 

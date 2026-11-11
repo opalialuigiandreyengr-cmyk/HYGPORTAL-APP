@@ -413,7 +413,7 @@ export function DashboardScreen({
     }
     platformAlert(
       'Service Suspended',
-      'Apply Discount is suspended for the time being due to abuse of product charging privilege.'
+      'Product Charging and Discount is currently suspended until further notice due to the observed abuse of privilege.'
     );
   };
 

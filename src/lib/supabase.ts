@@ -95,6 +95,10 @@ export async function ensureFreshSession() {
           console.warn('ensureFreshSession refresh failed (retaining session):', refreshError.message);
           return { session, error: null };
         }
+        // If refresh token is permanently invalid or missing on server, purge stale session locally
+        if (refreshError && refreshError.message?.toLowerCase().includes('invalid refresh token')) {
+          await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+        }
         return { session: null, error: refreshError };
       }
 

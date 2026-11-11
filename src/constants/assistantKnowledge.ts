@@ -111,12 +111,12 @@ export const assistantFaqRules = [
   {
     keywords: ['what is employee charge', 'employee charge'],
     answer:
-      'Employee Charge is currently suspended for the time being due to abuse of product charging privilege.',
+      'Product Charging and Discount is currently suspended until further notice due to the observed abuse of privilege.',
   },
   {
     keywords: ['employee discount', 'cash discount', 'perk'],
     answer:
-      'Apply Discount is currently suspended for the time being due to abuse of product charging privilege.',
+      'Product Charging and Discount is currently suspended until further notice due to the observed abuse of privilege.',
   },
   {
     keywords: ['update my profile', 'change profile', 'profile photo', 'profile details'],

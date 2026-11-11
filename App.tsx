@@ -169,8 +169,18 @@ function normalizeRoleName(value?: string | null) {
   return value?.trim().replace(/\s+/g, ' ').toLowerCase() ?? '';
 }
 
-function isStoreManagerProfile(profileResult: ProfileLoadResult | null) {
-  return profileResult?.status === 'linked' && normalizeRoleName(profileResult.profile.positionName) === 'store manager';
+function isTeamScheduleManagerProfile(profileResult: ProfileLoadResult | null) {
+  if (profileResult?.status !== 'linked') return false;
+  const pos = normalizeRoleName(profileResult.profile.positionName);
+  const dept = normalizeRoleName(profileResult.profile.departmentName);
+
+  const isStoreManager = pos === 'store manager';
+  const isMaintenanceManager =
+    pos === 'maintenance manager' ||
+    pos.includes('maintenance manager') ||
+    (dept === 'maintenance' && pos.includes('manager'));
+
+  return isStoreManager || isMaintenanceManager;
 }
 
 Notifications.setNotificationHandler({
@@ -248,7 +258,7 @@ export default function App() {
   const didAutoPromptBiometricRef = useRef(false);
   const canUseApprovals =
     profileResult?.status === 'linked' && Number(profileResult.profile.authorityLevel ?? 1) > 1;
-  const canUseMyTeam = isStoreManagerProfile(profileResult);
+  const canUseMyTeam = isTeamScheduleManagerProfile(profileResult);
 
   const openApprovalFromNotification = useCallback((requestId?: string | null) => {
     setTargetApprovalRequestId(requestId || null);
@@ -335,8 +345,8 @@ export default function App() {
 
       const isRecoveryUrl = Platform.OS === 'web' && typeof window !== 'undefined' &&
         ((window.location.hash || '').includes('type=recovery') ||
-         (window.location.search || '').includes('type=recovery') ||
-         (window.location.pathname || '').includes('reset-password'));
+          (window.location.search || '').includes('type=recovery') ||
+          (window.location.pathname || '').includes('reset-password'));
 
       if (isRecoveryUrl) {
         setRecoverySession(true);
@@ -400,10 +410,10 @@ export default function App() {
           }
           try {
             await refreshPendingApprovalCount();
-          } catch (e) {}
+          } catch (e) { }
           try {
             await refreshNotificationUnreadCount();
-          } catch (e) {}
+          } catch (e) { }
         }
       }
     })();
@@ -415,8 +425,8 @@ export default function App() {
 
       const isRecoveryUrl = Platform.OS === 'web' && typeof window !== 'undefined' &&
         ((window.location.hash || '').includes('type=recovery') ||
-         (window.location.search || '').includes('type=recovery') ||
-         (window.location.pathname || '').includes('reset-password'));
+          (window.location.search || '').includes('type=recovery') ||
+          (window.location.pathname || '').includes('reset-password'));
 
       if (event === 'PASSWORD_RECOVERY' || (event === 'SIGNED_IN' && isRecoveryUrl)) {
         setRecoverySession(true);
@@ -436,16 +446,16 @@ export default function App() {
           if (event === 'SIGNED_IN' && (session.user.email ?? '').toLowerCase() !== SUPER_ADMIN_EMAIL) {
             try {
               await loadProfileForUser(session.user);
-            } catch (e) {}
+            } catch (e) { }
             try {
               await refreshDashboard(true);
-            } catch (e) {}
+            } catch (e) { }
             try {
               await refreshPendingApprovalCount();
-            } catch (e) {}
+            } catch (e) { }
             try {
               await refreshNotificationUnreadCount();
-            } catch (e) {}
+            } catch (e) { }
           }
         }
       }
@@ -687,7 +697,7 @@ export default function App() {
             transparent
             animationType="fade"
             visible={recoverySession}
-            onRequestClose={() => {}}
+            onRequestClose={() => { }}
           >
             <View style={styles.recoveryBackdrop}>
               <KeyboardAvoidingView
@@ -886,12 +896,12 @@ export default function App() {
   function showDiscountSuspendedNotice() {
     platformAlert(
       'Service Suspended',
-      'Apply Discount is suspended for the time being due to abuse of product charging privilege.'
+      'Product Charging and Discount is currently suspended until further notice due to the observed abuse of privilege.'
     );
     setAppToast({
       tone: 'error',
       title: 'Service Suspended',
-      message: 'Apply Discount is suspended for the time being due to abuse of product charging privilege.',
+      message: 'Product Charging and Discount is currently suspended until further notice due to the observed abuse of privilege.',
     });
   }
 
@@ -978,16 +988,16 @@ export default function App() {
     if ((user.email ?? '').toLowerCase() !== SUPER_ADMIN_EMAIL) {
       try {
         await loadProfileForUser(user);
-      } catch (e) {}
+      } catch (e) { }
       try {
         await refreshDashboard();
-      } catch (e) {}
+      } catch (e) { }
       try {
         await refreshPendingApprovalCount();
-      } catch (e) {}
+      } catch (e) { }
       try {
         await refreshNotificationUnreadCount();
-      } catch (e) {}
+      } catch (e) { }
       if (notificationsEnabled) {
         try {
           await registerPushDevice();
@@ -1219,7 +1229,7 @@ export default function App() {
       isResuming = true;
       try {
         // 1. Proactively verify and refresh session before queries run
-        await ensureFreshSession().catch(() => {});
+        await ensureFreshSession().catch(() => { });
 
         // 2. Silent sync of metrics, counts, and active requests
         void refreshDashboard(true);
@@ -2322,7 +2332,7 @@ function RewardsPlaceholderScreen({
               <Image source={hygCoinsImage} style={styles.rewardsPointsWatermark} resizeMode="contain" />
               <View>
                 <Text style={styles.rewardsPointsLabel}>Available Balance</Text>
-                  <Text style={styles.rewardsPointsValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.62}>
+                <Text style={styles.rewardsPointsValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.62}>
                   {formatRewardsPoints(effectivePointsBalance)}
                 </Text>
                 <Text style={styles.rewardsPointsUnit}>Points</Text>
@@ -2665,6 +2675,7 @@ function MyTeamPlaceholderScreen({
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
   const [selectedScheduleDate, setSelectedScheduleDate] = useState(() => formatLocalIsoDate(new Date()));
+  const [selectedScheduleEndDate, setSelectedScheduleEndDate] = useState<string | null>(null);
   const [visibleScheduleMonth, setVisibleScheduleMonth] = useState(() => getMonthStart(new Date()));
   const [isScheduleComposerOpen, setIsScheduleComposerOpen] = useState(false);
   const [scheduleEmployeeIds, setScheduleEmployeeIds] = useState<string[]>([]);
@@ -2675,14 +2686,42 @@ function MyTeamPlaceholderScreen({
   const [scheduleFormError, setScheduleFormError] = useState('');
   const [mockAssignments, setMockAssignments] = useState<MockScheduleAssignment[]>([]);
   const [activeScheduleTab, setActiveScheduleTab] = useState<'calendar' | 'table'>('calendar');
-  const [scheduleScrollWidth, setScheduleScrollWidth] = useState(0);
-  const scheduleScrollViewRef = useRef<ScrollView>(null);
   const profile = profileResult?.status === 'linked' ? profileResult.profile : null;
-  const storeScope = profile?.storeName || profile?.departmentName || 'Assigned store';
-  const scheduledEmployeeIdsForDate = useMemo(
-    () => new Set(mockAssignments.filter((assignment) => assignment.date === selectedScheduleDate).map((assignment) => assignment.employeeId)),
-    [mockAssignments, selectedScheduleDate],
-  );
+  const posName = normalizeRoleName(profile?.positionName);
+  const deptName = normalizeRoleName(profile?.departmentName);
+  const isMaintenanceManager =
+    posName === 'maintenance manager' ||
+    posName.includes('maintenance manager') ||
+    (deptName === 'maintenance' && posName.includes('manager'));
+  const storeScope = isMaintenanceManager
+    ? (profile?.departmentName ? `${profile.departmentName} Department` : 'Maintenance Department')
+    : (profile?.storeName || profile?.departmentName || 'Assigned store');
+  const scheduledEmployeeIdsForDate = useMemo(() => {
+    if (!selectedScheduleEndDate) {
+      return new Set(
+        mockAssignments
+          .filter((assignment) => assignment.date === selectedScheduleDate)
+          .map((assignment) => assignment.employeeId),
+      );
+    }
+    const day1Emps = new Set(
+      mockAssignments
+        .filter((assignment) => assignment.date === selectedScheduleDate)
+        .map((assignment) => assignment.employeeId),
+    );
+    const day2Emps = new Set(
+      mockAssignments
+        .filter((assignment) => assignment.date === selectedScheduleEndDate)
+        .map((assignment) => assignment.employeeId),
+    );
+    const both = new Set<string>();
+    for (const id of day1Emps) {
+      if (day2Emps.has(id)) {
+        both.add(id);
+      }
+    }
+    return both;
+  }, [mockAssignments, selectedScheduleDate, selectedScheduleEndDate]);
   const todayScheduleDate = useMemo(() => formatLocalIsoDate(new Date()), []);
   const employeeScheduleSummaries = useMemo(
     () => buildTeamScheduleSummaries(mockAssignments, todayScheduleDate),
@@ -2696,7 +2735,13 @@ function MyTeamPlaceholderScreen({
       const [rows, schedules] = await Promise.all([loadMyTeamEmployees(), loadMyTeamSchedules()]);
       setEmployees(rows);
       setMockAssignments(mapMyTeamScheduleRows(schedules));
-      setStatus(rows.length ? '' : 'No team members found for your assigned store.');
+      setStatus(
+        rows.length
+          ? ''
+          : isMaintenanceManager
+            ? 'No team members found under Maintenance Department.'
+            : 'No team members found for your assigned store.'
+      );
     } catch (error) {
       setEmployees([]);
       setMockAssignments([]);
@@ -2741,6 +2786,33 @@ function MyTeamPlaceholderScreen({
         ? formatLocalIsoDate(today)
         : formatLocalIsoDate(nextMonth),
     );
+    setSelectedScheduleEndDate(null);
+  }
+
+  function handleSelectScheduleDate(clickedDate: string) {
+    if (selectedScheduleEndDate) {
+      if (clickedDate === selectedScheduleDate || clickedDate === selectedScheduleEndDate) {
+        setSelectedScheduleDate(clickedDate);
+        setSelectedScheduleEndDate(null);
+      } else {
+        setSelectedScheduleDate(clickedDate);
+        setSelectedScheduleEndDate(null);
+      }
+      return;
+    }
+
+    const diff = getDayDifference(selectedScheduleDate, clickedDate);
+    if (diff === 1) {
+      setSelectedScheduleEndDate(clickedDate);
+    } else if (diff === -1) {
+      setSelectedScheduleEndDate(selectedScheduleDate);
+      setSelectedScheduleDate(clickedDate);
+    } else if (diff === 0) {
+      setSelectedScheduleEndDate(null);
+    } else {
+      setSelectedScheduleDate(clickedDate);
+      setSelectedScheduleEndDate(null);
+    }
   }
 
   async function addMockScheduleAssignment() {
@@ -2758,16 +2830,23 @@ function MyTeamPlaceholderScreen({
       return;
     }
 
+    const targetDates = selectedScheduleEndDate
+      ? [selectedScheduleDate, selectedScheduleEndDate]
+      : [selectedScheduleDate];
+
     try {
-      const schedules = await saveMyTeamSchedules({
-        employeeIds: selectedEmployees.map((employee) => employee.employee_id),
-        scheduleDate: selectedScheduleDate,
-        fromTime: scheduleIsDayOff ? '' : scheduleFromTime.trim(),
-        toTime: scheduleIsDayOff ? '' : scheduleToTime.trim(),
-        isDayOff: scheduleIsDayOff,
-        notes: scheduleNotes.trim(),
-      });
-      setMockAssignments(mapMyTeamScheduleRows(schedules));
+      let latestSchedules: MyTeamSchedule[] = [];
+      for (const targetDate of targetDates) {
+        latestSchedules = await saveMyTeamSchedules({
+          employeeIds: selectedEmployees.map((employee) => employee.employee_id),
+          scheduleDate: targetDate,
+          fromTime: scheduleIsDayOff ? '' : scheduleFromTime.trim(),
+          toTime: scheduleIsDayOff ? '' : scheduleToTime.trim(),
+          isDayOff: scheduleIsDayOff,
+          notes: scheduleNotes.trim(),
+        });
+      }
+      setMockAssignments(mapMyTeamScheduleRows(latestSchedules));
       setScheduleFromTime('');
       setScheduleToTime('');
       setScheduleNotes('');
@@ -2778,7 +2857,9 @@ function MyTeamPlaceholderScreen({
         onToast?.({
           tone: 'success',
           title: 'Schedule saved',
-          message: `${selectedEmployees.length} employee${selectedEmployees.length === 1 ? '' : 's'} saved to ${formatScheduleDisplayDate(selectedScheduleDate)}.`,
+          message: selectedScheduleEndDate
+            ? `${selectedEmployees.length} employee${selectedEmployees.length === 1 ? '' : 's'} saved for ${formatScheduleShortDate(selectedScheduleDate)} – ${formatScheduleShortDate(selectedScheduleEndDate)} (Overnight).`
+            : `${selectedEmployees.length} employee${selectedEmployees.length === 1 ? '' : 's'} saved to ${formatScheduleDisplayDate(selectedScheduleDate)}.`,
         });
       }, 120);
     } catch (error) {
@@ -2786,17 +2867,14 @@ function MyTeamPlaceholderScreen({
     }
   }
 
-  async function deleteMockScheduleAssignment(assignmentId: string) {
-    const assignment = mockAssignments.find((item) => item.id === assignmentId);
+  async function executeDeleteSchedule(ids: string[], empName: string, dateLabel: string) {
     try {
-      await deleteMyTeamSchedule(assignmentId);
-      setMockAssignments((current) => current.filter((item) => item.id !== assignmentId));
+      await Promise.all(ids.map((id) => deleteMyTeamSchedule(id)));
+      setMockAssignments((current) => current.filter((item) => !ids.includes(item.id)));
       onToast?.({
         tone: 'success',
         title: 'Schedule deleted',
-        message: assignment
-          ? `${assignment.employeeName}'s schedule was removed from ${formatScheduleDisplayDate(assignment.date)}.`
-          : 'Schedule was removed.',
+        message: `${empName}'s schedule (${dateLabel}) was removed.`,
       });
     } catch (error) {
       onToast?.({
@@ -2805,6 +2883,30 @@ function MyTeamPlaceholderScreen({
         message: error instanceof Error ? error.message : 'Unable to delete schedule.',
       });
     }
+  }
+
+  function deleteMockScheduleAssignment(assignmentIds: string | string[]) {
+    const ids = Array.isArray(assignmentIds) ? assignmentIds : [assignmentIds];
+    const targetAssignments = mockAssignments.filter((item) => ids.includes(item.id));
+    const empName = targetAssignments[0]?.employeeName || 'this employee';
+    const dateLabel = targetAssignments.length === 1
+      ? formatScheduleShortDate(targetAssignments[0].date)
+      : `${formatScheduleShortDate(targetAssignments[0].date)} – ${formatScheduleShortDate(targetAssignments[targetAssignments.length - 1].date)}`;
+
+    platformAlert(
+      'Delete Schedule',
+      `Are you sure you want to remove the schedule for ${empName} (${dateLabel})?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            void executeDeleteSchedule(ids, empName, dateLabel);
+          },
+        },
+      ],
+    );
   }
 
   return (
@@ -2856,7 +2958,10 @@ function MyTeamPlaceholderScreen({
           </Pressable>
           <Pressable
             style={[styles.myTeamSegmentButton, activeView === 'schedule' ? styles.myTeamSegmentButtonActive : null]}
-            onPress={() => setActiveView('schedule')}
+            onPress={() => {
+              setActiveView('schedule');
+              setActiveScheduleTab('calendar');
+            }}
           >
             <CalendarDays size={17} color={activeView === 'schedule' ? colors.brand.ink : colors.muted} strokeWidth={2.7} />
             <Text style={[styles.myTeamSegmentText, activeView === 'schedule' ? styles.myTeamSegmentTextActive : null]}>Schedule</Text>
@@ -2911,46 +3016,31 @@ function MyTeamPlaceholderScreen({
               );
             })}
           </View>
+        ) : activeScheduleTab === 'calendar' ? (
+          <MockScheduleCalendar
+            selectedDate={selectedScheduleDate}
+            selectedEndDate={selectedScheduleEndDate}
+            visibleMonth={visibleScheduleMonth}
+            assignments={mockAssignments}
+            onSelectDate={handleSelectScheduleDate}
+            onSelectMonth={selectScheduleMonth}
+            onAddSchedule={openScheduleComposer}
+            onOpenTable={() => setActiveScheduleTab('table')}
+            onDeleteSchedule={deleteMockScheduleAssignment}
+          />
         ) : (
-          <View onLayout={(e) => setScheduleScrollWidth(e.nativeEvent.layout.width)}>
-            <ScrollView
-              ref={scheduleScrollViewRef}
-              horizontal
-              pagingEnabled
-              showsHorizontalScrollIndicator={false}
-              onMomentumScrollEnd={(e) => {
-                if (scheduleScrollWidth > 0) {
-                  const offsetX = e.nativeEvent.contentOffset.x;
-                  const index = Math.round(offsetX / scheduleScrollWidth);
-                  setActiveScheduleTab(index === 0 ? 'calendar' : 'table');
-                }
-              }}
-            >
-              <View style={{ width: scheduleScrollWidth || '100%' }}>
-                <MockScheduleCalendar
-                  selectedDate={selectedScheduleDate}
-                  visibleMonth={visibleScheduleMonth}
-                  assignments={mockAssignments}
-                  onSelectDate={setSelectedScheduleDate}
-                  onSelectMonth={selectScheduleMonth}
-                  onAddSchedule={openScheduleComposer}
-                  onDeleteSchedule={deleteMockScheduleAssignment}
-                />
-              </View>
-              <View style={{ width: scheduleScrollWidth || '100%' }}>
-                <MockScheduleTable assignments={mockAssignments} storeScope={storeScope} onDeleteSchedule={deleteMockScheduleAssignment} />
-              </View>
-            </ScrollView>
-            <View style={styles.schedulePaginationContainer}>
-              <View style={[styles.schedulePaginationDot, activeScheduleTab === 'calendar' ? styles.schedulePaginationDotActive : null]} />
-              <View style={[styles.schedulePaginationDot, activeScheduleTab === 'table' ? styles.schedulePaginationDotActive : null]} />
-            </View>
-          </View>
+          <MockScheduleTable
+            assignments={mockAssignments}
+            storeScope={storeScope}
+            onBackToCalendar={() => setActiveScheduleTab('calendar')}
+            onDeleteSchedule={deleteMockScheduleAssignment}
+          />
         )}
       </ScrollView>
       <ScheduleComposerModal
         visible={isScheduleComposerOpen}
         selectedDate={selectedScheduleDate}
+        selectedEndDate={selectedScheduleEndDate}
         employees={employees}
         excludedEmployeeIds={Array.from(scheduledEmployeeIdsForDate)}
         employeeIds={scheduleEmployeeIds}
@@ -3042,20 +3132,24 @@ function parseTeamDayOffDate(label: string) {
 
 function MockScheduleCalendar({
   selectedDate,
+  selectedEndDate,
   visibleMonth,
   assignments,
   onSelectDate,
   onSelectMonth,
   onAddSchedule,
+  onOpenTable,
   onDeleteSchedule,
 }: {
   selectedDate: string;
+  selectedEndDate?: string | null;
   visibleMonth: Date;
   assignments: MockScheduleAssignment[];
   onSelectDate: (date: string) => void;
   onSelectMonth: (date: Date) => void;
   onAddSchedule: () => void;
-  onDeleteSchedule: (assignmentId: string) => void;
+  onOpenTable?: () => void;
+  onDeleteSchedule: (assignmentIds: string | string[]) => void;
 }) {
   const [isMonthSelectorOpen, setIsMonthSelectorOpen] = useState(false);
   const calendarCells = useMemo(
@@ -3064,16 +3158,23 @@ function MockScheduleCalendar({
   );
   const monthOptions = useMemo(() => buildScheduleMonthOptions(visibleMonth.getFullYear()), [visibleMonth]);
   const selectedCell = calendarCells.find((item) => item.date && item.isoDate === selectedDate);
-  const selectedAssignments = assignments.filter((assignment) => assignment.date === selectedDate);
+  const groupedCards = useMemo(
+    () => buildGroupedScheduleCards(assignments, selectedDate, selectedEndDate),
+    [assignments, selectedDate, selectedEndDate],
+  );
   const selectedMonthLabel = visibleMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
   return (
     <View>
       <View style={styles.myTeamHeaderRow}>
-        <View>
+        <View style={{ flex: 1, marginRight: spacing.sm }}>
           <Text style={styles.myTeamSectionTitle}>Schedule Calendar</Text>
           <Text style={styles.myTeamSectionSub}>
-            {selectedCell?.date ? `Selected: ${formatScheduleShortDate(selectedDate)}` : 'Select a date'}
+            {selectedEndDate
+              ? `Selected: ${formatScheduleShortDate(selectedDate)} – ${formatScheduleShortDate(selectedEndDate)} (2 days)`
+              : selectedCell?.date
+                ? `Selected: ${formatScheduleShortDate(selectedDate)}`
+                : 'Select a date'}
           </Text>
         </View>
         <Pressable style={styles.scheduleAddButton} onPress={onAddSchedule}>
@@ -3089,7 +3190,17 @@ function MockScheduleCalendar({
             <CalendarDays size={16} color={colors.primary} strokeWidth={2.7} />
             <Text style={styles.scheduleCalendarMonth}>{selectedMonthLabel}</Text>
           </Pressable>
-          <Text style={styles.scheduleCalendarBadge}>Select month</Text>
+          {onOpenTable ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="View All Schedules"
+              style={styles.scheduleCalendarTableButton}
+              onPress={onOpenTable}
+            >
+              <ListChecks size={13} color="#92400e" strokeWidth={2.6} />
+              <Text style={styles.scheduleCalendarTableButtonText}>View All</Text>
+            </Pressable>
+          ) : null}
         </View>
         <View style={styles.scheduleWeekdayRow}>
           {calendarWeekdays.map((day) => (
@@ -3107,44 +3218,49 @@ function MockScheduleCalendar({
         <View style={styles.scheduleCalendarGrid}>
           {calendarCells.map((item, index) => {
             const dayAssignments = item.isoDate ? assignments.filter((assignment) => assignment.date === item.isoDate) : [];
-            const selected = Boolean(item.isoDate && item.isoDate === selectedDate);
+            const isSelectedStart = Boolean(item.isoDate && item.isoDate === selectedDate);
+            const isSelectedEnd = Boolean(item.isoDate && selectedEndDate && item.isoDate === selectedEndDate);
+            const selected = isSelectedStart || isSelectedEnd;
             const hasAssignment = dayAssignments.length > 0;
             const isHoliday = Boolean(item.isoDate && mockScheduleHolidays[item.isoDate]);
             const isWeekend = item.tone === 'rest';
 
             return (
-            <Pressable
-              key={item.date ? `day-${item.date}` : `blank-${index}`}
-              disabled={!item.date || !item.isoDate}
-              onPress={() => item.isoDate && onSelectDate(item.isoDate)}
-              style={[
-                styles.scheduleDayCell,
-                !item.date ? styles.scheduleDayCellBlank : null,
-                isWeekend && item.date ? styles.scheduleDayCellWeekend : null,
-              ]}
-            >
-              {item.date ? (
-                <View
-                  style={[
-                    styles.scheduleDatePill,
-                    isWeekend ? styles.scheduleDatePillRest : null,
-                    hasAssignment ? styles.scheduleDatePillAssigned : null,
-                    selected ? styles.scheduleDatePillSelected : null,
-                  ]}
-                >
-                  <Text
+              <Pressable
+                key={item.date ? `day-${item.date}` : `blank-${index}`}
+                disabled={!item.date || !item.isoDate}
+                onPress={() => item.isoDate && onSelectDate(item.isoDate)}
+                style={[
+                  styles.scheduleDayCell,
+                  !item.date ? styles.scheduleDayCellBlank : null,
+                  isWeekend && item.date ? styles.scheduleDayCellWeekend : null,
+                ]}
+              >
+                {item.date ? (
+                  <View
                     style={[
-                      styles.scheduleDayDate,
-                      isWeekend ? styles.scheduleDayDateRest : null,
-                      hasAssignment || selected ? styles.scheduleDayDateStrong : null,
+                      styles.scheduleDatePill,
+                      isWeekend ? styles.scheduleDatePillRest : null,
+                      hasAssignment ? styles.scheduleDatePillAssigned : null,
+                      selected ? styles.scheduleDatePillSelected : null,
                     ]}
                   >
-                    {item.date}
-                  </Text>
-                  {isHoliday ? <View style={styles.scheduleHolidayDot} /> : null}
-                </View>
-              ) : null}
-            </Pressable>
+                    <Text
+                      style={[
+                        styles.scheduleDayDate,
+                        isWeekend ? styles.scheduleDayDateRest : null,
+                        hasAssignment || selected ? styles.scheduleDayDateStrong : null,
+                      ]}
+                    >
+                      {item.date}
+                    </Text>
+                    {isHoliday ? <View style={styles.scheduleHolidayDot} /> : null}
+                    {selectedEndDate && (isSelectedStart || isSelectedEnd) ? (
+                      <View style={styles.scheduleRangeIndicatorDot} />
+                    ) : null}
+                  </View>
+                ) : null}
+              </Pressable>
             );
           })}
         </View>
@@ -3161,43 +3277,65 @@ function MockScheduleCalendar({
             <View style={[styles.scheduleLegendDot, styles.scheduleLegendDotAssigned]} />
             <Text style={styles.scheduleLegendText}>With schedule</Text>
           </View>
+          <View style={styles.scheduleLegendItem}>
+            <View style={[styles.scheduleLegendDot, styles.scheduleLegendDotSelected]} />
+            <Text style={styles.scheduleLegendText}>Selected</Text>
+          </View>
+        </View>
+        <View style={styles.scheduleRangeHelpRow}>
+          <Text style={styles.scheduleRangeHelpText}>
+            Tip: Tap 2 consecutive dates (e.g. Nov 10 & 11) for overnight shifts (e.g. 1:00 PM – 2:00 AM).
+          </Text>
         </View>
       </View>
       <View style={styles.selectedSchedulePanel}>
-        <Text style={styles.selectedScheduleTitle}>{formatScheduleDisplayDate(selectedDate)}</Text>
-        {mockScheduleHolidays[selectedDate] ? (
+        <Text style={styles.selectedScheduleTitle}>
+          {selectedEndDate
+            ? `${formatScheduleDisplayDate(selectedDate)} – ${formatScheduleDisplayDate(selectedEndDate)}`
+            : formatScheduleDisplayDate(selectedDate)}
+        </Text>
+        {mockScheduleHolidays[selectedDate] || (selectedEndDate && mockScheduleHolidays[selectedEndDate]) ? (
           <View style={styles.selectedHolidayRow}>
-            <Text style={styles.selectedHolidayText}>{mockScheduleHolidays[selectedDate]}</Text>
+            <Text style={styles.selectedHolidayText}>
+              {[
+                mockScheduleHolidays[selectedDate] ? `${formatScheduleShortDate(selectedDate)}: ${mockScheduleHolidays[selectedDate]}` : '',
+                selectedEndDate && mockScheduleHolidays[selectedEndDate] ? `${formatScheduleShortDate(selectedEndDate)}: ${mockScheduleHolidays[selectedEndDate]}` : '',
+              ].filter(Boolean).join(' | ')}
+            </Text>
           </View>
         ) : null}
-        {selectedAssignments.length ? (
-          selectedAssignments.map((assignment) => (
-            <View key={assignment.id} style={styles.selectedScheduleRow}>
+        {groupedCards.length ? (
+          groupedCards.map((card) => (
+            <View key={card.key} style={styles.selectedScheduleRow}>
               <View style={styles.selectedScheduleTextBlock}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                  <Text style={styles.selectedScheduleName}>{assignment.employeeName}</Text>
-                  {assignment.isDayOff ? (
+                  <Text style={styles.selectedScheduleName}>{card.employeeName}</Text>
+                  {card.isDayOff ? (
                     <View style={styles.selectedScheduleDayOffBadge}>
                       <Text style={styles.selectedScheduleDayOffBadgeText}>Day Off</Text>
                     </View>
                   ) : null}
                 </View>
                 <Text style={styles.selectedScheduleMeta}>
-                  {formatScheduleAssignmentLine(assignment.date, assignment.fromTime, assignment.toTime, assignment.isDayOff)}
+                  {card.metaText}
                 </Text>
               </View>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={`Delete ${assignment.employeeName} schedule`}
+                accessibilityLabel={`Delete ${card.employeeName} schedule`}
                 style={styles.selectedScheduleDelete}
-                onPress={() => onDeleteSchedule(assignment.id)}
+                onPress={() => onDeleteSchedule(card.assignmentIds)}
               >
                 <Trash2 size={16} color={colors.semantic.danger} strokeWidth={2.6} />
               </Pressable>
             </View>
           ))
         ) : (
-          <Text style={styles.selectedScheduleEmpty}>No employee schedule added for this date.</Text>
+          <Text style={styles.selectedScheduleEmpty}>
+            {selectedEndDate
+              ? 'No employee schedule added for these dates.'
+              : 'No employee schedule added for this date.'}
+          </Text>
         )}
       </View>
       <Modal visible={isMonthSelectorOpen} transparent animationType="fade" onRequestClose={() => setIsMonthSelectorOpen(false)}>
@@ -3245,10 +3383,12 @@ function MockScheduleCalendar({
 function MockScheduleTable({
   assignments,
   storeScope,
+  onBackToCalendar,
   onDeleteSchedule,
 }: {
   assignments: MockScheduleAssignment[];
   storeScope: string;
+  onBackToCalendar?: () => void;
   onDeleteSchedule: (assignmentId: string) => void;
 }) {
   const sortedAssignments = useMemo(() => {
@@ -3262,20 +3402,32 @@ function MockScheduleTable({
   return (
     <View style={styles.scheduleTableCard}>
       <View style={styles.myTeamHeaderRow}>
-        <View>
-          <Text style={styles.myTeamSectionTitle}>Raw Schedule Table</Text>
+        <View style={{ flex: 1, marginRight: spacing.sm }}>
+          <Text style={styles.myTeamSectionTitle}>All Schedules</Text>
           <Text style={styles.myTeamSectionSub}>
             {assignments.length} total assignment{assignments.length === 1 ? '' : 's'}
           </Text>
         </View>
-        <Pressable
-          disabled={sortedAssignments.length === 0}
-          style={[styles.scheduleExportButton, sortedAssignments.length === 0 ? styles.scheduleExportButtonDisabled : null]}
-          onPress={() => void exportScheduleTableToExcel(sortedAssignments, storeScope)}
-        >
-          <Download size={16} color={colors.brand.ink} strokeWidth={2.7} />
-          <Text style={styles.scheduleExportButtonText}>Export</Text>
-        </Pressable>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs }}>
+          {onBackToCalendar ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Back to Schedule Calendar"
+              style={styles.scheduleCalendarBackButton}
+              onPress={onBackToCalendar}
+            >
+              <CalendarDays size={15} color={colors.brand.ink} strokeWidth={2.6} />
+            </Pressable>
+          ) : null}
+          <Pressable
+            disabled={sortedAssignments.length === 0}
+            style={[styles.scheduleExportButton, sortedAssignments.length === 0 ? styles.scheduleExportButtonDisabled : null]}
+            onPress={() => void exportScheduleTableToExcel(sortedAssignments, storeScope)}
+          >
+            <Download size={16} color={colors.brand.ink} strokeWidth={2.7} />
+            <Text style={styles.scheduleExportButtonText}>Export</Text>
+          </Pressable>
+        </View>
       </View>
       {sortedAssignments.length > 0 ? (
         <View style={styles.scheduleTableContainer}>
@@ -3421,6 +3573,7 @@ function slugifyFilePart(value: string) {
 function ScheduleComposerModal({
   visible,
   selectedDate,
+  selectedEndDate,
   employees,
   excludedEmployeeIds,
   employeeIds,
@@ -3439,6 +3592,7 @@ function ScheduleComposerModal({
 }: {
   visible: boolean;
   selectedDate: string;
+  selectedEndDate?: string | null;
   employees: MyTeamEmployee[];
   excludedEmployeeIds: string[];
   employeeIds: string[];
@@ -3461,6 +3615,7 @@ function ScheduleComposerModal({
   const [digitalHour, setDigitalHour] = useState('9');
   const [digitalMinute, setDigitalMinute] = useState('00');
   const [digitalPeriod, setDigitalPeriod] = useState<'AM' | 'PM'>('AM');
+
   const availableEmployees = employees.filter(
     (employee) => !excludedEmployeeIds.includes(employee.employee_id) || employeeIds.includes(employee.employee_id),
   );
@@ -3503,9 +3658,13 @@ function ScheduleComposerModal({
         <Pressable style={styles.scheduleComposerDismiss} onPress={onCancel} />
         <View style={[styles.scheduleComposerSheet, { paddingBottom: getSafeBottomInset(insets.bottom, spacing.md) }]}>
           <View style={styles.scheduleComposerHeader}>
-            <View>
+            <View style={{ flex: 1, marginRight: spacing.sm }}>
               <Text style={styles.scheduleComposerTitle}>Add Schedule</Text>
-              <Text style={styles.scheduleComposerSub}>{formatScheduleDisplayDate(selectedDate)}</Text>
+              <Text style={styles.scheduleComposerSub}>
+                {selectedEndDate
+                  ? `${formatScheduleDisplayDate(selectedDate)} – ${formatScheduleDisplayDate(selectedEndDate)}`
+                  : formatScheduleDisplayDate(selectedDate)}
+              </Text>
             </View>
             <Pressable style={styles.scheduleComposerClose} onPress={onCancel}>
               <X size={18} color={colors.text} strokeWidth={2.8} />
@@ -3706,6 +3865,14 @@ function formatLocalIsoDate(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
+function getDayDifference(isoDate1: string, isoDate2: string) {
+  const [y1, m1, d1] = isoDate1.split('-').map(Number);
+  const [y2, m2, d2] = isoDate2.split('-').map(Number);
+  const utc1 = Date.UTC(y1, m1 - 1, d1);
+  const utc2 = Date.UTC(y2, m2 - 1, d2);
+  return Math.round((utc2 - utc1) / (1000 * 60 * 60 * 24));
+}
+
 function getMonthStart(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), 1);
 }
@@ -3746,6 +3913,113 @@ function formatScheduleAssignmentLine(dateValue: string, fromTime: string, toTim
   const dayLabel = date.toLocaleDateString('en-US', { weekday: 'short' });
   const monthLabel = date.toLocaleDateString('en-US', { month: 'long' });
   return `${day} ${monthLabel} (${dayLabel}) | ${timeText}`;
+}
+
+type GroupedScheduleCard = {
+  key: string;
+  employeeId: string;
+  employeeName: string;
+  assignmentIds: string[];
+  dateFromStr: string;
+  dateToStr: string;
+  isDayOff: boolean;
+  metaText: string;
+};
+
+function formatScheduleRangeAssignmentLine(
+  dateFrom: string,
+  dateTo: string,
+  fromTime: string,
+  toTime: string,
+  isDayOff?: boolean,
+) {
+  const timeText = isDayOff ? 'Day Off' : `${formatTimeDisplay(fromTime)} to ${formatTimeDisplay(toTime)}`;
+  if (!dateFrom) return timeText;
+  if (!dateTo || dateTo === dateFrom) {
+    return formatScheduleAssignmentLine(dateFrom, fromTime, toTime, isDayOff);
+  }
+
+  const [y1, m1, d1] = dateFrom.split('-').map(Number);
+  const [y2, m2, d2] = dateTo.split('-').map(Number);
+  const dt1 = new Date(y1, m1 - 1, d1);
+  const dt2 = new Date(y2, m2 - 1, d2);
+  const day1Label = dt1.toLocaleDateString('en-US', { weekday: 'short' });
+  const day2Label = dt2.toLocaleDateString('en-US', { weekday: 'short' });
+  const m1Label = dt1.toLocaleDateString('en-US', { month: 'long' });
+  const m2Label = dt2.toLocaleDateString('en-US', { month: 'long' });
+
+  if (m1 === m2) {
+    return `${d1}-${d2} ${m1Label} (${day1Label}-${day2Label}) | ${timeText}`;
+  }
+  return `${d1} ${m1Label} (${day1Label}) – ${d2} ${m2Label} (${day2Label}) | ${timeText}`;
+}
+
+function buildGroupedScheduleCards(
+  assignments: MockScheduleAssignment[],
+  selectedDate: string,
+  selectedEndDate?: string | null,
+): GroupedScheduleCard[] {
+  if (!selectedEndDate || selectedEndDate === selectedDate) {
+    const forDate = assignments.filter((a) => a.date === selectedDate);
+    return forDate.map((a) => ({
+      key: a.id,
+      employeeId: a.employeeId,
+      employeeName: a.employeeName,
+      assignmentIds: [a.id],
+      dateFromStr: a.date,
+      dateToStr: a.date,
+      isDayOff: Boolean(a.isDayOff),
+      metaText: formatScheduleAssignmentLine(a.date, a.fromTime, a.toTime, a.isDayOff),
+    }));
+  }
+
+  const inRange = assignments.filter((a) => a.date === selectedDate || a.date === selectedEndDate);
+  const byEmp = new Map<string, MockScheduleAssignment[]>();
+  for (const a of inRange) {
+    const list = byEmp.get(a.employeeId) ?? [];
+    list.push(a);
+    byEmp.set(a.employeeId, list);
+  }
+
+  const cards: GroupedScheduleCard[] = [];
+  for (const [empId, empAssignments] of byEmp.entries()) {
+    empAssignments.sort((a, b) => a.date.localeCompare(b.date));
+    const first = empAssignments[0];
+    const last = empAssignments[empAssignments.length - 1];
+    const isMultiDay = empAssignments.length > 1 && first.date !== last.date;
+    const allDayOff = empAssignments.every((a) => a.isDayOff);
+    const sameTime = empAssignments.every(
+      (a) => a.fromTime === first.fromTime && a.toTime === first.toTime && a.isDayOff === first.isDayOff,
+    );
+
+    let metaText = '';
+    if (!isMultiDay) {
+      metaText = formatScheduleAssignmentLine(first.date, first.fromTime, first.toTime, first.isDayOff);
+    } else if (sameTime) {
+      metaText = formatScheduleRangeAssignmentLine(first.date, last.date, first.fromTime, first.toTime, allDayOff);
+    } else {
+      metaText = empAssignments
+        .map((a) => {
+          const time = a.isDayOff ? 'Day Off' : `${formatTimeDisplay(a.fromTime)} to ${formatTimeDisplay(a.toTime)}`;
+          return `${formatScheduleShortDate(a.date)}: ${time}`;
+        })
+        .join(' | ');
+    }
+
+    cards.push({
+      key: empAssignments.map((a) => a.id).join('_'),
+      employeeId: empId,
+      employeeName: first.employeeName,
+      assignmentIds: empAssignments.map((a) => a.id),
+      dateFromStr: first.date,
+      dateToStr: last.date,
+      isDayOff: allDayOff,
+      metaText,
+    });
+  }
+
+  cards.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+  return cards;
 }
 
 function parseDigitalTimeValue(value: string) {
@@ -7808,15 +8082,37 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     fontWeight: '900',
   },
-  scheduleCalendarBadge: {
+  scheduleCalendarTableButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
     borderRadius: 999,
     backgroundColor: '#fef3c7',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  scheduleCalendarTableButtonText: {
     color: '#92400e',
     fontSize: 11,
     fontWeight: '900',
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    overflow: 'hidden',
+  },
+  scheduleCalendarBackButton: {
+    height: 38,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  scheduleCalendarBackButtonText: {
+    color: colors.brand.ink,
+    fontSize: 12,
+    fontWeight: '800',
   },
   scheduleMonthMenu: {
     flexDirection: 'row',
@@ -8039,11 +8335,37 @@ const styles = StyleSheet.create({
   scheduleLegendDotAssigned: {
     backgroundColor: colors.brand.gold,
   },
+  scheduleLegendDotSelected: {
+    backgroundColor: '#bfdbfe',
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
   scheduleLegendText: {
     color: colors.muted,
     fontSize: 11,
     lineHeight: 15,
     fontWeight: '800',
+  },
+  scheduleRangeHelpRow: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+  },
+  scheduleRangeHelpText: {
+    color: colors.primary,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '800',
+  },
+  scheduleRangeIndicatorDot: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: colors.primary,
   },
   selectedSchedulePanel: {
     borderRadius: 8,
@@ -8103,23 +8425,6 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     fontWeight: '800',
     marginTop: 3,
-  },
-  schedulePaginationContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: spacing.sm,
-  },
-  schedulePaginationDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#cbd5e1',
-  },
-  schedulePaginationDotActive: {
-    width: 16,
-    backgroundColor: colors.primary,
   },
   scheduleTableCard: {
     borderRadius: 8,

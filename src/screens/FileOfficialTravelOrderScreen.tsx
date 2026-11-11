@@ -51,6 +51,8 @@ import {
   loadStoreApprovalWorkflow,
   loadApproverCandidates,
   formatApproverDisplayName,
+  loadPortalStores,
+  type PortalStore,
   type WorkflowStep,
   type ApproverCandidate,
 } from '../services/storeApprovalWorkflow';
@@ -99,6 +101,63 @@ const TRAVEL_PURPOSES = [
   'Inter-branch Supply/Stock Transfer',
   'Others',
 ] as const;
+
+async function loadMergedGoldilocksStores(): Promise<{ allStores: EmployeeStoreOption[]; goldilocksStores: EmployeeStoreOption[] }> {
+  const [portalStores, empStores] = await Promise.all([
+    loadPortalStores().catch(() => [] as PortalStore[]),
+    loadEmployeeStoreOptions().catch(() => [] as EmployeeStoreOption[]),
+  ]);
+
+  const clusterMap = new Map<string, string>();
+  for (const ps of portalStores) {
+    if (ps.name && ps.cluster_name) {
+      clusterMap.set(ps.name.toLowerCase().trim(), ps.cluster_name);
+    }
+  }
+
+  const storesMap = new Map<string, EmployeeStoreOption>();
+  for (const ps of portalStores) {
+    if (!ps.name) continue;
+    const key = `${(ps.company_name || '').toLowerCase()}_${ps.name.toLowerCase()}`;
+    storesMap.set(key, {
+      store_name: ps.name,
+      company_name: ps.company_name || '',
+      cluster_name: ps.cluster_name || null,
+    });
+  }
+
+  for (const es of empStores) {
+    if (!es.store_name) continue;
+    const key = `${(es.company_name || '').toLowerCase()}_${es.store_name.toLowerCase()}`;
+    const existing = storesMap.get(key);
+    if (!existing) {
+      storesMap.set(key, {
+        store_name: es.store_name,
+        company_name: es.company_name,
+        cluster_name: (es as any).cluster_name || clusterMap.get(es.store_name.toLowerCase().trim()) || null,
+      });
+    } else if (!existing.cluster_name) {
+      existing.cluster_name = (es as any).cluster_name || clusterMap.get(es.store_name.toLowerCase().trim()) || null;
+    }
+  }
+
+  const all = Array.from(storesMap.values());
+  const filtered = all.filter((s) => {
+    const sName = (s.store_name || '').toLowerCase();
+    const cName = (s.company_name || '').toLowerCase();
+    const isGoldilocksCompany = GOLDILOCKS_COMPANIES.some((comp) => cName.includes(comp));
+    return (
+      sName.includes('goldilocks') ||
+      (isGoldilocksCompany &&
+        !sName.includes('chatime') &&
+        !sName.includes('icebergs') &&
+        !sName.includes('taters'))
+    );
+  });
+
+  filtered.sort((a, b) => a.store_name.localeCompare(b.store_name));
+  return { allStores: all, goldilocksStores: filtered };
+}
 
 function formatDateDisplay(ymd: string): string {
   if (!ymd) return '';
@@ -181,7 +240,8 @@ export function FileOfficialTravelOrderScreen({
   const [mealBudget, setMealBudget] = useState<string>('');
   const [emergencyBudget, setEmergencyBudget] = useState<string>('');
   const [costCenterCode, setCostCenterCode] = useState<string>('');
-  const [chargeToStore, setChargeToStore] = useState<string>('');
+  const [selectedChargeStores, setSelectedChargeStores] = useState<string[]>([]);
+  const chargeToStore = useMemo(() => selectedChargeStores.join(', '), [selectedChargeStores]);
 
   // Modals state
   const [destinationModalVisible, setDestinationModalVisible] = useState(false);
@@ -304,7 +364,14 @@ export function FileOfficialTravelOrderScreen({
           if (d.mealBudget) setMealBudget(String(d.mealBudget));
           if (d.emergencyBudget) setEmergencyBudget(String(d.emergencyBudget));
           if (d.costCenterCode) setCostCenterCode(d.costCenterCode);
-          if (d.chargeToStore) setChargeToStore(d.chargeToStore);
+          if (d.chargeToStore) {
+            setSelectedChargeStores(
+              d.chargeToStore
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean)
+            );
+          }
         })
         .catch((err) => {
           console.warn('[FileOfficialTravelOrderScreen] Failed to load travel order details for editing:', err);
@@ -344,26 +411,9 @@ export function FileOfficialTravelOrderScreen({
     async function fetchStores() {
       setLoadingStores(true);
       try {
-        const stores = await loadEmployeeStoreOptions();
+        const { allStores: all, goldilocksStores: filtered } = await loadMergedGoldilocksStores();
         if (!isMounted) return;
-        setAllStores(stores);
-
-        // Filter Goldilocks stores across the 4 companies
-        const filtered = stores.filter((s) => {
-          const sName = (s.store_name || '').toLowerCase();
-          const cName = (s.company_name || '').toLowerCase();
-          const isGoldilocksCompany = GOLDILOCKS_COMPANIES.some((comp) => cName.includes(comp));
-          return (
-            sName.includes('goldilocks') ||
-            (isGoldilocksCompany &&
-              !sName.includes('chatime') &&
-              !sName.includes('icebergs') &&
-              !sName.includes('taters'))
-          );
-        });
-
-        // Sort alphabetically
-        filtered.sort((a, b) => a.store_name.localeCompare(b.store_name));
+        setAllStores(all);
         setGoldilocksStores(filtered);
       } catch (err) {
         console.warn('[FileOfficialTravelOrderScreen] Failed to load store options:', err);
@@ -392,21 +442,8 @@ export function FileOfficialTravelOrderScreen({
         }
       } catch (_) { }
       try {
-        const stores = await loadEmployeeStoreOptions();
-        setAllStores(stores);
-        const filtered = stores.filter((s) => {
-          const sName = (s.store_name || '').toLowerCase();
-          const cName = (s.company_name || '').toLowerCase();
-          const isGoldilocksCompany = GOLDILOCKS_COMPANIES.some((comp) => cName.includes(comp));
-          return (
-            sName.includes('goldilocks') ||
-            (isGoldilocksCompany &&
-              !sName.includes('chatime') &&
-              !sName.includes('icebergs') &&
-              !sName.includes('taters'))
-          );
-        });
-        filtered.sort((a, b) => a.store_name.localeCompare(b.store_name));
+        const { allStores: all, goldilocksStores: filtered } = await loadMergedGoldilocksStores();
+        setAllStores(all);
         setGoldilocksStores(filtered);
       } catch (_) { }
       try {
@@ -702,6 +739,17 @@ export function FileOfficialTravelOrderScreen({
     setValidationErrors((prev) => ({ ...prev, destinationStore: '' }));
   };
 
+  // Multi-select charge store toggling
+  const toggleChargeStore = (storeNameStr: string) => {
+    setSelectedChargeStores((prev) => {
+      if (prev.includes(storeNameStr)) {
+        return prev.filter((s) => s !== storeNameStr);
+      } else {
+        return [...prev, storeNameStr];
+      }
+    });
+  };
+
   // Filtered stores for destination modal search
   const filteredGoldilocksStores = useMemo(() => {
     if (!destinationSearch.trim()) return goldilocksStores;
@@ -709,7 +757,8 @@ export function FileOfficialTravelOrderScreen({
     return goldilocksStores.filter(
       (s) =>
         s.store_name.toLowerCase().includes(query) ||
-        s.company_name.toLowerCase().includes(query)
+        s.company_name.toLowerCase().includes(query) ||
+        (s.cluster_name && s.cluster_name.toLowerCase().includes(query))
     );
   }, [goldilocksStores, destinationSearch]);
 
@@ -720,7 +769,8 @@ export function FileOfficialTravelOrderScreen({
     return goldilocksStores.filter(
       (s) =>
         s.store_name.toLowerCase().includes(query) ||
-        s.company_name.toLowerCase().includes(query)
+        s.company_name.toLowerCase().includes(query) ||
+        (s.cluster_name && s.cluster_name.toLowerCase().includes(query))
     );
   }, [goldilocksStores, chargeStoreSearch]);
 
@@ -1457,11 +1507,15 @@ export function FileOfficialTravelOrderScreen({
                     <Text
                       style={[
                         styles.underlineText,
-                        !chargeToStore ? styles.underlineTextPlaceholder : null,
+                        selectedChargeStores.length === 0 ? styles.underlineTextPlaceholder : null,
                       ]}
                       numberOfLines={1}
                     >
-                      {chargeToStore || 'Select Store'}
+                      {selectedChargeStores.length === 0
+                        ? 'Select Store'
+                        : selectedChargeStores.length === 1
+                          ? selectedChargeStores[0]
+                          : `${selectedChargeStores[0]} (+${selectedChargeStores.length - 1} more)`}
                     </Text>
                     <ChevronDown size={16} color="#0f172a" strokeWidth={2.4} />
                   </Pressable>
@@ -1731,7 +1785,25 @@ export function FileOfficialTravelOrderScreen({
                           >
                             {store.store_name}
                           </Text>
-                          <Text style={styles.storeOptionCompany}>{store.company_name}</Text>
+                          <Text style={styles.storeOptionCompany} numberOfLines={1}>
+                            {store.cluster_name ? (
+                              <>
+                                <Text style={[styles.storeOptionCluster, isSelected ? styles.storeOptionClusterSelected : null]}>
+                                  {store.cluster_name}
+                                </Text>
+                                <Text style={[styles.storeOptionDivider, isSelected ? styles.storeOptionDividerSelected : null]}>
+                                  {' • '}
+                                </Text>
+                                <Text style={isSelected ? styles.storeOptionCompanySelected : null}>
+                                  {store.company_name}
+                                </Text>
+                              </>
+                            ) : (
+                              <Text style={isSelected ? styles.storeOptionCompanySelected : null}>
+                                {store.company_name}
+                              </Text>
+                            )}
+                          </Text>
                         </View>
                       </Pressable>
                     );
@@ -1893,7 +1965,7 @@ export function FileOfficialTravelOrderScreen({
         </View>
       </Modal>
 
-      {/* MODAL 4: Charge to Store/Branch Single Select Modal */}
+      {/* MODAL 4: Charge to Store/Branch Multi Select Modal */}
       <Modal
         transparent
         animationType="fade"
@@ -1946,6 +2018,34 @@ export function FileOfficialTravelOrderScreen({
               ) : null}
             </View>
 
+            {/* Quick Actions Row */}
+            <View style={styles.quickActionsRow}>
+              <Text style={styles.selectedCountText}>
+                {selectedChargeStores.length} of {goldilocksStores.length} selected
+              </Text>
+              <View style={styles.quickActionButtons}>
+                <Pressable
+                  onPress={() => {
+                    const allStoreNames = filteredChargeStores.map((s) => s.store_name);
+                    setSelectedChargeStores(Array.from(new Set([...selectedChargeStores, ...allStoreNames])));
+                  }}
+                  hitSlop={4}
+                >
+                  <Text style={styles.quickActionText}>Select All</Text>
+                </Pressable>
+                <Text style={styles.quickActionDivider}>•</Text>
+                <Pressable
+                  onPress={() => {
+                    const filteredNames = new Set(filteredChargeStores.map((s) => s.store_name));
+                    setSelectedChargeStores((prev) => prev.filter((name) => !filteredNames.has(name)));
+                  }}
+                  hitSlop={4}
+                >
+                  <Text style={styles.quickActionText}>Unselect All</Text>
+                </Pressable>
+              </View>
+            </View>
+
             {/* Scrollable Store List */}
             {loadingStores ? (
               <View style={styles.modalLoadingBox}>
@@ -1959,13 +2059,41 @@ export function FileOfficialTravelOrderScreen({
                 keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}
               >
+                {/* Explicit Unselect Item (when any store is selected) */}
+                {selectedChargeStores.length > 0 ? (
+                  <Pressable
+                    style={[
+                      styles.storeOptionRow,
+                      {
+                        backgroundColor: '#f8fafc',
+                        borderStyle: 'dashed',
+                        borderColor: '#cbd5e1',
+                        marginBottom: 8,
+                      },
+                    ]}
+                    onPress={() => setSelectedChargeStores([])}
+                  >
+                    <View style={[styles.checkbox, { borderColor: '#94a3b8', backgroundColor: '#f1f5f9' }]}>
+                      <X size={14} color="#64748b" strokeWidth={2.4} />
+                    </View>
+                    <View style={styles.storeOptionTextCol}>
+                      <Text style={[styles.storeOptionName, { color: '#64748b' }]}>
+                        Unselect All Stores
+                      </Text>
+                      <Text style={styles.storeOptionCompany}>
+                        Clear selection ({selectedChargeStores.length} currently selected)
+                      </Text>
+                    </View>
+                  </Pressable>
+                ) : null}
+
                 {filteredChargeStores.length === 0 ? (
                   <View style={styles.modalEmptyBox}>
                     <Text style={styles.modalEmptyText}>No matching Goldilocks stores found.</Text>
                   </View>
                 ) : (
                   filteredChargeStores.map((store) => {
-                    const isSelected = chargeToStore === store.store_name;
+                    const isSelected = selectedChargeStores.includes(store.store_name);
                     return (
                       <Pressable
                         key={`charge_${store.company_name}_${store.store_name}`}
@@ -1973,13 +2101,12 @@ export function FileOfficialTravelOrderScreen({
                           styles.storeOptionRow,
                           isSelected ? styles.storeOptionRowSelected : null,
                         ]}
-                        onPress={() => {
-                          setChargeToStore(store.store_name);
-                          setChargeStoreModalVisible(false);
-                        }}
+                        onPress={() => toggleChargeStore(store.store_name)}
                       >
-                        <View style={[styles.radioCircle, isSelected ? styles.radioCircleActive : null]}>
-                          {isSelected ? <View style={styles.radioDot} /> : null}
+                        <View style={[styles.checkbox, isSelected ? styles.checkboxActive : null]}>
+                          {isSelected ? (
+                            <Check size={14} color="#0f172a" strokeWidth={3} />
+                          ) : null}
                         </View>
                         <View style={styles.storeOptionTextCol}>
                           <Text
@@ -1990,7 +2117,25 @@ export function FileOfficialTravelOrderScreen({
                           >
                             {store.store_name}
                           </Text>
-                          <Text style={styles.storeOptionCompany}>{store.company_name}</Text>
+                          <Text style={styles.storeOptionCompany} numberOfLines={1}>
+                            {store.cluster_name ? (
+                              <>
+                                <Text style={[styles.storeOptionCluster, isSelected ? styles.storeOptionClusterSelected : null]}>
+                                  {store.cluster_name}
+                                </Text>
+                                <Text style={[styles.storeOptionDivider, isSelected ? styles.storeOptionDividerSelected : null]}>
+                                  {' • '}
+                                </Text>
+                                <Text style={isSelected ? styles.storeOptionCompanySelected : null}>
+                                  {store.company_name}
+                                </Text>
+                              </>
+                            ) : (
+                              <Text style={isSelected ? styles.storeOptionCompanySelected : null}>
+                                {store.company_name}
+                              </Text>
+                            )}
+                          </Text>
                         </View>
                       </Pressable>
                     );
@@ -1998,6 +2143,16 @@ export function FileOfficialTravelOrderScreen({
                 )}
               </ScrollView>
             )}
+
+            {/* Done Button */}
+            <Pressable
+              style={styles.modalDoneButton}
+              onPress={() => setChargeStoreModalVisible(false)}
+            >
+              <Text style={styles.modalDoneButtonText}>
+                Done {selectedChargeStores.length > 0 ? `(${selectedChargeStores.length})` : ''}
+              </Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
@@ -2878,6 +3033,24 @@ const styles = StyleSheet.create({
   storeOptionCompany: {
     fontSize: 11,
     color: '#64748b',
+  },
+  storeOptionCluster: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  storeOptionClusterSelected: {
+    color: '#78350f',
+  },
+  storeOptionDivider: {
+    fontSize: 11,
+    color: '#94a3b8',
+  },
+  storeOptionDividerSelected: {
+    color: '#b45309',
+  },
+  storeOptionCompanySelected: {
+    color: '#92400e',
   },
 
   // Done button in modal

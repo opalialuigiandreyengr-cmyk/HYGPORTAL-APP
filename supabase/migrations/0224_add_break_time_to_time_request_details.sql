@@ -8,6 +8,23 @@ alter table public.time_request_details
   add column if not exists break_from time,
   add column if not exists break_to time;
 
+-- Drop obsolete overloads of submit_time_request before creating new signature
+do $$
+declare
+  r record;
+begin
+  for r in
+    select oid::regprocedure as func_sig
+    from pg_proc
+    where proname = 'submit_time_request'
+      and pronamespace = 'public'::regnamespace
+      and pronargs < 16
+  loop
+    execute 'drop function if exists ' || r.func_sig || ' cascade';
+  end loop;
+end;
+$$;
+
 create or replace function public.submit_time_request(
   p_request_type_code text,
   p_date_from date,

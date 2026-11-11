@@ -341,12 +341,12 @@ begin
     end if;
   end if;
 
-  v_is_birthday_leave := lower(trim(p_leave_category)) = 'birthday leave';
+  v_is_birthday_leave := lower(trim(p_leave_category)) in ('birthday leave', 'birthday leave grant');
 
   if v_is_birthday_leave then
-    select e.hire_date into v_hire_date
-    from public.employees e
-    where e.id = v_profile.employee_id;
+    select min(effective_from) into v_hire_date
+    from public.employee_assignments
+    where employee_id = v_profile.employee_id;
 
     if v_hire_date is null then
       v_has_one_year_service := false;
