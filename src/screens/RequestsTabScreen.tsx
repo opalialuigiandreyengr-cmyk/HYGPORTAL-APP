@@ -4,7 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { UniversalDateTimePicker } from '../components/UniversalDateTimePicker';
-import { AlertTriangle, CalendarDays, Camera, Check, Clock3, Download, Eye, FileText, Funnel, Lock, MoreVertical, Pencil, Plus, RefreshCcw, Search, Trash2, Users, X } from 'lucide-react-native';
+import { AlertTriangle, CalendarDays, Camera, Check, Clock3, Download, Eye, FileText, Funnel, Lock, MoreVertical, Pencil, Plus, RefreshCcw, Search, Share2, Trash2, Users, X } from 'lucide-react-native';
 
 import { colors, fontWeights, spacing, radius } from '../theme';
 import { getSafeBottomInset, getScreenBottomPadding } from '../utils/safeArea';
@@ -47,6 +47,8 @@ import {
 import { lookupCachedApproverName, lookupCachedApproverByLevel } from '../services/storeApprovalWorkflow';
 import { TravelOrderDetailsContent } from '../components/TravelOrderDetailsView';
 import { downloadOfficialTravelOrderPdf } from '../services/travelOrderPdf';
+import { shareRequestViaMessenger } from '../services/shareRequest';
+import { platformAlert } from '../utils/platformAlert';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
 type StatusFilter = 'all' | 'pending' | 'approved' | 'validated' | 'rejected';
@@ -139,6 +141,24 @@ export function RequestsTabScreen({
       }
     },
     [downloadingTravelOrderId, profile],
+  );
+
+  const handleShareRequest = useCallback(
+    async (item: MyRequest, seq?: number) => {
+      try {
+        const result = await shareRequestViaMessenger(item, profile, seq);
+        if (result.success) {
+          if (result.method === 'clipboard') {
+            platformAlert('Copied to Clipboard', 'Approval request link & details copied! Paste it into Messenger to send to the approver.');
+          }
+        } else if (result.error && result.error !== 'User cancelled share' && result.error !== 'Dismissed') {
+          platformAlert('Share', result.error);
+        }
+      } catch (err: any) {
+        platformAlert('Share Error', err?.message || 'Failed to share request.');
+      }
+    },
+    [profile],
   );
 
   async function handleEditRequest(item: MyRequest) {
@@ -833,6 +853,7 @@ export function RequestsTabScreen({
               onDelete={handleDelete}
               onDownload={handleDownloadTravelOrder}
               isDownloading={downloadingTravelOrderId === item.request_id}
+              onShare={handleShareRequest}
             />
           );
         })}
@@ -900,6 +921,7 @@ export function RequestsTabScreen({
           setSelectedRequest(null);
           await refresh(true);
         }}
+        onShare={handleShareRequest}
       />
 
       <DeleteConfirmationModal
@@ -933,6 +955,7 @@ const RequestCard = memo(function RequestCard({
   onDelete,
   onDownload,
   isDownloading,
+  onShare,
 }: {
   item: MyRequest;
   profile: EmployeeProfileSummary | null;
@@ -944,6 +967,7 @@ const RequestCard = memo(function RequestCard({
   onDelete?: (item: MyRequest, sequence?: number) => void;
   onDownload?: (item: MyRequest, sequence: number) => void;
   isDownloading?: boolean;
+  onShare?: (item: MyRequest, sequence: number) => void;
 }) {
   const statusKey = normalizeStatus(item.status, item);
   const requestDate = getRequestDate(item);
@@ -953,9 +977,11 @@ const RequestCard = memo(function RequestCard({
   const isTravel = isTravelOrderRequest(item);
   const canEdit = canEditRequest(item);
   const canDelete = canDeleteRequest(item, isOnline);
+  const canShare = isShareableRequest(item);
+  const showShare = Boolean(canShare && onShare);
   const showEdit = Boolean(statusKey === 'pending' && !isPerk && canEdit && onEdit);
   const showDelete = Boolean(statusKey === 'pending' && canDelete && onDelete);
-  const hasActions = showEdit || showDelete;
+  const hasActions = showShare || showEdit || showDelete;
 
   const kebabButtonRef = useRef<View>(null);
   const [menuVisible, setMenuVisible] = useState(false);
@@ -975,7 +1001,8 @@ const RequestCard = memo(function RequestCard({
           return;
         }
 
-        const estimatedMenuHeight = (showEdit && showDelete ? 88 : 46) + 12;
+        const actionCount = (showShare ? 1 : 0) + (showEdit ? 1 : 0) + (showDelete ? 1 : 0);
+        const estimatedMenuHeight = actionCount * 44 + 16;
         const right = Math.max(12, screenWidth - (x + width));
         const showAbove = y + height + estimatedMenuHeight > screenHeight - 40;
         const top = showAbove
@@ -989,7 +1016,16 @@ const RequestCard = memo(function RequestCard({
       setMenuPosition(null);
       setMenuVisible(true);
     }
-  }, [menuVisible, showEdit, showDelete]);
+  }, [menuVisible, showShare, showEdit, showDelete]);
+
+  const handleSharePress = useCallback(() => {
+    setMenuVisible(false);
+    if (onShare) {
+      setTimeout(() => {
+        onShare(item, sequence);
+      }, 50);
+    }
+  }, [item, sequence, onShare]);
 
   const handleEditPress = useCallback(() => {
     setMenuVisible(false);
@@ -1139,6 +1175,21 @@ const RequestCard = memo(function RequestCard({
                 menuPosition ? { top: menuPosition.top, right: menuPosition.right } : styles.kebabDropdownFallback,
               ]}
             >
+              {showShare ? (
+                <Pressable
+                  style={({ pressed }) => [styles.kebabMenuItem, pressed && styles.kebabMenuItemPressed]}
+                  onPress={handleSharePress}
+                  accessibilityLabel="Share request via Messenger"
+                >
+                  <View style={[styles.kebabMenuIconContainer, { backgroundColor: '#eff6ff' }]}>
+                    <Share2 size={13} color="#2563eb" strokeWidth={2.3} />
+                  </View>
+                  <Text style={styles.kebabMenuText}>Share</Text>
+                </Pressable>
+              ) : null}
+
+              {showShare && (showEdit || showDelete) ? <View style={styles.kebabMenuDivider} /> : null}
+
               {showEdit ? (
                 <Pressable
                   style={({ pressed }) => [styles.kebabMenuItem, pressed && styles.kebabMenuItemPressed]}
@@ -1183,6 +1234,7 @@ function RequestDetailsSheet({
   onEdit,
   onDelete,
   onProofAttached,
+  onShare,
 }: {
   request: { item: MyRequest; sequence: number } | null;
   profile: EmployeeProfileSummary | null;
@@ -1192,6 +1244,7 @@ function RequestDetailsSheet({
   onEdit?: (request: MyRequest) => void;
   onDelete?: (request: MyRequest) => void;
   onProofAttached?: () => void | Promise<void>;
+  onShare?: (item: MyRequest, sequence: number) => void;
 }) {
   const insets = useSafeAreaInsets();
   const footerBottomPadding = getSafeBottomInset(insets.bottom, Platform.OS === 'ios' ? 24 : spacing.md);
@@ -1490,6 +1543,22 @@ function RequestDetailsSheet({
             )}
           </ScrollView>
           <View style={[styles.sheetFooter, { paddingBottom: footerBottomPadding }]}>
+            {isShareableRequest(item) && onShare ? (
+              <Pressable
+                style={styles.sheetShareButton}
+                onPress={() => {
+                  const itemToShare = item;
+                  const seqToShare = sequence;
+                  onClose();
+                  setTimeout(() => {
+                    onShare(itemToShare, seqToShare);
+                  }, 100);
+                }}
+              >
+                <Share2 size={15} color="#1d4ed8" strokeWidth={2.4} />
+                <Text style={styles.sheetShareText}>Share</Text>
+              </Pressable>
+            ) : null}
             {itemStatusKey === 'pending' ? (
               <>
                 {!isPerk && onEdit ? (
@@ -2107,6 +2176,32 @@ function canEditRequest(item: MyRequest): boolean {
     return false;
   }
   return true;
+}
+
+function isShareableRequest(item?: MyRequest | null): boolean {
+  if (!item) return false;
+  if (item.final_approved_at || item.rejected_at) return false;
+
+  const rawLower = (item.status || '').toLowerCase().trim();
+  // Do NOT include approved requests or rejected/validated
+  if (rawLower === 'approved' || rawLower.includes('reject') || rawLower.includes('denied') || rawLower.includes('validat')) {
+    return false;
+  }
+
+  const statusKey = normalizeStatus(item.status, item);
+  if (statusKey === 'approved' || statusKey === 'rejected' || statusKey === 'validated') {
+    return false;
+  }
+
+  // Pre-approved requests (e.g. Scheduled OT pre-approved awaiting proof or explicit pre-approved status)
+  const isPreApproved =
+    isScheduledOtAwaitingProof(item) ||
+    rawLower.includes('pre_approved') ||
+    rawLower.includes('pre-approved') ||
+    isScheduledOtRequest(item);
+
+  // Only pending and pre-approved requests
+  return statusKey === 'pending' || isPreApproved;
 }
 
 function isOfflineUnsyncedRequest(item?: MyRequest | null): boolean {
@@ -3561,6 +3656,23 @@ const styles = StyleSheet.create({
     backgroundColor: '#e2e8f0',
     marginVertical: 2,
     marginHorizontal: 8,
+  },
+  sheetShareButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 22,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
+  },
+  sheetShareText: {
+    fontSize: 15,
+    fontWeight: fontWeights.bold,
+    color: '#1d4ed8',
   },
   sheetEditButton: {
     flex: 1,

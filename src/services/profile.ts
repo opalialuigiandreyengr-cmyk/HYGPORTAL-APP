@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 import { hasReachedOneMonth, hasReachedSixMonths } from '../utils/dateTime';
+import { isAssistantStoreManager, lookupPositionAuthorityLevel } from './positions';
 
 type UserProfileRow = {
   id: string;
@@ -341,6 +342,14 @@ export async function loadEmployeeProfile(authUserId: string): Promise<ProfileLo
       };
     }
 
+    const posName = positionResponse.data?.name ?? null;
+    const dbAuthority = positionResponse.data?.authority_level;
+    const mappedAuthority = lookupPositionAuthorityLevel(posName);
+    const resolvedAuthorityLevel =
+      typeof dbAuthority === 'number' && dbAuthority > 1
+        ? dbAuthority
+        : (mappedAuthority && mappedAuthority > 1 ? mappedAuthority : (isAssistantStoreManager(posName) ? 2 : (dbAuthority ?? null)));
+
     assignmentDetails = {
       companyName: await getName('companies', assignment.company_id),
       areaName: await getName('areas', assignment.area_id),
@@ -348,9 +357,9 @@ export async function loadEmployeeProfile(authUserId: string): Promise<ProfileLo
       storeName: await getName('stores', assignment.store_id),
       departmentName: await getName('departments', assignment.department_id),
       functionName: await getName('functions', assignment.function_id),
-      positionName: positionResponse.data?.name ?? null,
+      positionName: posName,
       dateHired: assignment.effective_from,
-      authorityLevel: (positionResponse.data?.authority_level ?? null) as EmployeeProfileSummary['authorityLevel'],
+      authorityLevel: resolvedAuthorityLevel as EmployeeProfileSummary['authorityLevel'],
     };
   }
 

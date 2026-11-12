@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, AppState, type AppStateStatus, BackHandler, DeviceEventEmitter, Dimensions, Easing, Image, Keyboard, KeyboardAvoidingView, LogBox, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, useWindowDimensions, View } from 'react-native';
+import { Alert, Animated, AppState, type AppStateStatus, BackHandler, DeviceEventEmitter, Dimensions, Easing, Image, Keyboard, KeyboardAvoidingView, Linking, LogBox, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, useWindowDimensions, View } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Notifications from 'expo-notifications';
@@ -9,6 +10,7 @@ import type { User } from '@supabase/supabase-js';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Activity, Bell, BriefcaseBusiness, CalendarDays, Check, ChevronRight, ClipboardCheck, Download, Eye, EyeOff, Fingerprint, Gift, KeyRound, Layers3, ListChecks, LogOut, Moon, Plus, Route, ShieldCheck, Smartphone, Trash2, UsersRound, X } from 'lucide-react-native';
 import { SafeAreaProvider, initialWindowMetrics, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { extractRequestIdFromUrl } from './src/services/shareRequest';
 
 // Suppress dev LogBox popup overlays for expected offline network/DNS errors
 LogBox.ignoreLogs([
@@ -34,6 +36,7 @@ import {
 import { ensureFreshSession, isSupabaseConfigured, supabase } from './src/lib/supabase';
 import { getCacheJSON, initLocalCache, setCacheJSON } from './src/lib/localCache';
 import { loadPendingApprovals, type PendingApproval } from './src/services/approvals';
+import { isAssistantStoreManager } from './src/services/positions';
 import {
   assignDepartmentPosition,
   assignStoreCluster,
@@ -183,6 +186,14 @@ function isTeamScheduleManagerProfile(profileResult: ProfileLoadResult | null) {
   return isStoreManager || isMaintenanceManager;
 }
 
+function isApproverProfile(profileResult: ProfileLoadResult | null, pendingApprovalCount: number) {
+  if (profileResult?.status !== 'linked') return false;
+  if (Number(profileResult.profile.authorityLevel ?? 1) > 1) return true;
+  if (isAssistantStoreManager(profileResult.profile.positionName)) return true;
+  if (pendingApprovalCount > 0) return true;
+  return false;
+}
+
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -256,8 +267,7 @@ export default function App() {
   const [isSignOutModalVisible, setIsSignOutModalVisible] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const didAutoPromptBiometricRef = useRef(false);
-  const canUseApprovals =
-    profileResult?.status === 'linked' && Number(profileResult.profile.authorityLevel ?? 1) > 1;
+  const canUseApprovals = isApproverProfile(profileResult, pendingApprovalCount);
   const canUseMyTeam = isTeamScheduleManagerProfile(profileResult);
 
   const openApprovalFromNotification = useCallback((requestId?: string | null) => {
@@ -272,6 +282,105 @@ export default function App() {
     setTargetApprovalRequestId(null);
     setAutoOpenApprovalModal(false);
   }, []);
+
+  const [pendingApprovalRedirectId, setPendingApprovalRedirectId] = useState<string | null>(null);
+
+  const handleIncomingUrl = useCallback(
+    async (rawUrl: string | null | undefined) => {
+      if (!rawUrl) return;
+      const targetReqId = extractRequestIdFromUrl(rawUrl);
+      if (!targetReqId) return;
+
+      console.log('[DeepLink] Extracted requestId from incoming URL:', targetReqId);
+
+      // Save to storage immediately so it persists across login/sessions
+      await AsyncStorage.setItem('pending_approval_id', targetReqId).catch(() => {});
+
+      if (signedInUser) {
+        if (canUseApprovals) {
+          openApprovalFromNotification(targetReqId);
+          await AsyncStorage.removeItem('pending_approval_id').catch(() => {});
+        } else {
+          setActiveTab('requests');
+          await AsyncStorage.removeItem('pending_approval_id').catch(() => {});
+          setAppToast({
+            tone: 'success',
+            title: 'Shared Request',
+            message: 'Redirected to your Requests tab.',
+          });
+        }
+      } else {
+        setPendingApprovalRedirectId(targetReqId);
+        setAppToast({
+          tone: 'warning',
+          title: 'Sign In Required',
+          message: 'Please sign in to review the shared approval request.',
+        });
+      }
+    },
+    [signedInUser, canUseApprovals, openApprovalFromNotification]
+  );
+
+  useEffect(() => {
+    // 1. Check native initial URL
+    void Linking.getInitialURL().then((initialUrl) => {
+      if (initialUrl) {
+        void handleIncomingUrl(initialUrl);
+      }
+    });
+
+    // 2. Check Web URL if running on Web
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const webUrl = window.location.href;
+      if (webUrl) {
+        void handleIncomingUrl(webUrl);
+      }
+    }
+
+    // 3. Check AsyncStorage for any preserved pending approval id from a previous launch
+    void AsyncStorage.getItem('pending_approval_id').then((savedId) => {
+      if (savedId) {
+        setPendingApprovalRedirectId(savedId);
+      }
+    });
+
+    // 4. Listen for runtime deep link events (e.g. user taps link in Messenger while app is open/backgrounded)
+    const linkSub = Linking.addEventListener('url', (event) => {
+      void handleIncomingUrl(event.url);
+    });
+
+    return () => {
+      linkSub.remove();
+    };
+  }, [handleIncomingUrl]);
+
+  // Effect: When user signs in and their profile is loaded, resolve any pending approval redirect
+  useEffect(() => {
+    if (!signedInUser || !profileResult) return;
+
+    const resolvePendingApproval = async () => {
+      const targetId = pendingApprovalRedirectId || (await AsyncStorage.getItem('pending_approval_id').catch(() => null));
+      if (!targetId) return;
+
+      setPendingApprovalRedirectId(null);
+      await AsyncStorage.removeItem('pending_approval_id').catch(() => {});
+
+      if (canUseApprovals) {
+        setTimeout(() => {
+          openApprovalFromNotification(targetId);
+        }, 350);
+      } else {
+        setActiveTab('requests');
+        setAppToast({
+          tone: 'success',
+          title: 'Shared Request',
+          message: 'Redirected to your Requests tab.',
+        });
+      }
+    };
+
+    void resolvePendingApproval();
+  }, [signedInUser, profileResult, pendingApprovalRedirectId, canUseApprovals, openApprovalFromNotification]);
 
   useEffect(() => {
     const subscription = Notifications.addNotificationResponseReceivedListener((response: Notifications.NotificationResponse) => {

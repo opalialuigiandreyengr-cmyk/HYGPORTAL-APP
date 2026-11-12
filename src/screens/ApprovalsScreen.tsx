@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -36,7 +36,7 @@ import {
   type ApprovedApproval,
   type PendingApproval,
 } from '../services/approvals';
-import { resolveApproverLevel } from '../services/positions';
+import { isAssistantStoreManager, resolveApproverLevel } from '../services/positions';
 import { startApproverViewingSession } from '../services/requestViewerLock';
 import { supabase } from '../lib/supabase';
 import {
@@ -190,29 +190,30 @@ export function ApprovalsScreen({
     refresh();
   }, []);
 
+  const hasForceRefreshedForTargetRef = useRef(false);
+
   useEffect(() => {
-    if (items.length > 0 && (targetRequestId || autoOpenFirst) && mainTab === 'pending') {
-      if (targetRequestId) {
-        const matchIdx = items.findIndex(
-          (i) =>
-            i.request_id === targetRequestId ||
-            i.step_id === targetRequestId ||
-            (i as any).pending_step_id === targetRequestId,
-        );
-        if (matchIdx >= 0) {
-          setSelectedApproval({ item: items[matchIdx], sequence: matchIdx + 1 });
-          onClearTargetRequest?.();
-          return;
-        }
-      }
-      if (autoOpenFirst) {
-        setSelectedApproval({ item: items[0], sequence: 1 });
+    if (!targetRequestId) {
+      hasForceRefreshedForTargetRef.current = false;
+      return;
+    }
+
+    if (items.length > 0) {
+      const matchIdx = items.findIndex(
+        (i) =>
+          i.request_id === targetRequestId ||
+          i.step_id === targetRequestId ||
+          (i as any).pending_step_id === targetRequestId,
+      );
+      if (matchIdx >= 0) {
+        setMainTab('pending');
+        setSelectedApproval({ item: items[matchIdx], sequence: matchIdx + 1 });
         onClearTargetRequest?.();
         return;
       }
     }
 
-    if (approvedItems.length > 0 && targetRequestId) {
+    if (approvedItems.length > 0) {
       const approvedIdx = approvedItems.findIndex(
         (i) =>
           i.request_id === targetRequestId ||
@@ -227,7 +228,15 @@ export function ApprovalsScreen({
       }
     }
 
-    if (targetRequestId && items.length > 0 && approvedItems.length > 0) {
+    // If not found in cached lists and we have not attempted a fresh network refresh yet:
+    if (!hasForceRefreshedForTargetRef.current && !isLoading) {
+      hasForceRefreshedForTargetRef.current = true;
+      void refresh(true);
+      return;
+    }
+
+    // Only after network refresh has completed and still not found
+    if (!isLoading && hasForceRefreshedForTargetRef.current && (items.length > 0 || approvedItems.length > 0)) {
       onToast?.({
         tone: 'warning',
         title: 'Request Processed',
@@ -235,9 +244,22 @@ export function ApprovalsScreen({
       });
       onClearTargetRequest?.();
     }
-  }, [items, approvedItems, targetRequestId, autoOpenFirst, mainTab, onClearTargetRequest]);
+  }, [items, approvedItems, targetRequestId, mainTab, isLoading, onClearTargetRequest, onToast]);
+
+  useEffect(() => {
+    if (!targetRequestId && autoOpenFirst && items.length > 0 && mainTab === 'pending') {
+      setSelectedApproval({ item: items[0], sequence: 1 });
+      onClearTargetRequest?.();
+    }
+  }, [items, targetRequestId, autoOpenFirst, mainTab, onClearTargetRequest]);
+
+  const isStoreLevelApprover = useMemo(() => {
+    const pos = (profile?.positionName || '').toLowerCase();
+    return isAssistantStoreManager(pos) || pos.includes('store manager') || pos.includes('store mgr');
+  }, [profile]);
 
   const isMultiDeptRole = useMemo(() => {
+    if (isStoreLevelApprover) return false;
     const pos = (profile?.positionName || '').toLowerCase();
     const dept = (profile?.departmentName || '').toLowerCase();
     const level = profile?.authorityLevel ?? 0;
@@ -255,7 +277,7 @@ export function ApprovalsScreen({
       dept.includes('management') ||
       dept.includes('operations')
     );
-  }, [profile]);
+  }, [profile, isStoreLevelApprover]);
 
   const availableDepartments = useMemo(() => {
     const list = mainTab === 'pending' ? items : approvedItems;
@@ -294,7 +316,7 @@ export function ApprovalsScreen({
     return { counts, total };
   }, [items, approvedItems, mainTab, activeCategory]);
 
-  const showDeptFilter = isMultiDeptRole || availableDepartments.length > 1;
+  const showDeptFilter = !isStoreLevelApprover && (isMultiDeptRole || availableDepartments.length > 1);
 
   const categoryCounts = useMemo(() => {
     return items.reduce(

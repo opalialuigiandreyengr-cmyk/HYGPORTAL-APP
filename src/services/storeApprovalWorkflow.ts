@@ -1,7 +1,7 @@
 import { supabase } from '../lib/supabase';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { isAppOnline } from './network';
-import { lookupPositionAuthorityLevel, resolveApproverLevel } from './positions';
+import { isAssistantStoreManager, lookupPositionAuthorityLevel, resolveApproverLevel } from './positions';
 
 export type PortalStore = {
   id: string;
@@ -688,6 +688,19 @@ export async function resolveStoreWorkflowFromCandidates(
       );
       if (storeMatches.length > 0) {
         storeMatches.sort((a, b) => {
+          // Prefer Store Manager if assigned to store; if no Store Manager assigned, select Assistant Store Manager
+          const aIsSM =
+            (a.position_name || '').toLowerCase().includes('store manager') &&
+            !isAssistantStoreManager(a.position_name)
+              ? 0
+              : 1;
+          const bIsSM =
+            (b.position_name || '').toLowerCase().includes('store manager') &&
+            !isAssistantStoreManager(b.position_name)
+              ? 0
+              : 1;
+          if (aIsSM !== bIsSM) return aIsSM - bIsSM;
+
           const aLevel = a.authority_level ?? (lookupPositionAuthorityLevel(a.position_name) ?? 2);
           const bLevel = b.authority_level ?? (lookupPositionAuthorityLevel(b.position_name) ?? 2);
           const aIsStore = aLevel === 2 || aLevel === 3 ? 0 : 1;
@@ -1161,7 +1174,12 @@ export async function loadApproverCandidates(searchQuery?: string): Promise<Appr
         );
 
         if (res && !res.error && Array.isArray(res.data) && res.data.length > 0) {
-          return (res.data as ApproverCandidate[]).filter((c) => (c.authority_level ?? 0) > 1);
+          return (res.data as ApproverCandidate[]).filter(
+            (c) =>
+              (c.authority_level ?? 0) > 1 ||
+              (lookupPositionAuthorityLevel(c.position_name) ?? 0) > 1 ||
+              isAssistantStoreManager(c.position_name),
+          );
         }
       } catch {
         // fallback
@@ -1175,7 +1193,12 @@ export async function loadApproverCandidates(searchQuery?: string): Promise<Appr
         );
 
         if (res && !res.error && Array.isArray(res.data) && res.data.length > 0) {
-          return (res.data as ApproverCandidate[]).filter((c) => (c.authority_level ?? 0) > 1);
+          return (res.data as ApproverCandidate[]).filter(
+            (c) =>
+              (c.authority_level ?? 0) > 1 ||
+              (lookupPositionAuthorityLevel(c.position_name) ?? 0) > 1 ||
+              isAssistantStoreManager(c.position_name),
+          );
         }
       } catch {
         // fallback
@@ -1185,7 +1208,12 @@ export async function loadApproverCandidates(searchQuery?: string): Promise<Appr
       try {
         const legacy = await getCacheJSON<SWRCacheEntry<ApproverCandidate[]>>('swr_portal_candidates_master_v2');
         if (legacy && Array.isArray(legacy.data) && legacy.data.length > 0) {
-          return legacy.data.filter((c) => (c.authority_level ?? 0) > 1);
+          return legacy.data.filter(
+            (c) =>
+              (c.authority_level ?? 0) > 1 ||
+              (lookupPositionAuthorityLevel(c.position_name) ?? 0) > 1 ||
+              isAssistantStoreManager(c.position_name),
+          );
         }
       } catch {
         // ignore
@@ -1204,15 +1232,25 @@ export async function loadApproverCandidates(searchQuery?: string): Promise<Appr
     try {
       const legacy = await getCacheJSON<SWRCacheEntry<ApproverCandidate[]>>('swr_portal_candidates_master_v2');
       if (legacy && Array.isArray(legacy.data) && legacy.data.length > 0) {
-        allCandidates = legacy.data.filter((c) => (c.authority_level ?? 0) > 1);
+        allCandidates = legacy.data.filter(
+          (c) =>
+            (c.authority_level ?? 0) > 1 ||
+            (lookupPositionAuthorityLevel(c.position_name) ?? 0) > 1 ||
+            isAssistantStoreManager(c.position_name),
+        );
       }
     } catch {
       // ignore
     }
   }
 
-  // Strict guarantee: Exclude all level 1 employees
-  const approversOnly = allCandidates.filter((c) => (c.authority_level ?? 0) > 1);
+  // Strict guarantee: Exclude all level 1 employees (preserves Assistant Store Managers who have authority level 2)
+  const approversOnly = allCandidates.filter(
+    (c) =>
+      (c.authority_level ?? 0) > 1 ||
+      (lookupPositionAuthorityLevel(c.position_name) ?? 0) > 1 ||
+      isAssistantStoreManager(c.position_name),
+  );
 
   // Instant client-side filtering (0 database queries, 0ms latency)
   if (!searchQuery || !searchQuery.trim()) {

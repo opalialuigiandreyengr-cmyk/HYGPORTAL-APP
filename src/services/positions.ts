@@ -12,6 +12,14 @@ const DEFAULT_POSITION_AUTHORITIES: Record<string, number> = {
   'store manager': 2,
   'branch manager': 3,
   'assistant store manager': 2,
+  'asst. store manager': 2,
+  'asst store manager': 2,
+  'assistant store mgr': 2,
+  'asst. store mgr': 2,
+  'asst store mgr': 2,
+  'store assistant manager': 2,
+  'store asst manager': 2,
+  'asm': 2,
   'cluster head': 4,
   'cluster manager': 4,
   'area operations manager': 5,
@@ -77,12 +85,46 @@ export async function loadPositionAuthorities(): Promise<Record<string, number>>
 }
 
 /**
+ * Checks whether a position name corresponds to an Assistant Store Manager.
+ */
+export function isAssistantStoreManager(positionName?: string | null): boolean {
+  if (!positionName) return false;
+  const pos = positionName.trim().replace(/\s+/g, ' ').toLowerCase();
+  if (!pos) return false;
+  return (
+    pos === 'assistant store manager' ||
+    pos === 'asst. store manager' ||
+    pos === 'asst store manager' ||
+    pos === 'assistant store mgr' ||
+    pos === 'asst. store mgr' ||
+    pos === 'asst store mgr' ||
+    pos === 'store assistant manager' ||
+    pos === 'store asst manager' ||
+    pos === 'asm' ||
+    pos.startsWith('asm ') ||
+    pos.endsWith(' asm') ||
+    pos.includes('(asm)') ||
+    pos.includes('assistant store manager') ||
+    pos.includes('asst store manager') ||
+    pos.includes('asst. store manager') ||
+    pos.includes('assistant store mgr') ||
+    pos.includes('asst store mgr') ||
+    pos.includes('asst. store mgr') ||
+    ((pos.includes('assistant') || pos.includes('asst')) && (pos.includes('store') || pos.includes('branch')) && (pos.includes('manager') || pos.includes('mgr')))
+  );
+}
+
+/**
  * Looks up the authority level of a position by position name (matching admin PositionDirectoryService).
  */
 export function lookupPositionAuthorityLevel(positionName?: string | null): number | null {
   if (!positionName) return null;
   const key = positionName.trim().toLowerCase();
   if (!key) return null;
+
+  if (isAssistantStoreManager(key)) {
+    return 2;
+  }
 
   const exact = positionAuthorityMap[key];
   if (exact !== undefined && exact > 0) return exact;
