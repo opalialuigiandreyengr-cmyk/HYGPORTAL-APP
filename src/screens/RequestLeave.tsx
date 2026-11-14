@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   BackHandler,
   KeyboardAvoidingView,
   Modal,
@@ -15,14 +16,20 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import {
   AlertTriangle,
+  ArrowRightLeft,
   Cake,
   CalendarDays,
   Check,
+  CheckCircle2,
   ChevronDown,
+  Clock3,
   Plus,
+  Repeat,
   RotateCcw,
+  Search,
   Sparkles,
   Trash2,
+  Users,
   WalletCards,
   WifiOff,
   X,
@@ -30,10 +37,12 @@ import {
 
 import { TopBar } from '../components/TopBar';
 import { DateRangePickerModal } from '../components/DateRangePickerModal';
+import { ScrollableTimePickerModal } from '../components/ScrollableTimePickerModal';
 import { formatEsarfDateRange } from '../components/EsarfDetailsView';
 import type { AppToastMessage } from '../components/AppToast';
-import { leaveCategoryOptions, leaveTypeOptions } from '../constants/requestOptions';
+import { dayOffOptions, leaveCategoryOptions, leaveTypeOptions, payrollClassOptions, scheduleOptions } from '../constants/requestOptions';
 import { supabase } from '../lib/supabase';
+import { loadMyFlexibleSchedule } from '../services/team';
 import { platformAlert } from '../utils/platformAlert';
 import { withTimeout } from '../utils/withTimeout';
 import type { AssistantDraft } from '../services/assistant';
@@ -42,11 +51,19 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getSafeBottomInset } from '../utils/safeArea';
 import { calculateLeaveDays, dateStringToDate, formatDateInput, hasCompletedOneYearOfService } from '../utils/dateTime';
 import { updateMyPendingRequest, type MyRequest } from '../services/requests';
+import {
+  loadStoreApprovalWorkflow,
+  loadApproverCandidates,
+  formatApproverDisplayName,
+  type WorkflowStep,
+  type ApproverCandidate,
+} from '../services/storeApprovalWorkflow';
+import { resolveApproverLevel, loadPositionAuthorities } from '../services/positions';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { isAppOnline, useNetworkStatus } from '../services/network';
 import { enqueueOfflineItem, removeOfflineItem, removeRequestFromLocalCache } from '../services/offlineQueue';
-import { getDisabledLeaveTypes, getLeaveBreakdown } from '../utils/requestCalculations';
+import { getDisabledLeaveTypes, getLeaveBreakdown, parseDayOffList } from '../utils/requestCalculations';
 import {
   checkBirthdayLeaveAppliedForYear,
   isAutoApprovedBirthdayGrant,
@@ -55,6 +72,109 @@ import {
   parseBirthMonthDay,
   verifyEmployeeBirthday,
 } from '../services/birthdayLeave';
+
+const NO_SCHEDULE_LABEL = 'No schedule';
+const NO_DAY_OFF_LABEL = 'No day off';
+
+const DAY_FULL_NAMES: Record<string, string> = {
+  Mon: 'Monday',
+  Tue: 'Tuesday',
+  Wed: 'Wednesday',
+  Thu: 'Thursday',
+  Fri: 'Friday',
+  Sat: 'Saturday',
+  Sun: 'Sunday',
+};
+
+function normalizeSchedule(value?: string | null): string {
+  if (!value) return NO_SCHEDULE_LABEL;
+  const trimmed = value.trim();
+  const lower = trimmed.toLowerCase();
+  if (lower === 'no schedule' || lower === 'no_schedule' || lower === '') {
+    return NO_SCHEDULE_LABEL;
+  }
+  const match = trimmed.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
+  if (match) {
+    const startHour = match[1];
+    const startMin = match[2] || '00';
+    const startAmPm = match[3].toUpperCase();
+    const endHour = match[4];
+    const endMin = match[5] || '00';
+    const endAmPm = match[6].toUpperCase();
+    return `${startHour}:${startMin}${startAmPm} - ${endHour}:${endMin}${endAmPm}`;
+  }
+  return trimmed;
+}
+
+function normalizeDayOff(value?: string | null): string {
+  if (!value) return NO_DAY_OFF_LABEL;
+  const trimmed = value.trim();
+  const upper = trimmed.toUpperCase();
+  if (upper === 'NO DAY OFF' || upper === 'NO_DAY_OFF' || upper === '' || upper === 'NONE') {
+    return NO_DAY_OFF_LABEL;
+  }
+  const parsed = parseDayOffList(trimmed);
+  if (parsed.length > 0) {
+    return parsed.join(', ');
+  }
+  return trimmed;
+}
+
+function parse12HourToken(token: string): number | null {
+  const trimmed = token.trim();
+  const m = trimmed.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = m[2] ? parseInt(m[2], 10) : 0;
+  const ampm = m[3].toUpperCase();
+  if (ampm === 'PM' && h !== 12) h += 12;
+  if (ampm === 'AM' && h === 12) h = 0;
+  return h * 60 + min;
+}
+
+function parseScheduleToTimes(scheduleText: string): { startTime: string; endTime: string } {
+  const DEFAULT_START = '09:00';
+  const DEFAULT_END = '18:00';
+  if (!scheduleText || scheduleText === NO_SCHEDULE_LABEL) {
+    return { startTime: DEFAULT_START, endTime: DEFAULT_END };
+  }
+  const parts = scheduleText.split('-');
+  if (parts.length !== 2) {
+    return { startTime: DEFAULT_START, endTime: DEFAULT_END };
+  }
+  const startMin = parse12HourToken(parts[0]);
+  const endMin = parse12HourToken(parts[1]);
+  if (startMin === null || endMin === null) {
+    return { startTime: DEFAULT_START, endTime: DEFAULT_END };
+  }
+  const startH = String(Math.floor(startMin / 60)).padStart(2, '0');
+  const startM = String(startMin % 60).padStart(2, '0');
+  const endH = String(Math.floor((endMin % (24 * 60)) / 60)).padStart(2, '0');
+  const endM = String(endMin % 60).padStart(2, '0');
+  return { startTime: `${startH}:${startM}`, endTime: `${endH}:${endM}` };
+}
+
+function formatTimeDisplay(value: string): string {
+  const [hourStr, minuteStr] = value.split(':');
+  const hourNum = parseInt(hourStr, 10);
+  if (isNaN(hourNum)) return value;
+  const ampm = hourNum >= 12 ? 'PM' : 'AM';
+  const formattedHour = hourNum % 12 === 0 ? 12 : hourNum % 12;
+  return `${String(formattedHour).padStart(2, '0')}:${minuteStr || '00'} ${ampm}`;
+}
+
+function getCustomSchedulePreview(startTime: string, endTime: string): string {
+  const formattedStart = formatTimeDisplay(startTime);
+  const formattedEnd = formatTimeDisplay(endTime);
+  return normalizeSchedule(`${formattedStart} - ${formattedEnd}`);
+}
+
+function formatFlexibleScheduleLabel(fromTime?: string | null, toTime?: string | null) {
+  if (!fromTime || !toTime) {
+    return NO_SCHEDULE_LABEL;
+  }
+  return `${formatTimeDisplay(fromTime)} - ${formatTimeDisplay(toTime)}`;
+}
 
 export type LeaveEntry = {
   id: string;
@@ -65,6 +185,8 @@ export type LeaveEntry = {
   paidDays: string;
   unpaidDays: string;
   reason: string;
+  workflowSteps?: WorkflowStep[];
+  isLoadingWorkflow?: boolean;
 };
 
 type RequestLeaveProps = {
@@ -76,6 +198,10 @@ type RequestLeaveProps = {
   birthDate?: string | null;
   dateHired?: string | null;
   dayOff?: string | null;
+  profileSchedule?: string | null;
+  profilePayrollClass?: string | null;
+  profileDepartmentName?: string | null;
+  profileStoreName?: string | null;
   leaveCreditRemaining?: number;
   initialDraft?: Extract<AssistantDraft, { intent: 'draft_leave_request' }> | null;
   editingRequest?: MyRequest | null;
@@ -97,6 +223,10 @@ const RequestLeave = ({
   birthDate,
   dateHired,
   dayOff,
+  profileSchedule,
+  profilePayrollClass,
+  profileDepartmentName,
+  profileStoreName,
   leaveCreditRemaining = 0,
   initialDraft,
   editingRequest,
@@ -110,8 +240,37 @@ const RequestLeave = ({
 }: RequestLeaveProps) => {
   const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const [effectiveBirthDate, setEffectiveBirthDate] = useState<string | null>(birthDate || null);
+
+  const fixedSchedule = normalizeSchedule(profileSchedule);
+  const fixedDayOff = normalizeDayOff(dayOff);
+
+  const initialSchedule = editingRequest?.time_schedule
+    ? normalizeSchedule(editingRequest.time_schedule)
+    : initialDraft?.fields && (initialDraft.fields as any).schedule
+      ? normalizeSchedule((initialDraft.fields as any).schedule)
+      : fixedSchedule;
+  const initialDayOff = editingRequest?.day_off
+    ? normalizeDayOff(editingRequest.day_off)
+    : initialDraft?.fields && (initialDraft.fields as any).dayOff
+      ? normalizeDayOff((initialDraft.fields as any).dayOff)
+      : fixedDayOff;
+  const initialPayrollClass = editingRequest?.payroll_class ?? profilePayrollClass ?? 'Select payroll class';
+
+  const [schedule, setSchedule] = useState(initialSchedule);
+  const [dayOffState, setDayOffState] = useState(initialDayOff);
+  const [payrollClass, setPayrollClass] = useState(initialPayrollClass);
+  const [isUserCustomSchedule, setIsUserCustomSchedule] = useState(Boolean(editingRequest?.time_schedule));
+  const [isUserCustomDayOff, setIsUserCustomDayOff] = useState(Boolean(editingRequest?.day_off));
+
+  const [activeHeaderSelect, setActiveHeaderSelect] = useState<'schedule' | 'day_off' | null>(null);
+  const [isCustomScheduleOpen, setIsCustomScheduleOpen] = useState(false);
+  const [customStartTime, setCustomStartTime] = useState('09:00');
+  const [customEndTime, setCustomEndTime] = useState('18:00');
+  const [customTimePickerKind, setCustomTimePickerKind] = useState<'start' | 'end' | null>(null);
+  const [customScheduleTimePicker, setCustomScheduleTimePicker] = useState<'start' | 'end' | null>(null);
+
   const [effectiveDayOff, setEffectiveDayOff] = useState<string | null>(
-    dayOff || editingRequest?.day_off || null,
+    initialDayOff === NO_DAY_OFF_LABEL ? null : initialDayOff,
   );
   const [hasAppliedBirthdayLeaveThisYear, setHasAppliedBirthdayLeaveThisYear] =
     useState<boolean>(false);
@@ -119,36 +278,244 @@ const RequestLeave = ({
   const network = useNetworkStatus();
   const isOnline = network.isOnline;
 
+  const isOperationsDepartment = (
+    profileDepartmentName?.trim().replace(/\s+/g, ' ').toLowerCase() ?? ''
+  ).includes('operation');
+
+  // Default Approval Workflow State (Employee's original route approvers)
+  const [defaultWorkflowSteps, setDefaultWorkflowSteps] = useState<WorkflowStep[]>([]);
+  const [isLoadingDefaultWorkflow, setIsLoadingDefaultWorkflow] = useState(false);
+
+  // Reassign Approver Modal State
+  const [isReassignModalOpen, setIsReassignModalOpen] = useState(false);
+  const [reassigningInfo, setReassigningInfo] = useState<{ entryIndex: number; step: WorkflowStep } | null>(null);
+  const [candidateSearchQuery, setCandidateSearchQuery] = useState('');
+  const [approverCandidates, setApproverCandidates] = useState<ApproverCandidate[]>([]);
+  const [selectedCandidate, setSelectedCandidate] = useState<ApproverCandidate | null>(null);
+  const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
+
+  // Pre-cache approver candidates and position authorities in background on mount
   useEffect(() => {
-    if (dayOff) {
-      setEffectiveDayOff(dayOff);
+    loadApproverCandidates().catch(() => {});
+    loadPositionAuthorities().catch(() => {});
+  }, []);
+
+  // Load employee's original approvers based on their approval routes
+  useEffect(() => {
+    let isMounted = true;
+    async function initDefaultWorkflow() {
+      setIsLoadingDefaultWorkflow(true);
+      try {
+        const steps = await loadStoreApprovalWorkflow(
+          null,
+          employeeId,
+          profileStoreName,
+          isOperationsDepartment,
+          profileDepartmentName,
+        );
+        if (!isMounted) return;
+        setDefaultWorkflowSteps(steps);
+        // Hydrate any entries that don't have workflowSteps yet
+        setEntries((prev) =>
+          prev.map((e) => {
+            if (!e.workflowSteps || e.workflowSteps.length === 0) {
+              return { ...e, workflowSteps: steps };
+            }
+            return e;
+          }),
+        );
+      } catch (err) {
+        console.warn('[RequestLeave] Error loading default approval workflow:', err);
+      } finally {
+        if (isMounted) setIsLoadingDefaultWorkflow(false);
+      }
     }
-  }, [dayOff]);
+    initDefaultWorkflow();
+    return () => {
+      isMounted = false;
+    };
+  }, [employeeId, profileStoreName, isOperationsDepartment, profileDepartmentName]);
+
+  // Load approver candidates when reassign modal opens
+  useEffect(() => {
+    if (!isReassignModalOpen) return;
+    let isMounted = true;
+    async function fetchCandidates() {
+      setIsLoadingCandidates(true);
+      try {
+        const candidates = await loadApproverCandidates();
+        if (!isMounted) return;
+        setApproverCandidates(candidates);
+      } catch {
+        // non-fatal
+      } finally {
+        if (isMounted) setIsLoadingCandidates(false);
+      }
+    }
+    fetchCandidates();
+    return () => {
+      isMounted = false;
+    };
+  }, [isReassignModalOpen]);
+
+  // Filtered approver candidates (Strictly excludes level 1 rank-and-file employees)
+  const filteredApproverCandidates = useMemo(() => {
+    const approversOnly = approverCandidates.filter((c) => (c.authority_level ?? 0) > 1);
+    if (!candidateSearchQuery.trim()) return approversOnly;
+    const q = candidateSearchQuery.toLowerCase().trim();
+    return approversOnly.filter(
+      (c) =>
+        c.full_name.toLowerCase().includes(q) ||
+        (c.employee_no && c.employee_no.toLowerCase().includes(q)) ||
+        (c.position_name && c.position_name.toLowerCase().includes(q)) ||
+        (c.department_name && c.department_name.toLowerCase().includes(q)) ||
+        (c.store_name && c.store_name.toLowerCase().includes(q)) ||
+        (c.company_name && c.company_name.toLowerCase().includes(q)),
+    );
+  }, [approverCandidates, candidateSearchQuery]);
+
+  function handleOpenReassignModal(entryIndex: number, step: WorkflowStep) {
+    setReassigningInfo({ entryIndex, step });
+    setSelectedCandidate(null);
+    setCandidateSearchQuery('');
+    setIsReassignModalOpen(true);
+  }
+
+  function handleConfirmReassign() {
+    if (!reassigningInfo || !selectedCandidate) return;
+    const { entryIndex, step } = reassigningInfo;
+    const targetStepOrder = step.step_order;
+    const candLevel = selectedCandidate.authority_level ?? 2;
+
+    setEntries((prev) =>
+      prev.map((e, idx) => {
+        if (idx !== entryIndex) return e;
+        const updated = (e.workflowSteps || []).map((s) => {
+          if (s.step_order === targetStepOrder) {
+            return {
+              ...s,
+              approver_employee_id: selectedCandidate.employee_id,
+              approver_name: selectedCandidate.full_name,
+              approver_position_name: selectedCandidate.position_name || s.approver_position_name,
+              approver_employee_no: selectedCandidate.employee_no || s.approver_employee_no,
+              approver_level: candLevel,
+              position_level: candLevel,
+              required_level: candLevel,
+              is_reassigned: true,
+            };
+          }
+          return s;
+        });
+        return { ...e, workflowSteps: updated };
+      }),
+    );
+
+    onToast?.({
+      tone: 'success',
+      title: 'Approver Reassigned',
+      message: `Step ${targetStepOrder} approver for Request #${entryIndex + 1} set to ${selectedCandidate.full_name}`,
+    });
+
+    setIsReassignModalOpen(false);
+    setReassigningInfo(null);
+    setSelectedCandidate(null);
+  }
+
+  async function handleResetStepApprover() {
+    if (!reassigningInfo) return;
+    const { entryIndex, step } = reassigningInfo;
+    const targetStepOrder = step.step_order;
+
+    try {
+      const baseSteps = defaultWorkflowSteps;
+      const def = baseSteps.find((s) => s.step_order === targetStepOrder);
+      if (def) {
+        setEntries((prev) =>
+          prev.map((e, idx) => {
+            if (idx !== entryIndex) return e;
+            const updated = (e.workflowSteps || []).map((s) =>
+              s.step_order === targetStepOrder ? { ...def, is_reassigned: false } : s,
+            );
+            return { ...e, workflowSteps: updated };
+          }),
+        );
+      }
+      onToast?.({
+        tone: 'success',
+        title: 'Approver Reset',
+        message: `Step ${targetStepOrder} approver reset to default.`,
+      });
+    } finally {
+      setIsReassignModalOpen(false);
+      setReassigningInfo(null);
+      setSelectedCandidate(null);
+    }
+  }
+
+  useEffect(() => {
+    const eff = dayOffState === NO_DAY_OFF_LABEL ? null : dayOffState;
+    setEffectiveDayOff(eff);
+  }, [dayOffState]);
+
+  useEffect(() => {
+    if (profileSchedule && !isUserCustomSchedule) {
+      setSchedule(normalizeSchedule(profileSchedule));
+    }
+  }, [profileSchedule, isUserCustomSchedule]);
+
+  useEffect(() => {
+    if (dayOff && !isUserCustomDayOff) {
+      setDayOffState(normalizeDayOff(dayOff));
+    }
+  }, [dayOff, isUserCustomDayOff]);
+
+  useEffect(() => {
+    if (editingRequest) {
+      if (editingRequest.time_schedule) {
+        setSchedule(normalizeSchedule(editingRequest.time_schedule));
+        setIsUserCustomSchedule(true);
+      }
+      if (editingRequest.day_off) {
+        setDayOffState(normalizeDayOff(editingRequest.day_off));
+        setIsUserCustomDayOff(true);
+      }
+      if (editingRequest.payroll_class) {
+        setPayrollClass(editingRequest.payroll_class);
+      }
+    }
+  }, [editingRequest]);
 
   useEffect(() => {
     let isMounted = true;
-    async function resolveDayOff() {
-      if (effectiveDayOff) return;
+    async function resolveProfileDetails() {
       try {
         if (employeeId) {
           const { data } = await supabase
             .from('employee_profile_details')
-            .select('day_off')
+            .select('day_off, time_schedule, payroll_class')
             .eq('employee_id', employeeId)
-            .maybeSingle<{ day_off: string | null }>();
-          if (isMounted && data?.day_off) {
-            setEffectiveDayOff(data.day_off);
+            .maybeSingle<{ day_off: string | null; time_schedule: string | null; payroll_class: string | null }>();
+          if (isMounted && data) {
+            if (!isUserCustomDayOff && data.day_off && !dayOff) {
+              setDayOffState(normalizeDayOff(data.day_off));
+            }
+            if (!isUserCustomSchedule && data.time_schedule && !profileSchedule) {
+              setSchedule(normalizeSchedule(data.time_schedule));
+            }
+            if (data.payroll_class && !profilePayrollClass) {
+              setPayrollClass(data.payroll_class);
+            }
           }
         }
       } catch {
         // ignore errors
       }
     }
-    resolveDayOff();
+    resolveProfileDetails();
     return () => {
       isMounted = false;
     };
-  }, [employeeId, effectiveDayOff]);
+  }, [employeeId, dayOff, profileSchedule, profilePayrollClass, isUserCustomDayOff, isUserCustomSchedule]);
 
   const handlePullRefresh = async () => {
     if (!onRefresh) return;
@@ -284,6 +651,19 @@ const RequestLeave = ({
     if (editingRequest) {
       const eStartDate = editingRequest.start_date || editingRequest.date_from || '';
       const eEndDate = editingRequest.end_date || editingRequest.date_to || eStartDate;
+      const editingWorkflow: WorkflowStep[] = (editingRequest.approval_summary || []).map((s) => ({
+        step_order: s.step_order,
+        required_level: s.required_level || 1,
+        role_name: s.approver_position_name || `Step ${s.step_order}`,
+        approver_employee_id: (s as any).approver_employee_id || null,
+        approver_name: s.approver_name || 'Approver',
+        approver_position_name: s.approver_position_name || null,
+        approver_employee_no: s.approver_employee_no || null,
+        status: s.status,
+        is_reassigned: Boolean((s as any).is_reassigned),
+        approver_level: (s as any).approver_level ?? s.required_level,
+        position_level: (s as any).position_level ?? s.required_level,
+      }));
       return [
         {
           id: '1',
@@ -300,6 +680,7 @@ const RequestLeave = ({
               ? String(editingRequest.unpaid_days)
               : '0',
           reason: editingRequest.reason || '',
+          workflowSteps: editingWorkflow.length > 0 ? editingWorkflow : undefined,
         },
       ];
     }
@@ -326,6 +707,19 @@ const RequestLeave = ({
     if (editingRequest) {
       const eStartDate = editingRequest.start_date || editingRequest.date_from || '';
       const eEndDate = editingRequest.end_date || editingRequest.date_to || eStartDate;
+      const editingWorkflow: WorkflowStep[] = (editingRequest.approval_summary || []).map((s) => ({
+        step_order: s.step_order,
+        required_level: s.required_level || 1,
+        role_name: s.approver_position_name || `Step ${s.step_order}`,
+        approver_employee_id: (s as any).approver_employee_id || null,
+        approver_name: s.approver_name || 'Approver',
+        approver_position_name: s.approver_position_name || null,
+        approver_employee_no: s.approver_employee_no || null,
+        status: s.status,
+        is_reassigned: Boolean((s as any).is_reassigned),
+        approver_level: (s as any).approver_level ?? s.required_level,
+        position_level: (s as any).position_level ?? s.required_level,
+      }));
       setEntries([
         {
           id: '1',
@@ -342,6 +736,7 @@ const RequestLeave = ({
               ? String(editingRequest.unpaid_days)
               : '0',
           reason: editingRequest.reason || '',
+          workflowSteps: editingWorkflow.length > 0 ? editingWorkflow : undefined,
         },
       ]);
     }
@@ -468,6 +863,7 @@ const RequestLeave = ({
         paidDays: '0',
         unpaidDays: '0',
         reason: '',
+        workflowSteps: defaultWorkflowSteps.length > 0 ? [...defaultWorkflowSteps] : [],
       },
     ]);
 
@@ -507,10 +903,121 @@ const RequestLeave = ({
     );
   }
 
+  const primaryDateFrom = entries[0]?.dateFrom || '';
+  useEffect(() => {
+    if (!primaryDateFrom) return;
+    let active = true;
+    async function refreshFlexibleSchedule() {
+      const hasProfileSchedule = fixedSchedule !== NO_SCHEDULE_LABEL || fixedDayOff !== NO_DAY_OFF_LABEL;
+      try {
+        const row = await loadMyFlexibleSchedule(primaryDateFrom);
+        if (!active) return;
+        if (!row) {
+          if (!isUserCustomSchedule && !hasProfileSchedule) {
+            setSchedule(NO_SCHEDULE_LABEL);
+          }
+          return;
+        }
+        if (row.is_day_off) {
+          if (!isUserCustomSchedule) {
+            setSchedule(formatFlexibleScheduleLabel(row.previous_from_time, row.previous_to_time));
+          }
+        } else {
+          if (!isUserCustomSchedule) {
+            setSchedule(formatFlexibleScheduleLabel(row.from_time, row.to_time));
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+    void refreshFlexibleSchedule();
+    return () => {
+      active = false;
+    };
+  }, [primaryDateFrom, fixedDayOff, fixedSchedule, isUserCustomSchedule]);
+
+  function openCustomScheduleModal() {
+    const { startTime, endTime } = parseScheduleToTimes(schedule);
+    setCustomStartTime(startTime);
+    setCustomEndTime(endTime);
+    setCustomTimePickerKind('start');
+    setCustomScheduleTimePicker(null);
+    setIsCustomScheduleOpen(true);
+  }
+
+  function confirmCustomSchedule() {
+    const formatted = getCustomSchedulePreview(customStartTime, customEndTime);
+    setSchedule(formatted);
+    setIsUserCustomSchedule(true);
+    setValidationErrors((current) => ({ ...current, schedule: undefined }));
+    setCustomScheduleTimePicker(null);
+    setIsCustomScheduleOpen(false);
+  }
+
+  function openCustomTimePicker(kind: 'start' | 'end') {
+    setCustomTimePickerKind(kind);
+    setCustomScheduleTimePicker(kind);
+  }
+
+  function toggleDayOff(day: string) {
+    const currentList = parseDayOffList(dayOffState);
+    let nextList: string[];
+    if (currentList.includes(day)) {
+      nextList = currentList.filter((d) => d !== day);
+    } else {
+      nextList = [...currentList, day];
+    }
+    const formatted = nextList.length > 0 ? nextList.join(', ') : NO_DAY_OFF_LABEL;
+    setDayOffState(formatted);
+    setIsUserCustomDayOff(true);
+    setValidationErrors((current) => ({ ...current, dayOff: undefined }));
+  }
+
+  function chooseHeaderSelectOption(value: string) {
+    if (activeHeaderSelect === 'schedule') {
+      if (value === 'Custom schedule...') {
+        setActiveHeaderSelect(null);
+        openCustomScheduleModal();
+        return;
+      }
+      setSchedule(value);
+      setIsUserCustomSchedule(true);
+      setValidationErrors((current) => ({ ...current, schedule: undefined }));
+    }
+    setActiveHeaderSelect(null);
+  }
+
+  function getHeaderSelectSheet(
+    activeHeader: 'schedule' | 'day_off' | null,
+    currentSchedule: string,
+    currentDayOff: string,
+  ) {
+    if (activeHeader === 'schedule') {
+      return {
+        title: 'Select schedule',
+        value: currentSchedule,
+        options: [...scheduleOptions, 'Custom schedule...'],
+      };
+    }
+    if (activeHeader === 'day_off') {
+      return {
+        title: 'Select day off',
+        value: currentDayOff,
+        options: dayOffOptions,
+      };
+    }
+    return null;
+  }
+
   function confirmDiscard(action?: () => void) {
     if (!action) {
       return;
     }
+
+    setActiveHeaderSelect(null);
+    setIsCustomScheduleOpen(false);
+    setCustomScheduleTimePicker(null);
 
     platformAlert(
       isSubmitting ? 'Cancel submission?' : 'Discard leave request?',
@@ -907,6 +1414,7 @@ const RequestLeave = ({
         paidDays: number;
         unpaidDays: number;
         reason: string;
+        customApprovers?: Array<{ step_order: number; approver_employee_id: string }>;
       }> = [];
 
       const displayItems: MyRequest[] = [];
@@ -919,6 +1427,16 @@ const RequestLeave = ({
           ? targetReqId
           : `offline_leave_${Date.now()}_${i}`;
 
+        const entryWorkflow = (ent.workflowSteps && ent.workflowSteps.length > 0)
+          ? ent.workflowSteps
+          : defaultWorkflowSteps;
+        const entryCustomApprovers = entryWorkflow
+          .filter((s) => s.is_reassigned && s.approver_employee_id)
+          .map((s) => ({
+            step_order: s.step_order,
+            approver_employee_id: s.approver_employee_id!,
+          }));
+
         payloadEntries.push({
           leaveType: ent.leaveType.trim(),
           leaveCategory: ent.leaveCategory.trim(),
@@ -927,7 +1445,53 @@ const RequestLeave = ({
           paidDays: bd.paidDays,
           unpaidDays: bd.unpaidDays,
           reason: ent.reason.trim(),
+          customApprovers: entryCustomApprovers.length > 0 ? entryCustomApprovers : undefined,
         });
+
+        const offlineSummary = entryWorkflow.length > 0
+          ? entryWorkflow.map((ws) => {
+              const effLevel = resolveApproverLevel(ws);
+              return {
+                step_order: ws.step_order,
+                required_level: effLevel,
+                position_level: ws.position_level || effLevel,
+                approver_level: ws.approver_level || effLevel,
+                level: effLevel,
+                status: ws.step_order === 1 ? 'Pending Sync (Offline)' : 'waiting',
+                acted_at: null,
+                remarks: ws.is_reassigned
+                  ? 'Reassigned approver (Pending Sync)'
+                  : 'Saved locally on device. Will auto-sync once online.',
+                skipped_reason: null,
+                approver_employee_id: ws.approver_employee_id || null,
+                approver_name: ws.approver_name,
+                approver_position_name: ws.approver_position_name || null,
+                approver_employee_no: ws.approver_employee_no || null,
+                is_reassigned: Boolean(ws.is_reassigned),
+              };
+            })
+          : editingRequest?.approval_summary || [
+              {
+                step_order: 1,
+                required_level: 1,
+                status: 'Pending Sync (Offline)',
+                acted_at: null,
+                remarks: 'Saved on device. Will auto-sync to database once internet is restored.',
+                skipped_reason: null,
+                approver_name: 'Approver 1',
+                approver_employee_no: 'SYS-LOCAL',
+              },
+              {
+                step_order: 2,
+                required_level: 2,
+                status: 'waiting',
+                acted_at: null,
+                remarks: 'Pending online sync.',
+                skipped_reason: null,
+                approver_name: 'Approver 2',
+                approver_employee_no: null,
+              },
+            ];
 
         displayItems.push({
           request_id: offlineReqId,
@@ -945,34 +1509,16 @@ const RequestLeave = ({
           time_from: null,
           time_to: null,
           total_hours: null,
+          time_schedule: schedule === NO_SCHEDULE_LABEL ? null : schedule,
+          day_off: dayOffState === NO_DAY_OFF_LABEL ? null : dayOffState,
+          payroll_class: payrollClass === 'Select payroll class' ? null : payrollClass,
           leave_type: ent.leaveType.trim(),
           leave_category: ent.leaveCategory.trim(),
           total_days: tDays,
           paid_days: bd.paidDays,
           unpaid_days: bd.unpaidDays,
           reason: ent.reason.trim(),
-          approval_summary: editingRequest?.approval_summary || [
-            {
-              step_order: 1,
-              required_level: 1,
-              status: 'Pending Sync (Offline)',
-              acted_at: null,
-              remarks: 'Saved on device. Will auto-sync to database once internet is restored.',
-              skipped_reason: null,
-              approver_name: 'Approver 1',
-              approver_employee_no: 'SYS-LOCAL',
-            },
-            {
-              step_order: 2,
-              required_level: 2,
-              status: 'waiting',
-              acted_at: null,
-              remarks: 'Pending online sync.',
-              skipped_reason: null,
-              approver_name: 'Approver 2',
-              approver_employee_no: null,
-            },
-          ],
+          approval_summary: offlineSummary,
         });
       }
 
@@ -987,6 +1533,9 @@ const RequestLeave = ({
         createdAt: new Date().toISOString(),
         payload: {
           entries: payloadEntries,
+          schedule: schedule === NO_SCHEDULE_LABEL ? undefined : schedule,
+          dayOff: dayOffState === NO_DAY_OFF_LABEL ? undefined : dayOffState,
+          payrollClass: payrollClass === 'Select payroll class' ? undefined : payrollClass,
           identities: {
             username,
             employeeId,
@@ -1043,8 +1592,8 @@ const RequestLeave = ({
         }
 
         if (targetReqId.startsWith('offline_')) {
-          await removeOfflineItem(targetReqId).catch(() => {});
-          await removeRequestFromLocalCache(targetReqId).catch(() => {});
+          await removeOfflineItem(targetReqId).catch(() => { });
+          await removeRequestFromLocalCache(targetReqId).catch(() => { });
         } else {
           const lockInfo = await withTimeout(
             checkApproverActiveViewing(targetReqId),
@@ -1068,6 +1617,14 @@ const RequestLeave = ({
             firstEntry.unpaidDays,
           );
 
+          const firstWorkflow = entries[0]?.workflowSteps && entries[0].workflowSteps.length > 0 ? entries[0].workflowSteps : defaultWorkflowSteps;
+          const firstCustomApprovers = firstWorkflow
+            .filter((s) => s.is_reassigned && s.approver_employee_id)
+            .map((s) => ({
+              step_order: s.step_order,
+              approver_employee_id: s.approver_employee_id!,
+            }));
+
           await withTimeout(
             updateMyPendingRequest({
               requestId: targetReqId,
@@ -1079,6 +1636,10 @@ const RequestLeave = ({
               paidDays: firstBreakdown.paidDays,
               unpaidDays: firstBreakdown.unpaidDays,
               reason: firstEntry.reason.trim(),
+              timeSchedule: schedule === NO_SCHEDULE_LABEL ? null : schedule,
+              dayOff: dayOffState === NO_DAY_OFF_LABEL ? null : dayOffState,
+              payrollClass: payrollClass === 'Select payroll class' ? null : payrollClass,
+              customApprovers: firstCustomApprovers.length > 0 ? firstCustomApprovers : null,
             }),
             25000,
             'Updating leave request timed out. Please check your network connection.',
@@ -1094,7 +1655,15 @@ const RequestLeave = ({
               const tDays = calculateLeaveDays(ent.dateFrom, ent.dateTo, effectiveDayOff);
               const bd = getLeaveBreakdown(ent.leaveType, tDays, ent.paidDays, ent.unpaidDays);
 
-              const res = await withTimeout<{ data: any; error: any }>(
+              const entWorkflow = ent.workflowSteps && ent.workflowSteps.length > 0 ? ent.workflowSteps : defaultWorkflowSteps;
+              const entCustomApprovers = entWorkflow
+                .filter((s) => s.is_reassigned && s.approver_employee_id)
+                .map((s) => ({
+                  step_order: s.step_order,
+                  approver_employee_id: s.approver_employee_id!,
+                }));
+
+              let res = await withTimeout<{ data: any; error: any }>(
                 Promise.resolve(
                   supabase.rpc('submit_leave_request', {
                     p_leave_type: ent.leaveType.trim(),
@@ -1104,11 +1673,37 @@ const RequestLeave = ({
                     p_paid_days: bd.paidDays,
                     p_unpaid_days: bd.unpaidDays,
                     p_reason: ent.reason.trim(),
+                    p_time_schedule: schedule === NO_SCHEDULE_LABEL ? null : schedule,
+                    p_day_off: dayOffState === NO_DAY_OFF_LABEL ? null : dayOffState,
+                    p_payroll_class: payrollClass === 'Select payroll class' ? null : payrollClass,
+                    p_custom_approvers: entCustomApprovers.length > 0 ? entCustomApprovers : null,
                   }),
                 ),
                 25000,
                 `Submission for request #${i + 1} timed out. Please check your network connection and try again.`,
               );
+
+              if (
+                res?.error &&
+                (res.error.message?.includes('parameter') ||
+                  res.error.message?.includes('function public.submit_leave_request'))
+              ) {
+                res = await withTimeout<{ data: any; error: any }>(
+                  Promise.resolve(
+                    supabase.rpc('submit_leave_request', {
+                      p_leave_type: ent.leaveType.trim(),
+                      p_leave_category: ent.leaveCategory.trim(),
+                      p_start_date: ent.dateFrom,
+                      p_end_date: ent.dateTo,
+                      p_paid_days: bd.paidDays,
+                      p_unpaid_days: bd.unpaidDays,
+                      p_reason: ent.reason.trim(),
+                    }),
+                  ),
+                  25000,
+                  `Submission for request #${i + 1} timed out. Please check your network connection and try again.`,
+                );
+              }
 
               if (res?.error) {
                 const isSingleDayBday = ent.leaveCategory === 'Birthday Leave' && tDays === 1;
@@ -1122,6 +1717,21 @@ const RequestLeave = ({
                   );
                 } else {
                   throw new Error(res.error.message);
+                }
+              }
+
+              if (res?.data) {
+                try {
+                  await supabase
+                    .from('leave_request_details')
+                    .update({
+                      time_schedule: schedule === NO_SCHEDULE_LABEL ? null : schedule,
+                      day_off: dayOffState === NO_DAY_OFF_LABEL ? null : dayOffState,
+                      payroll_class: payrollClass === 'Select payroll class' ? null : payrollClass,
+                    })
+                    .eq('request_id', res.data);
+                } catch {
+                  // ignore
                 }
               }
               submittedIndices.current.add(i);
@@ -1161,7 +1771,15 @@ const RequestLeave = ({
         const bd = getLeaveBreakdown(ent.leaveType, tDays, ent.paidDays, ent.unpaidDays);
         const isSingleDayBirthday = ent.leaveCategory === 'Birthday Leave' && tDays === 1 && hasCompletedOneYear;
 
-        const res = await withTimeout<{ data: any; error: any }>(
+        const entWorkflow = ent.workflowSteps && ent.workflowSteps.length > 0 ? ent.workflowSteps : defaultWorkflowSteps;
+        const entCustomApprovers = entWorkflow
+          .filter((s) => s.is_reassigned && s.approver_employee_id)
+          .map((s) => ({
+            step_order: s.step_order,
+            approver_employee_id: s.approver_employee_id!,
+          }));
+
+        let res = await withTimeout<{ data: any; error: any }>(
           Promise.resolve(
             supabase.rpc('submit_leave_request', {
               p_leave_type: ent.leaveType.trim(),
@@ -1171,11 +1789,37 @@ const RequestLeave = ({
               p_paid_days: bd.paidDays,
               p_unpaid_days: bd.unpaidDays,
               p_reason: ent.reason.trim(),
+              p_time_schedule: schedule === NO_SCHEDULE_LABEL ? null : schedule,
+              p_day_off: dayOffState === NO_DAY_OFF_LABEL ? null : dayOffState,
+              p_payroll_class: payrollClass === 'Select payroll class' ? null : payrollClass,
+              p_custom_approvers: entCustomApprovers.length > 0 ? entCustomApprovers : null,
             }),
           ),
           25000,
           `Submission for request #${i + 1} timed out. Please check your network connection and try again.`,
         );
+
+        if (
+          res?.error &&
+          (res.error.message?.includes('parameter') ||
+            res.error.message?.includes('function public.submit_leave_request'))
+        ) {
+          res = await withTimeout<{ data: any; error: any }>(
+            Promise.resolve(
+              supabase.rpc('submit_leave_request', {
+                p_leave_type: ent.leaveType.trim(),
+                p_leave_category: ent.leaveCategory.trim(),
+                p_start_date: ent.dateFrom,
+                p_end_date: ent.dateTo,
+                p_paid_days: bd.paidDays,
+                p_unpaid_days: bd.unpaidDays,
+                p_reason: ent.reason.trim(),
+              }),
+            ),
+            25000,
+            `Submission for request #${i + 1} timed out. Please check your network connection and try again.`,
+          );
+        }
 
         if (res?.error) {
           if (
@@ -1192,6 +1836,22 @@ const RequestLeave = ({
         }
 
         const newReqId = res?.data ? String(res.data) : `bday_leave_${Date.now()}`;
+
+        if (res?.data) {
+          try {
+            await supabase
+              .from('leave_request_details')
+              .update({
+                time_schedule: schedule === NO_SCHEDULE_LABEL ? null : schedule,
+                day_off: dayOffState === NO_DAY_OFF_LABEL ? null : dayOffState,
+                payroll_class: payrollClass === 'Select payroll class' ? null : payrollClass,
+              })
+              .eq('request_id', res.data);
+          } catch {
+            // ignore
+          }
+        }
+
         let bdayRequestRecord: MyRequest | undefined;
 
         // If single-day Birthday Leave, sync to local cache as auto-approved by HYG Portal System
@@ -1213,6 +1873,9 @@ const RequestLeave = ({
             time_from: null,
             time_to: null,
             total_hours: null,
+            time_schedule: schedule === NO_SCHEDULE_LABEL ? null : schedule,
+            day_off: dayOffState === NO_DAY_OFF_LABEL ? null : dayOffState,
+            payroll_class: payrollClass === 'Select payroll class' ? null : payrollClass,
             leave_type: 'With Pay',
             leave_category: 'Birthday Leave',
             total_days: 1,
@@ -1327,8 +1990,8 @@ const RequestLeave = ({
     const confirmTitle = isOffline
       ? 'Save Leave Offline'
       : isEdit
-      ? 'Confirm Leave Update'
-      : 'Confirm Leave Submission';
+        ? 'Confirm Leave Update'
+        : 'Confirm Leave Submission';
     const firstEntry = entries[0];
     const isSingleDayBirthday =
       entries.length === 1 &&
@@ -1411,6 +2074,8 @@ const RequestLeave = ({
         disabledLeaveCategoriesForActiveEntry,
       )
       : null;
+
+  const headerSelectSheet = getHeaderSelectSheet(activeHeaderSelect, schedule, dayOffState);
 
   return (
     <View style={styles.root}>
@@ -1497,6 +2162,122 @@ const RequestLeave = ({
               <Text style={styles.totalCreditsErrorText}>{validationErrors.totalCredits}</Text>
             </View>
           ) : null}
+
+          {/* Schedule and Payroll Card */}
+          <View
+            style={[
+              styles.scheduleCard,
+              validationErrors.schedule || validationErrors.dayOff || validationErrors.payrollClass
+                ? styles.scheduleCardInvalid
+                : null,
+            ]}
+          >
+            <View style={styles.scheduleCardHeader}>
+              <CalendarDays size={20} color={colors.primary} strokeWidth={2.2} />
+              <Text style={styles.scheduleCardTitle}>Schedule and Payroll</Text>
+            </View>
+
+            <View style={styles.scheduleFieldGroup}>
+              <Text style={styles.scheduleFieldLabel}>Time Schedule</Text>
+              <View
+                style={[
+                  styles.scheduleInputBox,
+                  validationErrors.schedule ? styles.inputError : null,
+                ]}
+              >
+                <Pressable
+                  style={styles.scheduleInputTouchable}
+                  onPress={() => setActiveHeaderSelect('schedule')}
+                >
+                  <Text
+                    style={[
+                      styles.scheduleInputText,
+                      !schedule || schedule === NO_SCHEDULE_LABEL ? styles.placeholderText : null,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {schedule || 'Select time schedule'}
+                  </Text>
+                </Pressable>
+                <View style={styles.scheduleActionIcons}>
+                  <Pressable
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    style={styles.scheduleIconButton}
+                    onPress={openCustomScheduleModal}
+                    accessibilityLabel="Set custom base schedule"
+                  >
+                    <Clock3 size={18} color={colors.primary} strokeWidth={2.2} />
+                  </Pressable>
+                </View>
+              </View>
+              {validationErrors.schedule ? (
+                <Text style={styles.fieldError}>{validationErrors.schedule}</Text>
+              ) : null}
+            </View>
+
+            <View style={styles.scheduleTwoColumnRow}>
+              <View style={styles.scheduleColumnField}>
+                <Text style={styles.scheduleFieldLabel}>Day-off</Text>
+                <Pressable
+                  style={[
+                    styles.scheduleInputBox,
+                    validationErrors.dayOff ? styles.inputError : null,
+                  ]}
+                  onPress={() => setActiveHeaderSelect('day_off')}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Day-off: ${dayOffState || 'Select day off'}`}
+                >
+                  <Text
+                    style={[
+                      styles.scheduleInputText,
+                      !dayOffState || dayOffState === NO_DAY_OFF_LABEL ? styles.placeholderText : null,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {dayOffState || 'Select day off'}
+                  </Text>
+                  <View style={styles.scheduleIconButton}>
+                    <Repeat size={18} color="#64748b" strokeWidth={2} />
+                  </View>
+                </Pressable>
+                {validationErrors.dayOff ? (
+                  <Text style={styles.fieldError}>{validationErrors.dayOff}</Text>
+                ) : null}
+              </View>
+
+              <View style={styles.scheduleColumnField}>
+                <Text style={styles.scheduleFieldLabel}>Payroll Class</Text>
+                <View
+                  style={[
+                    styles.scheduleInputBox,
+                    validationErrors.payrollClass ? styles.inputError : null,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.scheduleInputText,
+                      !payrollClass || payrollClass === 'Select payroll class'
+                        ? styles.placeholderText
+                        : null,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {payrollClass || 'Select payroll class'}
+                  </Text>
+                </View>
+                {validationErrors.payrollClass ? (
+                  <Text style={styles.fieldError}>{validationErrors.payrollClass}</Text>
+                ) : null}
+              </View>
+            </View>
+          </View>
+
+          {/* Section Header */}
+          <View style={styles.entriesSectionContainer}>
+            <View style={styles.entriesSectionHeader}>
+              <Text style={styles.entriesSectionTitle}>Leave Request/s</Text>
+            </View>
+          </View>
 
           {/* Entry Cards matching ApplyEsarfScreen multiple entry pattern */}
           {entries.map((entry, index) => {
@@ -1808,6 +2589,92 @@ const RequestLeave = ({
                     </Text>
                   ) : null}
                 </View>
+
+                {/* Approval Workflow Timeline (Positioned below Reason field) */}
+                {(() => {
+                  const displaySteps =
+                    entry.workflowSteps && entry.workflowSteps.length > 0
+                      ? entry.workflowSteps
+                      : defaultWorkflowSteps;
+
+                  if (displaySteps.length === 0 && !entry.isLoadingWorkflow && !isLoadingDefaultWorkflow) {
+                    return null;
+                  }
+
+                  return (
+                    <View style={styles.entryTimelineSubPanel}>
+                      <View style={styles.entryTimelineHeaderRow}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Users size={14} color="#64748b" strokeWidth={2.2} />
+                          <Text style={styles.entryTimelineHeaderTitle}>Approval Timeline</Text>
+                        </View>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          {entry.isLoadingWorkflow || isLoadingDefaultWorkflow ? (
+                            <ActivityIndicator size="small" color="#1e40af" />
+                          ) : null}
+                        </View>
+                      </View>
+
+                      <View style={styles.entryStepperContainer}>
+                        {displaySteps.length > 1 ? <View style={styles.entryStepperLineTrack} /> : null}
+
+                        <View style={styles.entryStepperColumnsRow}>
+                          {displaySteps.map((step, sIdx) => {
+                            const isReassigned = Boolean(step.is_reassigned);
+                            const isPending = sIdx === 0;
+                            const dotColor = isPending ? '#eab308' : '#cbd5e1';
+                            const effectiveLevel = resolveApproverLevel(step);
+                            const approverUpper = formatApproverDisplayName(
+                              step.approver_name,
+                              step.approver_position_name || step.role_name,
+                              effectiveLevel,
+                            );
+                            const levelLabel = `L${effectiveLevel}`;
+                            const statusLabel = isPending ? 'Pending to approve' : 'Not yet processed';
+
+                            return (
+                              <View key={step.step_order || sIdx} style={styles.entryStepperColumn}>
+                                <View style={[styles.entryStepperDot, { backgroundColor: dotColor }]} />
+                                <Text style={styles.entryStepTitleText} numberOfLines={2}>
+                                  {approverUpper}
+                                </Text>
+                                <Text style={styles.entryStepSubtitleText} numberOfLines={1}>
+                                  {`${levelLabel} • ${statusLabel}`}
+                                </Text>
+
+                                {/* Reassign action button */}
+                                <Pressable
+                                  style={({ pressed }) => [
+                                    styles.entryStepReassignBtn,
+                                    isReassigned ? styles.entryStepReassignBtnActive : null,
+                                    pressed ? { opacity: 0.7 } : null,
+                                  ]}
+                                  onPress={() => handleOpenReassignModal(actualIndex, step)}
+                                  hitSlop={6}
+                                  accessibilityLabel={`Reassign step ${step.step_order} approver`}
+                                >
+                                  <ArrowRightLeft
+                                    size={10}
+                                    color={isReassigned ? '#1d4ed8' : '#64748b'}
+                                    strokeWidth={2.2}
+                                  />
+                                  <Text
+                                    style={[
+                                      styles.entryStepReassignText,
+                                      isReassigned ? styles.entryStepReassignedText : null,
+                                    ]}
+                                  >
+                                    {isReassigned ? 'Reassigned' : 'Reassign'}
+                                  </Text>
+                                </Pressable>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })()}
               </View>
             );
           })}
@@ -1858,12 +2725,12 @@ const RequestLeave = ({
                 {isSubmitting
                   ? 'Saving...'
                   : !isOnline
-                  ? 'Save Offline (Auto-Sync)'
-                  : editingRequest
-                  ? 'Update Request'
-                  : entries.length > 1
-                  ? `Submit ${entries.length} Requests`
-                  : 'Submit Request'}
+                    ? 'Save Offline (Auto-Sync)'
+                    : editingRequest
+                      ? 'Update Request'
+                      : entries.length > 1
+                        ? `Submit ${entries.length} Requests`
+                        : 'Submit Request'}
               </Text>
             </Pressable>
           </View>
@@ -1993,6 +2860,323 @@ const RequestLeave = ({
         </Modal>
       ) : null}
 
+      {/* Schedule / Day-Off Selection Modal */}
+      {headerSelectSheet ? (
+        <Modal
+          transparent
+          animationType="fade"
+          visible
+          onRequestClose={() => setActiveHeaderSelect(null)}
+        >
+          <View style={styles.modalBackdrop}>
+            <Pressable style={styles.modalDismissArea} onPress={() => setActiveHeaderSelect(null)} />
+            <View style={styles.optionSheet}>
+              <View style={styles.sheetHandle} />
+              <Text style={styles.sheetTitle}>{headerSelectSheet.title}</Text>
+              {activeHeaderSelect === 'day_off' ? (
+                <>
+                  <View style={styles.dayOffHeaderRow}>
+                    <Text style={styles.sheetSubtitle}>Choose one or more day-off days.</Text>
+                    {parseDayOffList(dayOffState).length > 0 ? (
+                      <Pressable
+                        hitSlop={8}
+                        onPress={() => {
+                          setDayOffState(NO_DAY_OFF_LABEL);
+                          setIsUserCustomDayOff(true);
+                          setValidationErrors((current) => ({ ...current, dayOff: undefined }));
+                        }}
+                      >
+                        <Text style={styles.clearDayOffText}>Clear all</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                  {headerSelectSheet.options.map((option) => {
+                    const selectedDays = parseDayOffList(dayOffState);
+                    const isSelected = selectedDays.includes(option);
+                    return (
+                      <Pressable
+                        key={option}
+                        style={[
+                          styles.dayOffOptionRow,
+                          isSelected ? styles.dayOffOptionRowActive : null,
+                        ]}
+                        onPress={() => toggleDayOff(option)}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: isSelected }}
+                      >
+                        <View style={[styles.checkbox, isSelected ? styles.checkboxActive : null]}>
+                          {isSelected ? <Check size={14} color="#0f172a" strokeWidth={3} /> : null}
+                        </View>
+                        <Text style={[styles.optionText, isSelected ? styles.optionTextActive : null]}>
+                          {option} • {DAY_FULL_NAMES[option] || option}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                  <Pressable style={styles.dayOffDoneButton} onPress={() => setActiveHeaderSelect(null)}>
+                    <Text style={styles.submitText}>Done</Text>
+                  </Pressable>
+                </>
+              ) : (
+                <>
+                  {headerSelectSheet.options.map((option) => {
+                    const selected = option === headerSelectSheet.value;
+                    const isCustom = option === 'Custom schedule...';
+                    return (
+                      <Pressable
+                        key={option}
+                        style={[
+                          styles.optionRow,
+                          selected ? styles.optionRowActive : null,
+                          isCustom ? styles.customOptionRow : null,
+                        ]}
+                        onPress={() => chooseHeaderSelectOption(option)}
+                      >
+                        {isCustom ? (
+                          <View style={styles.customOptionWrap}>
+                            <Clock3 size={16} color={colors.primary} strokeWidth={2.2} />
+                            <Text style={[styles.optionText, styles.customOptionText]}>{option}</Text>
+                          </View>
+                        ) : (
+                          <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>
+                            {option}
+                          </Text>
+                        )}
+                        {selected ? <Check size={18} color={colors.brand.goldStrong} strokeWidth={3} /> : null}
+                      </Pressable>
+                    );
+                  })}
+                  <Pressable style={styles.sheetCancelButton} onPress={() => setActiveHeaderSelect(null)}>
+                    <Text style={styles.cancelText}>Cancel</Text>
+                  </Pressable>
+                </>
+              )}
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+
+      {/* Custom Schedule Builder Modal */}
+      {isCustomScheduleOpen ? (
+        <Modal
+          transparent
+          animationType="fade"
+          visible
+          onRequestClose={() => setIsCustomScheduleOpen(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <Pressable style={styles.modalDismissArea} onPress={() => setIsCustomScheduleOpen(false)} />
+            <View style={styles.customScheduleModalPanel}>
+              <View style={styles.sheetHandle} />
+              <View style={styles.customScheduleHeader}>
+                <View style={styles.customScheduleIconBadge}>
+                  <Clock3 size={18} color="#0f172a" strokeWidth={2.5} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.customScheduleTitle}>Custom Base Schedule</Text>
+                  <Text style={styles.customScheduleSubtitle}>
+                    Tap Shift Start or Shift End to choose working hours.
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.customTimeRow}>
+                <Pressable
+                  style={[
+                    styles.customTimeColCard,
+                    customTimePickerKind === 'start' ? styles.customTimeColCardActive : null,
+                  ]}
+                  onPress={() => openCustomTimePicker('start')}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Shift Start: ${formatTimeDisplay(customStartTime)}. Tap to set time.`}
+                >
+                  <Text
+                    style={[
+                      styles.customTimeLabel,
+                      customTimePickerKind === 'start' ? styles.customTimeLabelActive : null,
+                    ]}
+                  >
+                    Shift Start
+                  </Text>
+                  <View style={styles.customTimeBoxInner}>
+                    <Text style={styles.customTimeText}>
+                      {formatTimeDisplay(customStartTime)}
+                    </Text>
+                    <Clock3
+                      size={16}
+                      color={customTimePickerKind === 'start' ? colors.brand.goldStrong : colors.primary}
+                      strokeWidth={2.2}
+                    />
+                  </View>
+                </Pressable>
+
+                <Pressable
+                  style={[
+                    styles.customTimeColCard,
+                    customTimePickerKind === 'end' ? styles.customTimeColCardActive : null,
+                  ]}
+                  onPress={() => openCustomTimePicker('end')}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Shift End: ${formatTimeDisplay(customEndTime)}. Tap to set time.`}
+                >
+                  <Text
+                    style={[
+                      styles.customTimeLabel,
+                      customTimePickerKind === 'end' ? styles.customTimeLabelActive : null,
+                    ]}
+                  >
+                    Shift End
+                  </Text>
+                  <View style={styles.customTimeBoxInner}>
+                    <Text style={styles.customTimeText}>
+                      {formatTimeDisplay(customEndTime)}
+                    </Text>
+                    <Clock3
+                      size={16}
+                      color={customTimePickerKind === 'end' ? colors.brand.goldStrong : colors.primary}
+                      strokeWidth={2.2}
+                    />
+                  </View>
+                </Pressable>
+              </View>
+
+              {customTimePickerKind ? (
+                <View style={styles.inlineTimePickerContainer}>
+                  <View style={styles.inlineTimePickerHeaderRow}>
+                    <Text style={styles.inlineTimePickerHeader}>
+                      Selecting {customTimePickerKind === 'start' ? 'Shift Start Time' : 'Shift End Time'}:
+                    </Text>
+                    <Pressable
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      onPress={() => openCustomTimePicker(customTimePickerKind)}
+                      style={styles.openCustomTimePickerButton}
+                    >
+                      <Clock3 size={13} color={colors.primary} strokeWidth={2.2} />
+                      <Text style={styles.openCustomTimePickerText}>Custom time</Text>
+                    </Pressable>
+                  </View>
+
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    style={styles.timePresetsScrollView}
+                    contentContainerStyle={styles.timePresetsScroll}
+                  >
+                    <Pressable
+                      style={[
+                        styles.presetTimePill,
+                        !(customTimePickerKind === 'start'
+                          ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                          : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                        ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                          ? styles.presetTimePillActive
+                          : null,
+                      ]}
+                      onPress={() => openCustomTimePicker(customTimePickerKind)}
+                    >
+                      <View style={styles.customPresetPillWrap}>
+                        <Clock3
+                          size={12}
+                          color={
+                            !(customTimePickerKind === 'start'
+                              ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                              : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                            ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                              ? '#0f172a'
+                              : colors.primary
+                          }
+                          strokeWidth={2.2}
+                        />
+                        <Text
+                          style={[
+                            styles.presetTimeText,
+                            !(customTimePickerKind === 'start'
+                              ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                              : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                            ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                              ? styles.presetTimeTextActive
+                              : null,
+                          ]}
+                        >
+                          {!(customTimePickerKind === 'start'
+                            ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                            : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                          ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                            ? formatTimeDisplay(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                            : 'Custom...'}
+                        </Text>
+                      </View>
+                    </Pressable>
+
+                    {(customTimePickerKind === 'start'
+                      ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                      : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                    ).map((timeVal) => {
+                      const activeVal = customTimePickerKind === 'start' ? customStartTime : customEndTime;
+                      const isSelected = activeVal === timeVal;
+                      return (
+                        <Pressable
+                          key={timeVal}
+                          style={[styles.presetTimePill, isSelected ? styles.presetTimePillActive : null]}
+                          onPress={() => {
+                            if (customTimePickerKind === 'start') {
+                              setCustomStartTime(timeVal);
+                            } else {
+                              setCustomEndTime(timeVal);
+                            }
+                          }}
+                        >
+                          <Text style={[styles.presetTimeText, isSelected ? styles.presetTimeTextActive : null]}>
+                            {formatTimeDisplay(timeVal)}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              ) : null}
+
+              <View style={styles.customSchedulePreviewBox}>
+                <Text style={styles.customSchedulePreviewLabel}>Preview Base Schedule</Text>
+                <Text style={styles.customSchedulePreviewValue}>
+                  {getCustomSchedulePreview(customStartTime, customEndTime)}
+                </Text>
+              </View>
+
+              <View style={styles.customScheduleActions}>
+                <Pressable
+                  style={styles.cancelButton}
+                  onPress={() => {
+                    setCustomScheduleTimePicker(null);
+                    setIsCustomScheduleOpen(false);
+                  }}
+                >
+                  <Text style={styles.cancelText}>Cancel</Text>
+                </Pressable>
+                <Pressable style={styles.submitButton} onPress={confirmCustomSchedule}>
+                  <Text style={styles.submitText}>Apply Schedule</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+
+          <ScrollableTimePickerModal
+            visible={customScheduleTimePicker !== null}
+            title={customScheduleTimePicker === 'start' ? 'Select Shift Start Time' : 'Select Shift End Time'}
+            initialTime={customScheduleTimePicker === 'start' ? customStartTime : customEndTime}
+            onConfirm={(time24) => {
+              if (customScheduleTimePicker === 'start') {
+                setCustomStartTime(time24);
+              } else if (customScheduleTimePicker === 'end') {
+                setCustomEndTime(time24);
+              }
+              setCustomScheduleTimePicker(null);
+            }}
+            onCancel={() => setCustomScheduleTimePicker(null)}
+          />
+        </Modal>
+      ) : null}
+
       {/* Leave Guidelines / Information Notes Modal */}
       <Modal
         transparent
@@ -2044,6 +3228,228 @@ const RequestLeave = ({
             </ScrollView>
           </View>
         </View>
+      </Modal>
+
+      {/* Reassign Approver Modal */}
+      <Modal
+        visible={isReassignModalOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          setIsReassignModalOpen(false);
+          setReassigningInfo(null);
+          setSelectedCandidate(null);
+        }}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.reassignModalBackdrop}
+        >
+          <View
+            style={[
+              styles.reassignModalCard,
+              { paddingBottom: Math.max(getSafeBottomInset(insets.bottom, 0), 16) },
+            ]}
+          >
+            {/* Header */}
+            <View style={styles.reassignModalHeader}>
+              <View style={styles.reassignModalHeaderLeft}>
+                <View style={styles.reassignModalIconBox}>
+                  <ArrowRightLeft size={20} color="#2563eb" strokeWidth={2.4} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.reassignModalTitle}>Reassign Approver</Text>
+                  <Text style={styles.reassignModalSub} numberOfLines={1}>
+                    Request #{reassigningInfo ? reassigningInfo.entryIndex + 1 : 1} • Step{' '}
+                    {reassigningInfo?.step?.step_order}: {reassigningInfo?.step?.role_name}
+                    {reassigningInfo?.step?.approver_position_name
+                      ? ` • ${reassigningInfo.step.approver_position_name}`
+                      : ''}
+                  </Text>
+                  {!isOnline ? (
+                    <View style={styles.reassignModalOfflineBadge}>
+                      <WifiOff size={10} color="#b45309" strokeWidth={2.4} />
+                      <Text style={styles.reassignModalOfflineText}>
+                        Offline Mode • Using cached approvers
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+              <Pressable
+                style={styles.reassignModalClose}
+                onPress={() => {
+                  setIsReassignModalOpen(false);
+                  setReassigningInfo(null);
+                  setSelectedCandidate(null);
+                }}
+                hitSlop={8}
+              >
+                <X size={20} color="#64748b" strokeWidth={2.4} />
+              </Pressable>
+            </View>
+
+            {/* Search Bar */}
+            <View style={styles.candidateSearchBox}>
+              <Search size={16} color="#94a3b8" strokeWidth={2.2} />
+              <TextInput
+                style={styles.candidateSearchInput}
+                placeholder="Search employee by name, ID, position, store..."
+                placeholderTextColor="#94a3b8"
+                value={candidateSearchQuery}
+                onChangeText={setCandidateSearchQuery}
+              />
+              {candidateSearchQuery ? (
+                <Pressable onPress={() => setCandidateSearchQuery('')} hitSlop={6}>
+                  <X size={15} color="#94a3b8" />
+                </Pressable>
+              ) : null}
+            </View>
+
+            {/* Candidate List */}
+            <ScrollView
+              style={styles.candidateListScroll}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {isLoadingCandidates ? (
+                <View style={styles.candidateEmptyWrap}>
+                  <ActivityIndicator size="small" color="#2563eb" />
+                  <Text style={styles.candidateEmptyTitle}>Loading employees...</Text>
+                </View>
+              ) : filteredApproverCandidates.length === 0 ? (
+                <View style={styles.candidateEmptyWrap}>
+                  <Users size={32} color="#cbd5e1" strokeWidth={1.8} />
+                  <Text style={styles.candidateEmptyTitle}>No matching employees found</Text>
+                  <Text style={styles.candidateEmptySub}>
+                    Try searching with a different name or employee number.
+                  </Text>
+                </View>
+              ) : (
+                filteredApproverCandidates.map((candidate) => {
+                  const isSelected = selectedCandidate?.employee_id === candidate.employee_id;
+                  const initials =
+                    candidate.full_name
+                      .split(' ')
+                      .map((part) => part[0])
+                      .filter(Boolean)
+                      .slice(0, 2)
+                      .join('')
+                      .toUpperCase() || 'EMP';
+
+                  return (
+                    <Pressable
+                      key={candidate.employee_id}
+                      style={[styles.candidateRow, isSelected ? styles.candidateRowSelected : null]}
+                      onPress={() => setSelectedCandidate(candidate)}
+                    >
+                      <View
+                        style={[
+                          styles.candidateAvatar,
+                          isSelected ? styles.candidateAvatarSelected : null,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.candidateAvatarText,
+                            isSelected ? styles.candidateAvatarTextSelected : null,
+                          ]}
+                        >
+                          {initials}
+                        </Text>
+                      </View>
+
+                      <View style={styles.candidateInfoCol}>
+                        <View
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 6,
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <Text
+                            style={[
+                              styles.candidateName,
+                              isSelected ? styles.candidateNameSelected : null,
+                            ]}
+                          >
+                            {candidate.full_name}
+                          </Text>
+                          {candidate.authority_level ? (
+                            <View style={styles.candidateLevelBadge}>
+                              <Text style={styles.candidateLevelBadgeText}>
+                                L{candidate.authority_level}
+                              </Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <Text style={styles.candidateRole} numberOfLines={1}>
+                          {[candidate.position_name, candidate.department_name]
+                            .filter(Boolean)
+                            .join(' • ')}
+                          {candidate.employee_no ? ` (${candidate.employee_no})` : ''}
+                        </Text>
+                        {candidate.store_name || candidate.company_name ? (
+                          <Text style={styles.candidateStore} numberOfLines={1}>
+                            {[candidate.store_name, candidate.company_name]
+                              .filter(Boolean)
+                              .join(' • ')}
+                          </Text>
+                        ) : null}
+                      </View>
+
+                      {isSelected ? (
+                        <CheckCircle2 size={20} color="#2563eb" strokeWidth={2.4} />
+                      ) : (
+                        <View
+                          style={{
+                            width: 20,
+                            height: 20,
+                            borderRadius: 10,
+                            borderWidth: 1.5,
+                            borderColor: '#cbd5e1',
+                          }}
+                        />
+                      )}
+                    </Pressable>
+                  );
+                })
+              )}
+            </ScrollView>
+
+            {/* Footer Actions */}
+            <View style={styles.reassignModalActions}>
+              {reassigningInfo?.step?.is_reassigned ? (
+                <Pressable style={styles.reassignResetBtn} onPress={handleResetStepApprover}>
+                  <Text style={styles.reassignResetText}>Reset Default</Text>
+                </Pressable>
+              ) : null}
+
+              <Pressable
+                style={styles.reassignCancelBtn}
+                onPress={() => {
+                  setIsReassignModalOpen(false);
+                  setReassigningInfo(null);
+                  setSelectedCandidate(null);
+                }}
+              >
+                <Text style={styles.reassignCancelText}>Cancel</Text>
+              </Pressable>
+
+              <Pressable
+                disabled={!selectedCandidate}
+                style={[
+                  styles.reassignConfirmBtn,
+                  !selectedCandidate ? styles.reassignConfirmBtnDisabled : null,
+                ]}
+                onPress={handleConfirmReassign}
+              >
+                <Text style={styles.reassignConfirmText}>Confirm Reassign</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <ActiveReviewLockModal
@@ -2539,6 +3945,10 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.heavy,
     marginBottom: spacing.xs,
   },
+  sheetSubtitle: {
+    fontSize: 13,
+    color: colors.muted,
+  },
   optionRow: {
     minHeight: 48,
     borderRadius: radius.md,
@@ -2825,5 +4235,649 @@ const styles = StyleSheet.create({
   },
   submitButtonOffline: {
     backgroundColor: '#0284c7',
+  },
+  scheduleCard: {
+    width: '100%',
+    maxWidth: '100%',
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    overflow: 'hidden',
+  },
+  scheduleCardInvalid: {
+    borderColor: colors.semantic.danger,
+  },
+  scheduleCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: spacing.md,
+  },
+  scheduleCardTitle: {
+    color: '#0f172a',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: fontWeights.heavy,
+  },
+  scheduleFieldGroup: {
+    marginBottom: spacing.md,
+  },
+  scheduleFieldLabel: {
+    color: '#0f172a',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: fontWeights.heavy,
+    marginBottom: 6,
+  },
+  scheduleInputBox: {
+    minHeight: 46,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    gap: 8,
+  },
+  scheduleInputTouchable: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    justifyContent: 'center',
+  },
+  scheduleInputText: {
+    flex: 1,
+    color: '#334155',
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+  },
+  placeholderText: {
+    color: '#94a3b8',
+  },
+  scheduleActionIcons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  scheduleIconButton: {
+    padding: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scheduleTwoColumnRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  scheduleColumnField: {
+    flex: 1,
+  },
+  entriesSectionContainer: {
+    marginBottom: spacing.md,
+  },
+  entriesSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 2,
+  },
+  entriesSectionTitle: {
+    color: '#0f172a',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: fontWeights.heavy,
+  },
+  dayOffHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.sm,
+  },
+  clearDayOffText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: colors.primary,
+  },
+  dayOffOptionRow: {
+    minHeight: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    marginBottom: 6,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#eef2f7',
+  },
+  dayOffOptionRowActive: {
+    backgroundColor: '#fffbeb',
+    borderColor: 'rgba(234, 179, 8, 0.4)',
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+  },
+  checkboxActive: {
+    backgroundColor: colors.brand.gold,
+    borderColor: colors.brand.goldStrong,
+  },
+  dayOffDoneButton: {
+    minHeight: 48,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: spacing.sm,
+  },
+  customOptionRow: {
+    backgroundColor: '#f8fafc',
+    borderColor: '#e2e8f0',
+  },
+  customOptionWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  customOptionText: {
+    color: colors.primary,
+  },
+  customScheduleModalPanel: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.lg,
+  },
+  customScheduleHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: spacing.md,
+  },
+  customScheduleIconBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: '#eab308',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  customScheduleTitle: {
+    color: colors.text,
+    fontSize: 17,
+    fontWeight: fontWeights.heavy,
+  },
+  customScheduleSubtitle: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 1,
+  },
+  customTimeRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  customTimeColCard: {
+    flex: 1,
+    minHeight: 64,
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+    padding: 10,
+    justifyContent: 'center',
+  },
+  customTimeColCardActive: {
+    borderColor: '#eab308',
+    backgroundColor: '#fffbeb',
+  },
+  customTimeLabel: {
+    color: '#0f172a',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: fontWeights.heavy,
+    marginBottom: 6,
+  },
+  customTimeLabelActive: {
+    color: '#92400e',
+  },
+  customTimeBoxInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  customTimeText: {
+    fontSize: 15,
+    fontWeight: fontWeights.bold,
+    color: colors.text,
+  },
+  inlineTimePickerContainer: {
+    backgroundColor: '#f8fafc',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    paddingVertical: 12,
+    marginBottom: spacing.md,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  inlineTimePickerHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    marginBottom: 6,
+    width: '100%',
+  },
+  inlineTimePickerHeader: {
+    fontSize: 12,
+    fontWeight: fontWeights.bold,
+    color: '#475569',
+  },
+  openCustomTimePickerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+  },
+  openCustomTimePickerText: {
+    fontSize: 12,
+    fontWeight: fontWeights.bold,
+    color: colors.primary,
+  },
+  timePresetsScrollView: {
+    width: '100%',
+  },
+  timePresetsScroll: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+  },
+  presetTimePill: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: colors.surface,
+  },
+  presetTimePillActive: {
+    borderColor: '#eab308',
+    backgroundColor: '#eab308',
+  },
+  presetTimeText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#334155',
+  },
+  presetTimeTextActive: {
+    color: '#0f172a',
+  },
+  customPresetPillWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  customSchedulePreviewBox: {
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    backgroundColor: '#fffbeb',
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    alignItems: 'center',
+  },
+  customSchedulePreviewLabel: {
+    color: '#b45309',
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: fontWeights.heavy,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  customSchedulePreviewValue: {
+    color: '#92400e',
+    fontSize: 20,
+    lineHeight: 25,
+    fontWeight: fontWeights.heavy,
+    marginTop: 2,
+  },
+  customScheduleActions: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  /* In-Entry Horizontal Approval Timeline Styles (Matching Request Tab Screen) */
+  entryTimelineSubPanel: {
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 10,
+    marginTop: 8,
+    marginBottom: 10,
+  },
+  entryTimelineHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  entryTimelineHeaderTitle: {
+    fontSize: 13,
+    fontWeight: fontWeights.heavy,
+    color: '#334155',
+  },
+  entryStepperContainer: {
+    marginTop: 4,
+    paddingVertical: 2,
+    position: 'relative',
+  },
+  entryStepperLineTrack: {
+    position: 'absolute',
+    top: 5,
+    left: 20,
+    right: 20,
+    height: 2,
+    backgroundColor: '#e2e8f0',
+    zIndex: 0,
+  },
+  entryStepperColumnsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    zIndex: 1,
+  },
+  entryStepperColumn: {
+    flex: 1,
+    alignItems: 'flex-start',
+    paddingRight: 6,
+  },
+  entryStepperDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginBottom: 6,
+    borderWidth: 1.5,
+    borderColor: '#ffffff',
+  },
+  entryStepTitleText: {
+    fontSize: 11,
+    fontWeight: fontWeights.heavy,
+    color: '#0f172a',
+  },
+  entryStepSubtitleText: {
+    fontSize: 10,
+    color: '#64748b',
+  },
+  entryStepReassignBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginTop: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  entryStepReassignBtnActive: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#bfdbfe',
+  },
+  entryStepReassignText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+  },
+  entryStepReassignedText: {
+    color: '#1d4ed8',
+  },
+  /* Reassign Approver Modal Styles */
+  reassignModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.55)',
+    justifyContent: 'flex-end',
+  },
+  reassignModalCard: {
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '90%',
+    paddingBottom: 20,
+  },
+  reassignModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  reassignModalHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  reassignModalIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reassignModalTitle: {
+    fontSize: 17,
+    fontWeight: fontWeights.heavy,
+    color: '#0f172a',
+  },
+  reassignModalSub: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  reassignModalClose: {
+    padding: 6,
+    borderRadius: 8,
+    backgroundColor: '#f1f5f9',
+  },
+  reassignModalOfflineBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+    backgroundColor: '#fef3c7',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    alignSelf: 'flex-start',
+  },
+  reassignModalOfflineText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#b45309',
+  },
+  candidateLevelBadge: {
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  candidateLevelBadgeText: {
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    color: '#1d4ed8',
+  },
+  candidateSearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginHorizontal: 16,
+    marginVertical: 12,
+    gap: 8,
+  },
+  candidateSearchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: '#0f172a',
+    padding: 0,
+  },
+  candidateListScroll: {
+    maxHeight: 380,
+    paddingHorizontal: 16,
+  },
+  candidateEmptyWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 36,
+  },
+  candidateEmptyTitle: {
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+    color: '#475569',
+    marginTop: 8,
+  },
+  candidateEmptySub: {
+    fontSize: 12,
+    color: '#94a3b8',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  candidateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+    backgroundColor: '#ffffff',
+    marginBottom: 8,
+    gap: 12,
+  },
+  candidateRowSelected: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#3b82f6',
+  },
+  candidateAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#e2e8f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  candidateAvatarSelected: {
+    backgroundColor: '#2563eb',
+  },
+  candidateAvatarText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#334155',
+  },
+  candidateAvatarTextSelected: {
+    color: '#ffffff',
+  },
+  candidateInfoCol: {
+    flex: 1,
+  },
+  candidateName: {
+    fontSize: 14,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+  },
+  candidateNameSelected: {
+    color: '#1d4ed8',
+  },
+  candidateRole: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 1,
+  },
+  candidateStore: {
+    fontSize: 11,
+    color: '#94a3b8',
+    marginTop: 2,
+  },
+  reassignModalActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+  },
+  reassignResetBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#ffffff',
+  },
+  reassignResetText: {
+    fontSize: 12.5,
+    fontWeight: fontWeights.bold,
+    color: '#475569',
+  },
+  reassignCancelBtn: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reassignCancelText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#64748b',
+  },
+  reassignConfirmBtn: {
+    flex: 1.5,
+    paddingVertical: 11,
+    borderRadius: 8,
+    backgroundColor: '#2563eb',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reassignConfirmBtnDisabled: {
+    backgroundColor: '#94a3b8',
+    opacity: 0.6,
+  },
+  reassignConfirmText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#ffffff',
   },
 });

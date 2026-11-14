@@ -59,7 +59,11 @@ export type OfflineLeavePayload = {
     paidDays: number;
     unpaidDays: number;
     reason: string;
+    customApprovers?: { step_order: number; approver_employee_id: string }[] | null;
   }>;
+  schedule?: string;
+  dayOff?: string;
+  payrollClass?: string;
   identities?: {
     username?: string | null;
     employeeId?: string | null;
@@ -916,6 +920,9 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
                       p_paid_days: ent.paidDays,
                       p_unpaid_days: ent.unpaidDays,
                       p_reason: ent.reason,
+                      p_time_schedule: item.payload.schedule || null,
+                      p_day_off: item.payload.dayOff || null,
+                      p_payroll_class: item.payload.payrollClass || null,
                       p_store_id: null,
                       p_custom_approvers: null,
                     });
@@ -963,7 +970,7 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
                       await new Promise((r) => setTimeout(r, 2000 * (attempt - 1)));
                     }
 
-                    const { data: newLeaveId, error } = await supabase.rpc('submit_leave_request', {
+                    const submitParams: Record<string, any> = {
                       p_leave_type: ent.leaveType,
                       p_leave_category: ent.leaveCategory,
                       p_start_date: ent.startDate,
@@ -971,7 +978,30 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
                       p_paid_days: ent.paidDays,
                       p_unpaid_days: ent.unpaidDays,
                       p_reason: ent.reason,
-                    });
+                    };
+                    if (item.payload.schedule) submitParams.p_time_schedule = item.payload.schedule;
+                    if (item.payload.dayOff) submitParams.p_day_off = item.payload.dayOff;
+                    if (item.payload.payrollClass) submitParams.p_payroll_class = item.payload.payrollClass;
+                    if (ent.customApprovers && ent.customApprovers.length > 0) submitParams.p_custom_approvers = ent.customApprovers;
+
+                    let { data: newLeaveId, error } = await supabase.rpc('submit_leave_request', submitParams);
+
+                    if (error && (item.payload.schedule || item.payload.dayOff || item.payload.payrollClass)) {
+                      const coreParams = {
+                        p_leave_type: ent.leaveType,
+                        p_leave_category: ent.leaveCategory,
+                        p_start_date: ent.startDate,
+                        p_end_date: ent.endDate,
+                        p_paid_days: ent.paidDays,
+                        p_unpaid_days: ent.unpaidDays,
+                        p_reason: ent.reason,
+                      };
+                      const fallbackRes = await supabase.rpc('submit_leave_request', coreParams);
+                      if (!fallbackRes.error) {
+                        newLeaveId = fallbackRes.data;
+                        error = null;
+                      }
+                    }
 
                     if (error) {
                       throw new Error(error.message);
@@ -979,6 +1009,18 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
 
                     if (newLeaveId) {
                       createdLeaveIds.push(String(newLeaveId));
+                      try {
+                        await supabase
+                          .from('leave_request_details')
+                          .update({
+                            time_schedule: item.payload.schedule || null,
+                            day_off: item.payload.dayOff || null,
+                            payroll_class: item.payload.payrollClass || null,
+                          })
+                          .eq('request_id', String(newLeaveId));
+                      } catch {
+                        // ignore
+                      }
                     }
 
                     if (ent.leaveCategory === 'Birthday Leave' && item.payload.identities) {

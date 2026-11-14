@@ -235,6 +235,37 @@ export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]>
     }
   }
 
+  // Enrich any leave requests that are missing time_schedule, day_off, or payroll_class
+  const missingLeaveReqs = items.filter(
+    (r) => r.request_type_code === 'leave' && (!r.time_schedule || !r.day_off || !r.payroll_class),
+  );
+  if (missingLeaveReqs.length > 0) {
+    try {
+      const ids = missingLeaveReqs.map((r) => r.request_id);
+      const { data: details } = await supabase
+        .from('leave_request_details')
+        .select('request_id, time_schedule, day_off, payroll_class')
+        .in('request_id', ids);
+      if (details && details.length > 0) {
+        const detailsMap = new Map(details.map((d: any) => [d.request_id, d]));
+        items = items.map((r) => {
+          const d = detailsMap.get(r.request_id);
+          if (d) {
+            return {
+              ...r,
+              time_schedule: r.time_schedule || d.time_schedule || null,
+              day_off: r.day_off || d.day_off || null,
+              payroll_class: r.payroll_class || d.payroll_class || null,
+            };
+          }
+          return r;
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }
+
     await setCacheJSON(cacheKey, items);
     lastRequestsFetchAt = Date.now();
     return items;
@@ -839,7 +870,7 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
   }
 
   // Try updating leave_request_details directly for Leave
-  if (params.leaveType || params.startDate) {
+  if (params.leaveType || params.startDate || params.timeSchedule || params.dayOff) {
     const { error: leaveErr } = await supabase
       .from('leave_request_details')
       .update({
@@ -851,6 +882,9 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
         ...(params.paidDays !== undefined && params.paidDays !== null ? { paid_days: params.paidDays } : {}),
         ...(params.unpaidDays !== undefined && params.unpaidDays !== null ? { unpaid_days: params.unpaidDays } : {}),
         ...(params.reason ? { reason: params.reason } : {}),
+        ...(params.timeSchedule !== undefined ? { time_schedule: params.timeSchedule || null } : {}),
+        ...(params.dayOff !== undefined ? { day_off: params.dayOff || null } : {}),
+        ...(params.payrollClass !== undefined ? { payroll_class: params.payrollClass || null } : {}),
       })
       .eq('request_id', targetId);
 

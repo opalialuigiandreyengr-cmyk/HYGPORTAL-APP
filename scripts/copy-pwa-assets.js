@@ -17,4 +17,16 @@ for (const fileName of ['manifest.json', 'sw.js', 'pwa-icon.png', 'apple-touch-i
   fs.copyFileSync(source, target);
 }
 
+// Copy .well-known folder for Android App Links & iOS Universal Links
+const wellKnownSource = path.join(publicDir, '.well-known');
+const wellKnownTarget = path.join(distDir, '.well-known');
+if (fs.existsSync(wellKnownSource)) {
+  if (!fs.existsSync(wellKnownTarget)) {
+    fs.mkdirSync(wellKnownTarget, { recursive: true });
+  }
+  for (const file of fs.readdirSync(wellKnownSource)) {
+    fs.copyFileSync(path.join(wellKnownSource, file), path.join(wellKnownTarget, file));
+  }
+}
+
 console.log('Copied PWA assets to dist.');

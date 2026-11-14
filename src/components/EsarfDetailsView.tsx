@@ -979,11 +979,19 @@ export function EsarfRequestInfoPanel({
   timeSchedule,
   dayOff,
   payrollClass,
+  leaveType,
+  leaveCategory,
+  paidDays,
+  unpaidDays,
 }: {
   transactionType?: string | null;
   timeSchedule?: string | null;
   dayOff?: string | null;
   payrollClass?: string | null;
+  leaveType?: string | null;
+  leaveCategory?: string | null;
+  paidDays?: number | null;
+  unpaidDays?: number | null;
 }) {
   return (
     <View style={styles.requestInfoSection}>
@@ -993,7 +1001,7 @@ export function EsarfRequestInfoPanel({
       </View>
 
       <View style={styles.infoPanelBox}>
-        {transactionType ? (
+        {!leaveType && transactionType ? (
           <>
             <View style={styles.infoRow}>
               <View style={styles.infoLeft}>
@@ -1001,6 +1009,45 @@ export function EsarfRequestInfoPanel({
                 <Text style={styles.infoLabel}>Transaction Type</Text>
               </View>
               <Text style={styles.infoValue}>{transactionType}</Text>
+            </View>
+            <View style={styles.infoDivider} />
+          </>
+        ) : null}
+
+        {leaveType ? (
+          <>
+            <View style={styles.infoRow}>
+              <View style={styles.infoLeft}>
+                <FileText size={16} color="#64748b" strokeWidth={2} />
+                <Text style={styles.infoLabel}>Leave Type</Text>
+              </View>
+              <Text style={styles.infoValue}>{leaveType}</Text>
+            </View>
+            <View style={styles.infoDivider} />
+          </>
+        ) : null}
+
+        {leaveCategory ? (
+          <>
+            <View style={styles.infoRow}>
+              <View style={styles.infoLeft}>
+                <CalendarDays size={16} color="#64748b" strokeWidth={2} />
+                <Text style={styles.infoLabel}>Leave Category</Text>
+              </View>
+              <Text style={styles.infoValue}>{leaveCategory}</Text>
+            </View>
+            <View style={styles.infoDivider} />
+          </>
+        ) : null}
+
+        {paidDays !== undefined && paidDays !== null && unpaidDays !== undefined && unpaidDays !== null ? (
+          <>
+            <View style={styles.infoRow}>
+              <View style={styles.infoLeft}>
+                <Clock3 size={16} color="#64748b" strokeWidth={2} />
+                <Text style={styles.infoLabel}>Paid / Unpaid</Text>
+              </View>
+              <Text style={styles.infoValue}>{`${paidDays}d / ${unpaidDays}d`}</Text>
             </View>
             <View style={styles.infoDivider} />
           </>

@@ -1746,19 +1746,15 @@ function ApprovalDetailsSheet({
             </View>
 
             {isLeave ? (
-              <>
-                <View style={styles.sectionTitleRow}>
-                  <FileText size={15} color={colors.muted} strokeWidth={2.2} />
-                  <Text style={styles.sectionTitle}>Request Information</Text>
-                </View>
-                <View style={styles.detailsList}>
-                  <DetailRow label="Transaction Type" value={formatApprovalType(item)} />
-                  <DetailRow label="Leave Type" value={item.leave_type || 'N/A'} />
-                  <DetailRow label="Leave Category" value={item.leave_category || 'N/A'} />
-                  <DetailRow label="Total Days" value={`${item.total_days ?? 0}d`} />
-                  <DetailRow label="Paid / Unpaid" value={`${item.paid_days ?? 0}d / ${item.unpaid_days ?? 0}d`} />
-                </View>
-              </>
+              <EsarfRequestInfoPanel
+                leaveType={item.leave_type}
+                leaveCategory={item.leave_category}
+                timeSchedule={item.time_schedule}
+                dayOff={item.day_off}
+                payrollClass={item.payroll_class}
+                paidDays={item.paid_days}
+                unpaidDays={item.unpaid_days}
+              />
             ) : isTravel ? (
               <>
                 <View style={styles.sectionTitleRow}>
@@ -2131,19 +2127,15 @@ function ApprovedDetailsSheet({
             </View>
 
             {isLeave ? (
-              <>
-                <View style={styles.sectionTitleRow}>
-                  <FileText size={15} color={colors.muted} strokeWidth={2.2} />
-                  <Text style={styles.sectionTitle}>Request Information</Text>
-                </View>
-                <View style={styles.detailsList}>
-                  <DetailRow label="Transaction Type" value={formatApprovalType(item)} />
-                  <DetailRow label="Leave Type" value={item.leave_type || 'N/A'} />
-                  <DetailRow label="Leave Category" value={item.leave_category || 'N/A'} />
-                  <DetailRow label="Total Days" value={`${item.total_days ?? 0}d`} />
-                  <DetailRow label="Paid / Unpaid" value={`${item.paid_days ?? 0}d / ${item.unpaid_days ?? 0}d`} />
-                </View>
-              </>
+              <EsarfRequestInfoPanel
+                leaveType={item.leave_type}
+                leaveCategory={item.leave_category}
+                timeSchedule={item.time_schedule}
+                dayOff={item.day_off}
+                payrollClass={item.payroll_class}
+                paidDays={item.paid_days}
+                unpaidDays={item.unpaid_days}
+              />
             ) : isTravel ? (
               <>
                 <View style={styles.sectionTitleRow}>
@@ -2163,6 +2155,7 @@ function ApprovedDetailsSheet({
               </>
             ) : (
               <EsarfRequestInfoPanel
+                transactionType={formatApprovalType(item)}
                 timeSchedule={item.time_schedule}
                 dayOff={item.day_off}
                 payrollClass={item.payroll_class}

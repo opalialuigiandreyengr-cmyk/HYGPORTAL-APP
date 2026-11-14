@@ -1,0 +1,12 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "TEAMID.com.hyg.portal",
+        "paths": ["*"]
+      }
+    ]
+  }
+}
+

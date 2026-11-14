@@ -8,6 +8,10 @@
   "orientation": "portrait",
   "background_color": "#071426",
   "theme_color": "#071426",
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  },
+  "handle_links": "preferred",
   "icons": [
     {
       "src": "/pwa-icon.png",

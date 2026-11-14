@@ -86,6 +86,8 @@ type Props = {
   refreshTrigger?: number;
   pointsBalance?: number;
   onSignOut?: () => void | Promise<void>;
+  targetRequestId?: string | null;
+  onClearTargetRequest?: () => void;
 };
 
 export function RequestsTabScreen({
@@ -103,6 +105,8 @@ export function RequestsTabScreen({
   refreshTrigger,
   pointsBalance = 0,
   onSignOut,
+  targetRequestId,
+  onClearTargetRequest,
 }: Props) {
   const [items, setItems] = useState<MyRequest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -335,6 +339,36 @@ export function RequestsTabScreen({
       setIsPullRefreshing(false);
     }
   };
+
+  const hasForceRefreshedForTargetRef = useRef(false);
+
+  useEffect(() => {
+    if (!targetRequestId) {
+      hasForceRefreshedForTargetRef.current = false;
+      return;
+    }
+
+    if (items.length > 0) {
+      const matchIdx = items.findIndex((i) => i.request_id === targetRequestId);
+      if (matchIdx >= 0) {
+        setActiveStatus('all');
+        setActiveCategory('all');
+        setSelectedRequest({ item: items[matchIdx], sequence: matchIdx + 1 });
+        onClearTargetRequest?.();
+        return;
+      }
+    }
+
+    if (!hasForceRefreshedForTargetRef.current && !isLoading) {
+      hasForceRefreshedForTargetRef.current = true;
+      void refresh(true);
+      return;
+    }
+
+    if (!isLoading && hasForceRefreshedForTargetRef.current && items.length > 0) {
+      onClearTargetRequest?.();
+    }
+  }, [items, targetRequestId, isLoading, onClearTargetRequest]);
 
 
 
@@ -1356,26 +1390,26 @@ function RequestDetailsSheet({
               </View>
             </View>
 
-            {isPerk || isLeave ? (
+            {isPerk ? (
               <>
                 <SectionTitle icon="file" title="Request Information" />
                 <View style={styles.detailsList}>
-                  {isPerk ? (
-                    <>
-                      <DetailRow icon="file" label="Transaction Type" value={formatRequestType(item)} />
-                      <DetailRow icon="file" label="Approval Code" value={item.perk_approval_code || 'N/A'} />
-                      <DetailRow icon="calendar" label="Transaction Date" value={formatSheetDate(item.date_from)} />
-                      <DetailRow icon="file" label="Benefit" value={item.perk_benefit || 'N/A'} />
-                    </>
-                  ) : (
-                    <>
-                      <DetailRow icon="file" label="Transaction Type" value={formatRequestType(item)} />
-                      <DetailRow icon="file" label="Leave Type" value={item.leave_type || 'N/A'} />
-                      <DetailRow icon="calendar" label="Leave Category" value={item.leave_category || 'N/A'} />
-                    </>
-                  )}
+                  <DetailRow icon="file" label="Transaction Type" value={formatRequestType(item)} />
+                  <DetailRow icon="file" label="Approval Code" value={item.perk_approval_code || 'N/A'} />
+                  <DetailRow icon="calendar" label="Transaction Date" value={formatSheetDate(item.date_from)} />
+                  <DetailRow icon="file" label="Benefit" value={item.perk_benefit || 'N/A'} />
                 </View>
               </>
+            ) : isLeave ? (
+              <EsarfRequestInfoPanel
+                leaveType={item.leave_type}
+                leaveCategory={item.leave_category}
+                timeSchedule={item.time_schedule}
+                dayOff={item.day_off}
+                payrollClass={item.payroll_class}
+                paidDays={item.paid_days}
+                unpaidDays={item.unpaid_days}
+              />
             ) : isTravel ? (
               <>
                 <SectionTitle icon="file" title="Request Information" />

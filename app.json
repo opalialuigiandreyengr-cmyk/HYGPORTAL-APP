@@ -17,6 +17,9 @@
     "ios": {
       "buildNumber": "25",
       "supportsTablet": true,
+      "associatedDomains": [
+        "applinks:hygportal.vercel.app"
+      ],
       "infoPlist": {
         "NSCameraUsageDescription": "Allow HYG Portal to access your camera for employee photo proof.",
         "NSLocationWhenInUseUsageDescription": "Allow HYG Portal to access your location to verify photo proof address.",
@@ -28,6 +31,23 @@
       "versionCode": 33,
       "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "resize",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "hygportal.vercel.app",
+              "pathPrefix": "/"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ],
       "permissions": [
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.REQUEST_INSTALL_PACKAGES",

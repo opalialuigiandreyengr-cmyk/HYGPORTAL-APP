@@ -243,6 +243,7 @@ export default function App() {
   const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const [targetApprovalRequestId, setTargetApprovalRequestId] = useState<string | null>(null);
+  const [targetMyRequestId, setTargetMyRequestId] = useState<string | null>(null);
   const [autoOpenApprovalModal, setAutoOpenApprovalModal] = useState(false);
   const [dashboardStatus, setDashboardStatus] = useState('');
   const [activeRequestType, setActiveRequestType] = useState<RequestTypeCode | null>(null);
@@ -301,12 +302,13 @@ export default function App() {
           openApprovalFromNotification(targetReqId);
           await AsyncStorage.removeItem('pending_approval_id').catch(() => {});
         } else {
+          setTargetMyRequestId(targetReqId);
           setActiveTab('requests');
           await AsyncStorage.removeItem('pending_approval_id').catch(() => {});
           setAppToast({
             tone: 'success',
             title: 'Shared Request',
-            message: 'Redirected to your Requests tab.',
+            message: 'Opening your shared request...',
           });
         }
       } else {
@@ -370,11 +372,12 @@ export default function App() {
           openApprovalFromNotification(targetId);
         }, 350);
       } else {
+        setTargetMyRequestId(targetId);
         setActiveTab('requests');
         setAppToast({
           tone: 'success',
           title: 'Shared Request',
-          message: 'Redirected to your Requests tab.',
+          message: 'Opening your shared request...',
         });
       }
     };
@@ -1556,6 +1559,8 @@ export default function App() {
           refreshTrigger={requestsRefreshKey}
           pointsBalance={dashboardSummary.hyg_points_balance}
           onSignOut={signOut}
+          targetRequestId={targetMyRequestId}
+          onClearTargetRequest={() => setTargetMyRequestId(null)}
         />
       );
     } else if (activeTab === 'approvals' && canUseApprovals) {
@@ -2021,6 +2026,10 @@ export default function App() {
             birthDate={profileResult?.status === 'linked' ? profileResult.profile.birthDate : null}
             dateHired={profileResult?.status === 'linked' ? profileResult.profile.dateHired : null}
             dayOff={profileResult?.status === 'linked' ? profileResult.profile.dayOff : null}
+            profileSchedule={profileResult?.status === 'linked' ? profileResult.profile.timeSchedule : null}
+            profilePayrollClass={profileResult?.status === 'linked' ? profileResult.profile.payrollClass : null}
+            profileDepartmentName={profileResult?.status === 'linked' ? profileResult.profile.departmentName : null}
+            profileStoreName={profileResult?.status === 'linked' ? profileResult.profile.storeName : null}
             leaveCreditRemaining={dashboardSummary.leave_credit_remaining}
             initialDraft={assistantDraft?.intent === 'draft_leave_request' ? assistantDraft : null}
             editingRequest={editingRequest}

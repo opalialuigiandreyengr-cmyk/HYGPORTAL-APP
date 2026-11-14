@@ -263,6 +263,43 @@ export async function loadPendingApprovals(forceRefresh = false): Promise<Pendin
         }
       }
 
+      if (!timeSchedule || !dayOff || !payrollClass) {
+        try {
+          const { data: leaveData } = await supabase
+            .from('leave_request_details')
+            .select('time_schedule, day_off, payroll_class')
+            .eq('request_id', item.request_id)
+            .maybeSingle();
+
+          if (leaveData) {
+            timeSchedule = timeSchedule || leaveData.time_schedule;
+            dayOff = dayOff || leaveData.day_off;
+            payrollClass = payrollClass || leaveData.payroll_class;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      const requesterEmpId = (item as any).employee_id || (item as any).submitted_by_employee_id;
+      if ((!timeSchedule || !dayOff || !payrollClass) && requesterEmpId) {
+        try {
+          const { data: empData } = await supabase
+            .from('employee_profile_details')
+            .select('time_schedule, day_off, payroll_class')
+            .eq('employee_id', requesterEmpId)
+            .maybeSingle();
+
+          if (empData) {
+            timeSchedule = timeSchedule || empData.time_schedule;
+            dayOff = dayOff || empData.day_off;
+            payrollClass = payrollClass || empData.payroll_class;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       let approvalSummary = item.approval_summary;
       if (!Array.isArray(approvalSummary) || approvalSummary.length === 0) {
         try {
@@ -581,9 +618,9 @@ export async function loadApprovedApprovals(
               paid_days: leaveDetails?.paid_days ?? null,
               unpaid_days: leaveDetails?.unpaid_days ?? null,
               reason: timeDetails?.reason || leaveDetails?.reason || req.reason || null,
-              time_schedule: timeDetails?.time_schedule || null,
-              day_off: timeDetails?.day_off || null,
-              payroll_class: timeDetails?.payroll_class || null,
+              time_schedule: timeDetails?.time_schedule || leaveDetails?.time_schedule || null,
+              day_off: timeDetails?.day_off || leaveDetails?.day_off || null,
+              payroll_class: timeDetails?.payroll_class || leaveDetails?.payroll_class || null,
               transaction_type: timeDetails?.transaction_type || null,
               submitted_at: req.created_at || req.submitted_at || new Date().toISOString(),
               approved_at: req.updated_at || null,

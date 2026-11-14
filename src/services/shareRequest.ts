@@ -74,6 +74,10 @@ export function generateAppSchemeUrl(requestId: string): string {
   return `${APP_SCHEME}://approval?requestId=${encodeURIComponent(requestId)}`;
 }
 
+export function generateAndroidIntentUrl(requestId: string): string {
+  return `intent://approval?requestId=${encodeURIComponent(requestId)}#Intent;scheme=${APP_SCHEME};package=com.hyg.portal;end`;
+}
+
 export function formatShareMessage(
   item: MyRequest,
   profile?: EmployeeProfileSummary | null,
