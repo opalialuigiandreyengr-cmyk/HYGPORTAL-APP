@@ -3,7 +3,7 @@
     "name": "HYG Portal",
     "slug": "hyg-portal",
     "scheme": "hygportal",
-    "version": "1.7.5",
+    "version": "1.7.7",
     "orientation": "portrait",
     "icon": "./assets/hygapplogo.png",
     "userInterfaceStyle": "light",
@@ -15,7 +15,7 @@
       "url": "https://u.expo.dev/b0a75d0f-14f4-432f-a404-9b2a62805c4d"
     },
     "ios": {
-      "buildNumber": "25",
+      "buildNumber": "27",
       "supportsTablet": true,
       "associatedDomains": [
         "applinks:hygportal.vercel.app"
@@ -28,7 +28,7 @@
     },
     "android": {
       "package": "com.hyg.portal",
-      "versionCode": 33,
+      "versionCode": 35,
       "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "resize",
       "intentFilters": [
