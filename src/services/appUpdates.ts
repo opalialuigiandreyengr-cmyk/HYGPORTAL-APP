@@ -1,8 +1,13 @@
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
+import Constants from 'expo-constants';
+import appConfig from '../../app.json';
 
-export const NATIVE_APP_VERSION = '1.7.5';
+export const NATIVE_APP_VERSION =
+  Constants.expoConfig?.version ??
+  (appConfig as any)?.expo?.version ??
+  '1.7.7';
 
 export type AppUpdateStatus =
   | 'unsupported'
