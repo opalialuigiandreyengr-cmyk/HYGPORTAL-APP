@@ -36,6 +36,7 @@ import {
   GitCommit,
   Image as ImageIcon,
   Images,
+  Info,
   ListChecks,
   Lock,
   MapPin,
@@ -129,6 +130,8 @@ import {
   isOffsetTransaction,
   isOvertimeTransaction,
   isScheduledTransaction,
+  isScheduledOtReadyForProof,
+  isFirstApproverApproved,
 } from '../utils/scheduledOt';
 
 export type EsarfAttachment = {
@@ -1954,12 +1957,20 @@ export function ApplyEsarfScreen({
       }
       if (!entry.reason.trim()) errors[`entry_${i}_reason`] = `Request #${num}: Reason is required.`;
 
-      // Photo proof requirement for FIO transaction only (1 required, 2 optional)
+      // Photo proof requirement:
+      // 1. Regular FIO transaction
+      // 2. Pre-approved OT/Offset where 1st approver has approved AND duration has completed
       const isScheduledOt = isScheduledOtEntry(entry);
-      const needsProof = !isPreApprovedMode && !isScheduledOt && isProofRequiredForTransactions(entry.transaction);
+      const isPreApprovedAwaiting = isPreApprovedMode && isFirstApproverApproved(editingRequest) && isScheduledOtReadyForProof(entry);
+      const needsProof = (!isPreApprovedMode && !isScheduledOt && isProofRequiredForTransactions(entry.transaction))
+        || isPreApprovedAwaiting;
       const entryProofs = getEntryProofs(entry);
       if (needsProof && entryProofs.length === 0) {
-        errors[`entry_${i}_proof`] = `Request #${num}: At least 1 photo proof is required for Failure to Punch In/Out (FIO).`;
+        if (isPreApprovedAwaiting) {
+          errors[`entry_${i}_proof`] = `Request #${num}: Please attach at least 1 photo proof to forward this request to your 2nd Approver.`;
+        } else {
+          errors[`entry_${i}_proof`] = `Request #${num}: At least 1 photo proof is required for Failure to Punch In/Out (FIO).`;
+        }
       }
     });
 
@@ -2644,7 +2655,9 @@ export function ApplyEsarfScreen({
               dayOff: dayOff,
               payrollClass: payrollClass,
               transactionType: combinedTransactionType,
-              reason: combinedReason,
+              reason: isPreApprovedMode && !combinedReason.includes('[PreApproved]')
+                ? `${combinedReason} [PreApproved]`.trim()
+                : combinedReason,
               storeId: null,
               customApprovers: customApproversPayload.length > 0 ? customApproversPayload : null,
             }),
@@ -2652,11 +2665,24 @@ export function ApplyEsarfScreen({
             'Updating ESARF request timed out. Please check your network connection.',
           );
 
-          setSubmitStatus(`Updated ESARF request with ${entries.length} entry(ies).`);
+          const hasAttachedProofs = entries.some((e) => getEntryProofs(e).length > 0);
+          const isPreWithProof = isPreApprovedMode && hasAttachedProofs && isFirstApproverApproved(editingRequest);
+
+          const successStatus = isPreWithProof
+            ? 'Photo proof attached! Your request has been forwarded to your 2nd Approver.'
+            : isPreApprovedMode
+              ? 'Pre-approved OT/Offset request updated.'
+              : `Updated ESARF request with ${entries.length} entry(ies).`;
+
+          setSubmitStatus(successStatus);
           onToast?.({
             tone: 'success',
-            title: 'ESARF updated',
-            message: `ESARF request with ${entries.length} entry(ies) has been updated.`,
+            title: isPreWithProof
+              ? 'Photo Proof Attached'
+              : isPreApprovedMode
+                ? 'Request Updated'
+                : 'ESARF updated',
+            message: successStatus,
           });
           await removeCacheItem('my_requests_v1').catch(() => { });
           await onSubmitted?.();
@@ -3005,7 +3031,7 @@ export function ApplyEsarfScreen({
         const hasOt = entries.some((e) => parseEntryTransactions(e.transaction).includes('ot') || isOvertimeTransaction(e.transaction));
         const typeLabel = hasOffset && hasOt ? 'OT / Offset' : (hasOffset ? 'OT for Offset' : 'Overtime');
         successTitle = `Pre-approved ${typeLabel} Submitted ⏱️`;
-        successMessage = `Your Pre-approved ${typeLabel} request with ${entries.length} entry(ies) has been sent directly to your approver(s) for approval.`;
+        successMessage = `Your Pre-approved ${typeLabel} request has been routed to your 1st Approver. Once approved and after your scheduled shift finishes, remember to attach photo proof to forward it to your 2nd Approver.`;
       }
 
       setSubmitStatus(successMessage);
@@ -3078,10 +3104,10 @@ export function ApplyEsarfScreen({
     const isOffline = !isAppOnline();
     const actionText = isOffline ? 'Save Offline' : isEdit ? 'Update' : 'Submit';
     const confirmTitle = isOffline
-      ? 'Save ESARF Offline'
+      ? (isPreApprovedMode ? 'Save Pre-approved Request Offline' : 'Save ESARF Offline')
       : isEdit
-        ? 'Confirm ESARF Update'
-        : 'Confirm ESARF Submission';
+        ? (isPreApprovedMode ? 'Confirm Pre-approved Update' : 'Confirm ESARF Update')
+        : (isPreApprovedMode ? 'Confirm Pre-approved Submission' : 'Confirm ESARF Submission');
     const hasRegular = entries.some((e) => !parseEntryTransactions(e.transaction).includes('use_offset'));
     const hasUseOffset = entries.some((e) => parseEntryTransactions(e.transaction).includes('use_offset'));
     const isSplit = !isEdit && hasRegular && hasUseOffset;
@@ -3101,16 +3127,21 @@ export function ApplyEsarfScreen({
       offsetNote += `\n\n• ${totalEarnOffsetHours.toFixed(2)} hr(s) will be credited to your offset balance upon approval.`;
     }
 
+    let preApprovedNote = '';
+    if (isPreApprovedMode && !isEdit) {
+      preApprovedNote = '\n\n⏱️ Pre-approved Requests Process:\n Step 1: Your request will appear on your 1st Approver\'s screen for pre-approval.\n Step 2: Once approved and after your shift duration concludes, return to attach photo proof.\n Step 3: Your request will then forward to your 2nd Approver for final approval.';
+    }
+
     let offlineNote = '';
     if (isOffline) {
       offlineNote = '\n\n📱 Offline Mode Active: You have no internet connection. This ESARF request and attached photo proofs will be saved locally on your device and will sync automatically to the database once connected.';
     }
 
     const confirmMsg = (isEdit
-      ? `Are you sure you want to update this ESARF request?${offsetNote}`
+      ? `Are you sure you want to update this ${isPreApprovedMode ? 'pre-approved OT/Offset' : 'ESARF'} request?${offsetNote}`
       : isSplit
-        ? `Your request contains both regular ESARF entries and Use Offset Balance. These will be automatically split and submitted as 2 separate requests for approval.${offsetNote}`
-        : `Are you sure you want to submit this ESARF request with ${entries.length} entry(ies)?${offsetNote}`) + offlineNote;
+        ? `Your request contains both regular ESARF entries and Use Offset Balance. These will be automatically split and submitted as 2 separate requests for approval.${offsetNote}${preApprovedNote}`
+        : `Are you sure you want to submit this ${isPreApprovedMode ? 'pre-approved OT/Offset' : 'ESARF'} request with ${entries.length} entry(ies)?${offsetNote}${preApprovedNote}`) + offlineNote;
 
     platformAlert(confirmTitle, confirmMsg, [
       { text: 'Cancel', style: 'cancel' },
@@ -3313,6 +3344,49 @@ export function ApplyEsarfScreen({
                 <Text style={styles.operationsScopeText} numberOfLines={1}>
                   {operationsScopeLabel}
                 </Text>
+              </View>
+            ) : null}
+
+            {isPreApprovedMode ? (
+              <View style={styles.preApprovedGuideCard}>
+                <View style={styles.preApprovedGuideHeader}>
+                  <Info size={16} color="#1d4ed8" strokeWidth={2.4} />
+                  <Text style={styles.preApprovedGuideTitle}>Pre-approved OT/Offset Instructions</Text>
+                </View>
+                <View style={styles.preApprovedGuideSteps}>
+                  <View style={styles.preApprovedGuideStepItem}>
+                    <View style={styles.preApprovedGuideStepBadge}>
+                      <Text style={styles.preApprovedGuideStepBadgeText}>1</Text>
+                    </View>
+                    <Text style={styles.preApprovedGuideStepText}>
+                      <Text style={styles.preApprovedGuideStepBold}>Submit in Advance:</Text> Apply for your scheduled OT or Offset ahead of time. Photo proof is not required upon submission.
+                    </Text>
+                  </View>
+                  <View style={styles.preApprovedGuideStepItem}>
+                    <View style={styles.preApprovedGuideStepBadge}>
+                      <Text style={styles.preApprovedGuideStepBadgeText}>2</Text>
+                    </View>
+                    <Text style={styles.preApprovedGuideStepText}>
+                      <Text style={styles.preApprovedGuideStepBold}>1st Approver View:</Text> Your request will immediately appear on your 1st Approver's screen for pre-approval.
+                    </Text>
+                  </View>
+                  <View style={styles.preApprovedGuideStepItem}>
+                    <View style={styles.preApprovedGuideStepBadge}>
+                      <Text style={styles.preApprovedGuideStepBadgeText}>3</Text>
+                    </View>
+                    <Text style={styles.preApprovedGuideStepText}>
+                      <Text style={styles.preApprovedGuideStepBold}>Complete Shift:</Text> Once approved by your 1st Approver, the photo proof card will appear and activate after your shift duration finishes.
+                    </Text>
+                  </View>
+                  <View style={styles.preApprovedGuideStepItem}>
+                    <View style={styles.preApprovedGuideStepBadge}>
+                      <Text style={styles.preApprovedGuideStepBadgeText}>4</Text>
+                    </View>
+                    <Text style={styles.preApprovedGuideStepText}>
+                      <Text style={styles.preApprovedGuideStepBold}>2nd Approver View:</Text> Your request will only appear to your 2nd Approver after you attach photo proof of your completed shift.
+                    </Text>
+                  </View>
+                </View>
               </View>
             ) : null}
 
@@ -4052,7 +4126,216 @@ export function ApplyEsarfScreen({
                   {/* Photo Proof / Gallery Attachment Section */}
                   {(() => {
                     if (isPreApprovedMode) {
-                      return null;
+                      const isFirstApproved = isFirstApproverApproved(editingRequest);
+
+                      if (!isFirstApproved) {
+                        if (editingRequest) {
+                          return (
+                            <View style={styles.preApprovedPendingNoticeCard}>
+                              <View style={styles.preApprovedPendingNoticeHeader}>
+                                <Clock3 size={15} color="#b45309" strokeWidth={2.4} />
+                                <Text style={styles.preApprovedPendingNoticeTitle}>
+                                  Photo Proof (Awaiting 1st Approver)
+                                </Text>
+                              </View>
+                              <Text style={styles.preApprovedPendingNoticeText}>
+                                The attach photo proof will only appear here once your 1st Approver approves this request.
+                              </Text>
+                            </View>
+                          );
+                        }
+                        return null;
+                      }
+
+                      const isDurationDone = isScheduledOtReadyForProof(entry);
+                      const attachedProofs = getEntryProofs(entry);
+                      const hasProof = attachedProofs.length > 0;
+                      const proofError = validationErrors[`entry_${actualIndex}_proof`];
+                      const durationEndDisplay = `${entry.dateTo || entry.dateFrom}${entry.timeTo ? ` at ${formatTimeDisplay(entry.timeTo)}` : ''}`;
+
+                      return (
+                        <View style={[styles.proofCardSection, !isDurationDone ? styles.proofCardSectionLocked : null, proofError ? styles.proofCardSectionError : null]}>
+                          <View style={styles.proofSectionHeaderRow}>
+                            <View style={styles.proofHeaderTitleRow}>
+                              {!isDurationDone ? (
+                                <Lock size={16} color="#d97706" strokeWidth={2.4} style={{ marginTop: 2 }} />
+                              ) : (
+                                <Camera size={16} color={hasProof ? '#15803d' : '#2563eb'} strokeWidth={2.2} style={{ marginTop: 2 }} />
+                              )}
+                              <View style={{ flex: 1, minWidth: 0 }}>
+                                <View style={styles.proofTitleCountRow}>
+                                  <Text style={[styles.proofSectionTitle, !isDurationDone ? { color: '#92400e' } : null]}>
+                                    Photo Proof {!isDurationDone ? '(Locked)' : ''}
+                                  </Text>
+                                  <Text style={styles.proofSectionCount}>
+                                    ({attachedProofs.length}/5)
+                                  </Text>
+                                </View>
+                                <Text style={styles.proofSectionSubtitle} numberOfLines={2}>
+                                  {!isDurationDone
+                                    ? `Upload activates once shift ends on ${durationEndDisplay}`
+                                    : '1 Required to forward request to 2nd Approver'}
+                                </Text>
+                              </View>
+                            </View>
+
+                            {!isDurationDone ? (
+                              <View style={[styles.proofReqBadge, { backgroundColor: '#fef3c7', borderColor: '#fde68a' }]}>
+                                <Text style={[styles.proofReqBadgeText, { color: '#b45309' }]}>
+                                  Locked
+                                </Text>
+                              </View>
+                            ) : hasProof ? (
+                              <View style={[styles.proofReqBadge, styles.proofReqBadgeSuccess]}>
+                                <Check size={11} color="#15803d" strokeWidth={2.8} />
+                                <Text style={[styles.proofReqBadgeText, styles.proofReqBadgeTextSuccess]}>
+                                  {attachedProofs.length === 1 ? '1 Attached' : `${attachedProofs.length} Attached`}
+                                </Text>
+                              </View>
+                            ) : (
+                              <View style={[styles.proofReqBadge, styles.proofReqBadgeRequired]}>
+                                <Text style={[styles.proofReqBadgeText, styles.proofReqBadgeTextRequired]}>
+                                  1 Required
+                                </Text>
+                              </View>
+                            )}
+                          </View>
+
+                          {!isDurationDone ? (
+                            <View style={styles.proofLockedNoticeBox}>
+                              <Text style={styles.proofLockedNoticeText}>
+                                🔒 Photo proof upload is locked until your scheduled shift duration concludes on {durationEndDisplay}. Please finish your shift before attaching proof.
+                              </Text>
+                            </View>
+                          ) : (
+                            <>
+                              {hasProof ? (
+                                <View style={styles.proofsAttachedList}>
+                                  {attachedProofs.map((prf, pIdx) => (
+                                    <View key={prf.photoProofId || `${prf.uri}_${pIdx}`} style={styles.proofAttachedCard}>
+                                      <Pressable
+                                        style={styles.proofThumbnailBox}
+                                        onPress={() => setPreviewProof(prf)}
+                                        hitSlop={6}
+                                      >
+                                        {Platform.OS === 'web' ? (
+                                          React.createElement('img', {
+                                            src: getDirectProofImageUrl(prf.uri),
+                                            referrerPolicy: 'no-referrer',
+                                            style: { width: '100%', height: '100%', objectFit: 'cover' },
+                                          })
+                                        ) : (
+                                          <Image source={{ uri: getDirectProofImageUrl(prf.uri) }} style={styles.proofThumbnailImage} resizeMode="cover" />
+                                        )}
+                                        <View style={styles.proofThumbnailOverlay}>
+                                          <Eye size={12} color="#ffffff" strokeWidth={2.2} />
+                                        </View>
+                                      </Pressable>
+
+                                      <View style={styles.proofMetaInfo}>
+                                        <View style={styles.proofSourceRow}>
+                                          <View
+                                            style={[
+                                              styles.proofSourceBadge,
+                                              prf.source === 'photo_proof'
+                                                ? styles.proofSourceBadgeLog
+                                                : prf.source === 'gallery'
+                                                  ? styles.proofSourceBadgeGallery
+                                                  : styles.proofSourceBadgeCamera,
+                                            ]}
+                                          >
+                                            <Text style={styles.proofSourceBadgeText}>
+                                              {prf.source === 'photo_proof'
+                                                ? 'Photo Proof Log'
+                                                : prf.source === 'gallery'
+                                                  ? 'Gallery Upload'
+                                                  : 'Camera Photo'}
+                                            </Text>
+                                          </View>
+                                          <Text style={styles.proofIndexCounterBadge}>
+                                            Photo {pIdx + 1} of {attachedProofs.length}
+                                          </Text>
+                                        </View>
+
+                                        <Text style={styles.proofMetaName} numberOfLines={1}>
+                                          {prf.name || (prf.source === 'gallery' ? `Gallery Photo ${pIdx + 1}` : `Attached Proof Photo ${pIdx + 1}`)}
+                                        </Text>
+
+                                        {prf.source !== 'gallery' && prf.locationText ? (
+                                          <View style={styles.proofLocationRow}>
+                                            <MapPin size={11} color="#64748b" strokeWidth={2} />
+                                            <Text style={styles.proofLocationText} numberOfLines={1}>
+                                              {prf.locationText}
+                                            </Text>
+                                          </View>
+                                        ) : null}
+                                      </View>
+
+                                      <View style={styles.proofItemActions}>
+                                        <Pressable
+                                          style={styles.proofActionButton}
+                                          onPress={() => setPreviewProof(prf)}
+                                          hitSlop={6}
+                                          accessibilityLabel="View proof"
+                                        >
+                                          <Eye size={16} color="#2563eb" strokeWidth={2.2} />
+                                        </Pressable>
+                                        <Pressable
+                                          style={[styles.proofActionButton, styles.proofRemoveBtn]}
+                                          onPress={() => removeProofForEntry(actualIndex, pIdx)}
+                                          hitSlop={6}
+                                          accessibilityLabel="Remove proof"
+                                        >
+                                          <Trash2 size={15} color="#ef4444" strokeWidth={2.2} />
+                                        </Pressable>
+                                      </View>
+                                    </View>
+                                  ))}
+
+                                  {attachedProofs.length < 5 ? (
+                                    <View style={styles.addAnotherProofRow}>
+                                      <Pressable
+                                        style={({ pressed }) => [
+                                          styles.addAnotherProofBtn,
+                                          pressed ? styles.proofButtonPressed : null,
+                                        ]}
+                                        onPress={() => openProofPickerModal(actualIndex)}
+                                      >
+                                        <Plus size={14} color="#2563eb" strokeWidth={2.4} />
+                                        <Text style={styles.addAnotherProofBtnText}>
+                                          Add Another Photo ({attachedProofs.length}/5)
+                                        </Text>
+                                      </Pressable>
+                                    </View>
+                                  ) : null}
+                                </View>
+                              ) : (
+                                <View style={styles.proofActionsRow}>
+                                  <Pressable
+                                    style={({ pressed }) => [
+                                      styles.proofButtonPrimary,
+                                      pressed ? styles.proofButtonPressed : null,
+                                    ]}
+                                    onPress={() => openProofPickerModal(actualIndex)}
+                                  >
+                                    <Camera size={15} color="#ffffff" strokeWidth={2.2} />
+                                    <Text style={styles.proofButtonPrimaryText}>
+                                      Attach Photo Proof
+                                    </Text>
+                                  </Pressable>
+                                </View>
+                              )}
+                            </>
+                          )}
+
+                          {proofError ? (
+                            <View style={styles.proofErrorBanner}>
+                              <AlertTriangle size={13} color="#ef4444" strokeWidth={2.4} />
+                              <Text style={styles.proofErrorBannerText}>{proofError}</Text>
+                            </View>
+                          ) : null}
+                        </View>
+                      );
                     }
 
                     const isAllowed = isProofAllowedForTransactions(entry.transaction);
@@ -5004,7 +5287,7 @@ export function ApplyEsarfScreen({
                           const hasFutureDate = Boolean(
                             activeEntry &&
                             ((activeEntry.dateFrom && activeEntry.dateFrom > todayStr) ||
-                             (activeEntry.dateTo && activeEntry.dateTo > todayStr))
+                              (activeEntry.dateTo && activeEntry.dateTo > todayStr))
                           );
                           const futureNotAllowed = !isPreApprovedMode && hasFutureDate && !isNowUseOffset && !isNowObAlone;
 
@@ -7752,6 +8035,105 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.medium,
     color: '#dc2626',
     marginTop: 2,
+  },
+
+  /* Pre-approved Guide and Reminders */
+  preApprovedGuideCard: {
+    marginTop: 10,
+    marginBottom: 12,
+    padding: 14,
+    backgroundColor: '#eff6ff',
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: '#bfdbfe',
+  },
+  preApprovedGuideHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+  preApprovedGuideTitle: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#1e40af',
+    flex: 1,
+  },
+  preApprovedGuideSteps: {
+    gap: 8,
+  },
+  preApprovedGuideStepItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  preApprovedGuideStepBadge: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#2563eb',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  preApprovedGuideStepBadgeText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: fontWeights.bold,
+  },
+  preApprovedGuideStepText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#1e3a8a',
+  },
+  preApprovedGuideStepBold: {
+    fontWeight: fontWeights.bold,
+    color: '#172554',
+  },
+  preApprovedPendingNoticeCard: {
+    marginTop: 10,
+    marginBottom: 6,
+    padding: 12,
+    backgroundColor: '#fffbeb',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+  },
+  preApprovedPendingNoticeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  preApprovedPendingNoticeTitle: {
+    fontSize: 12.5,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
+    flex: 1,
+  },
+  preApprovedPendingNoticeText: {
+    fontSize: 11.5,
+    lineHeight: 16,
+    color: '#b45309',
+  },
+  proofCardSectionLocked: {
+    backgroundColor: '#fafafa',
+    borderColor: '#fde68a',
+  },
+  proofLockedNoticeBox: {
+    marginTop: 10,
+    padding: 12,
+    backgroundColor: '#fffbeb',
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: '#fef3c7',
+  },
+  proofLockedNoticeText: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#92400e',
+    fontWeight: fontWeights.medium,
   },
 
   /* Scheduled OT Notice Section */

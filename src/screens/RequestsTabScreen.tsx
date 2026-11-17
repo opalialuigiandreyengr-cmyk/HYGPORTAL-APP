@@ -22,6 +22,8 @@ import {
   isScheduledOtAwaitingProof,
   isScheduledOtReadyForProof,
   isScheduledOtRequest,
+  isFirstApproverApproved,
+  hasPhotoProofAttached,
   formatScheduledOtStatusMessage,
 } from '../utils/scheduledOt';
 import { PhotoProofPickerModal, type SelectedProofAttachment } from '../components/PhotoProofPickerModal';
@@ -170,7 +172,9 @@ export function RequestsTabScreen({
     if (!canEditRequest(item)) {
       const msg = isTravelOrderRequest(item)
         ? 'This Travel Order has already received an approval in the timeline and can no longer be edited.'
-        : 'This request has already received an approval in the timeline and can no longer be edited.';
+        : (item.status || '').toLowerCase().includes('partial') || isPartialApproval(item)
+          ? 'This request is partially approved and can no longer be edited.'
+          : 'This request has already received an approval in the timeline and can no longer be edited.';
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
         window.alert(msg);
       } else {
@@ -1126,13 +1130,13 @@ const RequestCard = memo(function RequestCard({
               {isScheduledOtReadyForProof(item) ? (
                 <>
                   <Camera size={13} color="#b45309" strokeWidth={2.3} />
-                  <Text style={styles.cardOtBadgeTextReady}>Attach Photo Proof Required</Text>
+                  <Text style={styles.cardOtBadgeTextReady}>Shift Done • Attach Photo Proof Required</Text>
                 </>
               ) : (
                 <>
                   <Lock size={13} color="#1d4ed8" strokeWidth={2.3} />
                   <Text style={styles.cardOtBadgeTextLocked}>
-                    Attach proof opens on schedule ({formatCompactDate(item.date_from || item.submitted_at)})
+                    Attach proof opens on schedule ({formatCompactDate(item.date_to || item.date_from || item.submitted_at)})
                   </Text>
                 </>
               )}
@@ -1557,16 +1561,36 @@ function RequestDetailsSheet({
             ) : (
               /* ESARF entry cards matching exact image design */
               <View style={{ marginTop: 0 }}>
-                {getCachedEsarfEntries(item).map((entry) => (
-                  <EsarfCardView key={entry.index} entry={entry} timelineRows={timelineRows} />
-                ))}
-                {isScheduledOtAwaitingProof(item) ? (
-                  <ScheduledOtPhotoProofCard
-                    item={item}
-                    profile={profile}
-                    onProofAttached={onProofAttached}
+                {getCachedEsarfEntries(item).map((entry, entryIndex) => (
+                  <EsarfCardView
+                    key={entry.index}
+                    entry={entry}
+                    timelineRows={timelineRows}
+                    belowReasonSlot={
+                      entryIndex === 0 ? (
+                        isScheduledOtAwaitingProof(item) ? (
+                          <ScheduledOtPhotoProofCard
+                            item={item}
+                            profile={profile}
+                            onProofAttached={onProofAttached}
+                          />
+                        ) : isScheduledOtRequest(item) && !hasPhotoProofAttached(item) && !isFirstApproverApproved(item) ? (
+                          <View style={styles.scheduledOtPendingNoticeCard}>
+                            <View style={styles.scheduledOtPendingNoticeHeader}>
+                              <Clock3 size={15} color="#b45309" strokeWidth={2.4} />
+                              <Text style={styles.scheduledOtPendingNoticeTitle}>
+                                Photo Proof (Awaiting 1st Approver Pre-Approval)
+                              </Text>
+                            </View>
+                            <Text style={styles.scheduledOtPendingNoticeText}>
+                              The attach photo proof will only appear here once your 1st Approver approves this request.
+                            </Text>
+                          </View>
+                        ) : null
+                      ) : null
+                    }
                   />
-                ) : null}
+                ))}
                 {rejectedReason ? (
                   <View style={styles.rejectedReasonBox}>
                     <Text style={styles.rejectedReasonLabel}>Rejected reason</Text>
@@ -1727,29 +1751,51 @@ function ScheduledOtPhotoProofCard({
     setSelectedProofs((prev) => prev.filter((_, i) => i !== index));
   }
 
-  const unlockDate = formatCompactDate(item.date_from || item.submitted_at);
+  const unlockEndDate = item.date_to || item.date_from || item.submitted_at;
+  const unlockDate = formatCompactDate(unlockEndDate);
+  const unlockTime = item.time_to ? ` at ${formatTimeDisplay(item.time_to)}` : item.time_from ? ` at ${formatTimeDisplay(item.time_from)}` : '';
+  const unlockDisplay = `${unlockDate}${unlockTime}`;
+
+  function handlePressAttach() {
+    if (!isReady) {
+      const lockMsg = `Photo proof upload unlocks once your scheduled shift ends on ${unlockDisplay}. Please complete your shift before attaching proof.`;
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(lockMsg);
+      } else {
+        Alert.alert('Photo Proof Locked', lockMsg);
+      }
+      return;
+    }
+    setIsPickerOpen(true);
+  }
 
   return (
     <View style={[styles.scheduledOtProofCard, !isReady ? styles.scheduledOtProofCardDisabled : null]}>
       <View style={styles.scheduledOtProofHeaderRow}>
         <View style={styles.scheduledOtProofHeaderTitleRow}>
-          <Camera
-            size={16}
-            color={!isReady ? '#64748b' : selectedProofs.length > 0 ? '#15803d' : '#2563eb'}
-            strokeWidth={2.2}
-            style={{ marginTop: 2 }}
-          />
+          {!isReady ? (
+            <Lock size={16} color="#d97706" strokeWidth={2.4} style={{ marginTop: 2 }} />
+          ) : (
+            <Camera
+              size={16}
+              color={selectedProofs.length > 0 ? '#15803d' : '#2563eb'}
+              strokeWidth={2.2}
+              style={{ marginTop: 2 }}
+            />
+          )}
           <View style={{ flex: 1, minWidth: 0 }}>
             <View style={styles.scheduledOtProofTitleCountRow}>
-              <Text style={[styles.scheduledOtProofSectionTitle, !isReady ? styles.scheduledOtTextDisabled : null]}>
-                Photo Proof
+              <Text style={[styles.scheduledOtProofSectionTitle, !isReady ? { color: '#92400e' } : null]}>
+                Photo Proof {!isReady ? '(Locked)' : ''}
               </Text>
               <Text style={styles.scheduledOtProofSectionCount}>
                 ({selectedProofs.length}/5)
               </Text>
             </View>
-            <Text style={styles.scheduledOtProofSectionSubtitle} numberOfLines={1}>
-              Attach up to 5 Photo Proofs
+            <Text style={styles.scheduledOtProofSectionSubtitle} numberOfLines={2}>
+              {!isReady
+                ? `Upload activates once shift ends on ${unlockDisplay}`
+                : '1 Required to forward request to 2nd Approver'}
             </Text>
           </View>
         </View>
@@ -1758,7 +1804,7 @@ function ScheduledOtPhotoProofCard({
           style={[
             styles.scheduledOtReqBadge,
             !isReady
-              ? styles.scheduledOtReqBadgeOptional
+              ? { backgroundColor: '#fef3c7', borderColor: '#fde68a' }
               : selectedProofs.length > 0
                 ? styles.scheduledOtReqBadgeSuccess
                 : styles.scheduledOtReqBadgeRequired,
@@ -1766,93 +1812,99 @@ function ScheduledOtPhotoProofCard({
         >
           {selectedProofs.length > 0 ? (
             <Check size={11} color="#15803d" strokeWidth={2.8} />
+          ) : !isReady ? (
+            <Lock size={11} color="#b45309" strokeWidth={2.4} />
           ) : null}
           <Text
             style={[
               styles.scheduledOtReqBadgeText,
               !isReady
-                ? styles.scheduledOtReqBadgeTextOptional
+                ? { color: '#b45309' }
                 : selectedProofs.length > 0
                   ? styles.scheduledOtReqBadgeTextSuccess
                   : styles.scheduledOtReqBadgeTextRequired,
             ]}
           >
-            {!isReady ? 'Optional' : selectedProofs.length > 0 ? `${selectedProofs.length} Attached` : '1 Required'}
+            {!isReady ? 'Locked' : selectedProofs.length > 0 ? `${selectedProofs.length} Attached` : '1 Required'}
           </Text>
         </View>
       </View>
 
-      {!isReady ? (
-        <View style={styles.scheduledOtLockedButton}>
-          <Lock size={15} color="#ffffff" strokeWidth={2.2} />
-          <Text style={styles.scheduledOtLockedButtonText}>
-            Proof attachment unlocks on {unlockDate}
+      {selectedProofs.length > 0 ? (
+        <View style={styles.scheduledOtThumbnailRow}>
+          {selectedProofs.map((proof, idx) => (
+            <View key={proof.uri + idx} style={styles.scheduledOtThumbWrap}>
+              {Platform.OS === 'web' ? (
+                React.createElement('img', {
+                  src: getDirectProofImageUrl(proof.uri),
+                  referrerPolicy: 'no-referrer',
+                  style: { width: 64, height: 64, borderRadius: 10, objectFit: 'cover' },
+                })
+              ) : (
+                <Image
+                  source={{ uri: getDirectProofImageUrl(proof.uri) }}
+                  style={styles.scheduledOtThumbImg}
+                  resizeMode="cover"
+                />
+              )}
+              <Pressable
+                style={styles.scheduledOtThumbRemoveBtn}
+                onPress={() => handleRemoveProof(idx)}
+                hitSlop={6}
+              >
+                <X size={12} color="#ffffff" strokeWidth={3} />
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      ) : null}
+
+      {isReady && selectedProofs.length === 0 ? (
+        <View style={styles.scheduledOtReadyNoticeBox}>
+          <View style={styles.scheduledOtReadyNoticeHeader}>
+            <Check size={14} color="#15803d" strokeWidth={2.6} />
+            <Text style={styles.scheduledOtReadyNoticeTitle}>Shift Completed • Photo Proof Open</Text>
+          </View>
+          <Text style={styles.scheduledOtReadyNoticeText}>
+            {statusMessage}
           </Text>
         </View>
-      ) : (
-        <View style={{ marginTop: 4 }}>
-          {selectedProofs.length > 0 ? (
-            <View style={styles.scheduledOtThumbnailRow}>
-              {selectedProofs.map((proof, idx) => (
-                <View key={proof.uri + idx} style={styles.scheduledOtThumbWrap}>
-                  {Platform.OS === 'web' ? (
-                    React.createElement('img', {
-                      src: getDirectProofImageUrl(proof.uri),
-                      referrerPolicy: 'no-referrer',
-                      style: { width: 64, height: 64, borderRadius: 10, objectFit: 'cover' },
-                    })
-                  ) : (
-                    <Image
-                      source={{ uri: getDirectProofImageUrl(proof.uri) }}
-                      style={styles.scheduledOtThumbImg}
-                      resizeMode="cover"
-                    />
-                  )}
-                  <Pressable
-                    style={styles.scheduledOtThumbRemoveBtn}
-                    onPress={() => handleRemoveProof(idx)}
-                    hitSlop={6}
-                  >
-                    <X size={12} color="#ffffff" strokeWidth={3} />
-                  </Pressable>
-                </View>
-              ))}
-            </View>
-          ) : null}
+      ) : null}
 
-          <View style={styles.scheduledOtActionRow}>
-            <Pressable
-              style={styles.scheduledOtPrimaryBtn}
-              onPress={() => setIsPickerOpen(true)}
-              disabled={isSubmitting}
-            >
-              <Camera size={15} color="#ffffff" strokeWidth={2.2} />
-              <Text style={styles.scheduledOtPrimaryBtnText}>
-                {selectedProofs.length > 0
-                  ? `Manage Proofs (${selectedProofs.length}/5)`
-                  : 'Attach Photo Proof (1 Required)'}
-              </Text>
-            </Pressable>
+      <View style={styles.scheduledOtActionRow}>
+        <Pressable
+          style={[
+            styles.scheduledOtPrimaryBtn,
+            !isReady ? styles.scheduledOtPrimaryBtnDisabled : null,
+          ]}
+          onPress={handlePressAttach}
+          disabled={isSubmitting}
+        >
+          <Camera size={15} color="#ffffff" strokeWidth={2.2} />
+          <Text style={styles.scheduledOtPrimaryBtnText}>
+            {selectedProofs.length > 0
+              ? `Manage Proofs (${selectedProofs.length}/5)`
+              : 'Attach Photo Proof'}
+          </Text>
+        </Pressable>
 
-            {selectedProofs.length > 0 ? (
-              <Pressable
-                style={[styles.scheduledOtSubmitBtn, isSubmitting ? { opacity: 0.7 } : null]}
-                onPress={handleSubmitProof}
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? (
-                  <ActivityIndicator size="small" color="#ffffff" />
-                ) : (
-                  <>
-                    <Check size={16} color="#ffffff" strokeWidth={2.4} />
-                    <Text style={styles.scheduledOtSubmitBtnText}>Submit Proof & Forward Request</Text>
-                  </>
-                )}
-              </Pressable>
-            ) : null}
-          </View>
-        </View>
-      )}
+        {selectedProofs.length > 0 ? (
+          <Pressable
+            style={[styles.scheduledOtSubmitBtn, isSubmitting ? { opacity: 0.7 } : null]}
+            onPress={handleSubmitProof}
+            disabled={isSubmitting}
+          >
+            {isSubmitting ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <>
+                <Check size={16} color="#ffffff" strokeWidth={2.4} />
+                <Text style={styles.scheduledOtSubmitBtnText}>Submit Proof & Forward Request</Text>
+              </>
+            )}
+          </Pressable>
+        ) : null}
+      </View>
 
       {isPickerOpen ? (
         <PhotoProofPickerModal
@@ -2057,7 +2109,12 @@ function statusLabel(item: MyRequest): string {
     return 'REJECTED';
   }
 
-
+  // Partial approval takes precedence over pre-approved status (e.g. 1/2 APPROVED)
+  if (isPartialApproval(item)) {
+    const entries = getCachedEsarfEntries(item);
+    const approvedCount = entries.filter((e) => !e.isRejected).length;
+    return `${approvedCount}/${entries.length} APPROVED`;
+  }
 
   if (
     isScheduledOtAwaitingProof(item) ||
@@ -2066,11 +2123,6 @@ function statusLabel(item: MyRequest): string {
     isScheduledOtRequest(item)
   ) {
     return 'PRE-APPROVED';
-  }
-  if (isPartialApproval(item)) {
-    const entries = getCachedEsarfEntries(item);
-    const approvedCount = entries.filter((e) => !e.isRejected).length;
-    return `${approvedCount}/${entries.length} APPROVED`;
   }
 
   // If validated in database, display as is ("VALIDATED")
@@ -2106,7 +2158,9 @@ function statusPillStyle(status: StatusFilter | 'partial', item?: MyRequest) {
   const rawStatus = (item?.status || '').toLowerCase();
   const isFinalDone = rawStatus === 'approved' || rawStatus.includes('reject') || Boolean(item?.final_approved_at);
 
-
+  if (item && isPartialApproval(item)) {
+    return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
+  }
   if (
     item &&
     !isFinalDone &&
@@ -2116,9 +2170,6 @@ function statusPillStyle(status: StatusFilter | 'partial', item?: MyRequest) {
       isScheduledOtRequest(item))
   ) {
     return { backgroundColor: '#eff6ff', borderColor: '#93c5fd', borderWidth: 1, color: '#1d4ed8' };
-  }
-  if (item && isPartialApproval(item)) {
-    return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
   }
   if (status === 'validated' || rawStatus.includes('validat')) {
     return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
@@ -2199,16 +2250,27 @@ function hasApprovedTimelineStatus(item: MyRequest): boolean {
 }
 
 function canEditRequest(item: MyRequest): boolean {
-  if (isScheduledOtAwaitingProof(item)) {
-    return true;
-  }
-  const statusKey = normalizeStatus(item.status, item);
-  if (statusKey !== 'pending') return false;
+  if (!item) return false;
   if (isPerkRequest(item)) return false;
+
+  const rawStatus = (item.status || '').toLowerCase().trim();
+  // Pre-approved requests and ESARF requests that are partially approved cannot be edited
+  if (rawStatus.includes('partial') || isPartialApproval(item)) {
+    return false;
+  }
+
   // If request has at least one approved status in the timeline, it cannot be edited
   if ((isEsarfRequest(item) || isTravelOrderRequest(item)) && hasApprovedTimelineStatus(item)) {
     return false;
   }
+
+  if (isScheduledOtAwaitingProof(item)) {
+    return true;
+  }
+
+  const statusKey = normalizeStatus(item.status, item);
+  if (statusKey !== 'pending') return false;
+
   return true;
 }
 
@@ -2219,6 +2281,11 @@ function isShareableRequest(item?: MyRequest | null): boolean {
   const rawLower = (item.status || '').toLowerCase().trim();
   // Do NOT include approved requests or rejected/validated
   if (rawLower === 'approved' || rawLower.includes('reject') || rawLower.includes('denied') || rawLower.includes('validat')) {
+    return false;
+  }
+
+  // Do NOT include partially approved requests
+  if (rawLower.includes('partial') || isPartialApproval(item)) {
     return false;
   }
 
@@ -3770,8 +3837,35 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.medium,
     color: '#1d4ed8',
   },
+  scheduledOtPendingNoticeCard: {
+    marginHorizontal: 0,
+    marginTop: spacing.sm,
+    marginBottom: spacing.xs,
+    padding: 12,
+    backgroundColor: '#fffbeb',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+  },
+  scheduledOtPendingNoticeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    marginBottom: 5,
+  },
+  scheduledOtPendingNoticeTitle: {
+    fontSize: 12.5,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
+    flex: 1,
+  },
+  scheduledOtPendingNoticeText: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#b45309',
+  },
   scheduledOtProofCard: {
-    marginHorizontal: spacing.lg,
+    marginHorizontal: 0,
     marginTop: spacing.sm,
     marginBottom: spacing.xs,
     padding: 12,
@@ -3860,20 +3954,30 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: fontWeights.bold,
   },
-  scheduledOtLockedButton: {
+  scheduledOtReadyNoticeBox: {
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    borderRadius: radius.md,
+    padding: 10,
+    marginTop: 6,
+    marginBottom: 8,
+  },
+  scheduledOtReadyNoticeHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#0f172a',
-    paddingVertical: 11,
-    paddingHorizontal: 16,
-    borderRadius: 8,
+    gap: 6,
+    marginBottom: 4,
   },
-  scheduledOtLockedButtonText: {
-    color: '#ffffff',
-    fontSize: 13,
-    fontWeight: fontWeights.semibold,
+  scheduledOtReadyNoticeTitle: {
+    fontSize: 12,
+    fontWeight: fontWeights.bold,
+    color: '#15803d',
+  },
+  scheduledOtReadyNoticeText: {
+    fontSize: 11.5,
+    lineHeight: 16,
+    color: '#166534',
   },
   scheduledOtPrimaryBtn: {
     flexDirection: 'row',
@@ -3884,6 +3988,9 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     paddingHorizontal: 16,
     borderRadius: 8,
+  },
+  scheduledOtPrimaryBtnDisabled: {
+    opacity: 0.55,
   },
   scheduledOtPrimaryBtnText: {
     color: '#ffffff',

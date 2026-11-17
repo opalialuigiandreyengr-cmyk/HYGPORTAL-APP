@@ -13,6 +13,9 @@ alter table public.leave_request_details add column if not exists day_off text;
 alter table public.leave_request_details add column if not exists payroll_class text;
 
 -- Step 2: Drop obsolete overloads of submit_leave_request to prevent ambiguity
+drop function if exists public.submit_leave_request(text, text, date, date, numeric, numeric, text, text, text, text);
+drop function if exists public.submit_leave_request(text, text, date, date, numeric, numeric, text);
+
 do $$
 declare
   r record;
@@ -22,7 +25,7 @@ begin
     from pg_proc
     where proname = 'submit_leave_request'
       and pronamespace = 'public'::regnamespace
-      and pronargs < 10
+      and pronargs <> 11
   loop
     execute 'drop function if exists ' || r.func_sig || ' cascade';
   end loop;

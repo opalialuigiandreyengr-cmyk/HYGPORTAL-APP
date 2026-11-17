@@ -1120,21 +1120,48 @@ export async function attachScheduledOtPhotoProof({ requestId, proofs }: AttachS
       })
       .eq('id', requestId);
 
-    // Activate first step in request_approval_steps
-    const { data: firstStep } = await supabase
+    // Check if Step 1 is already approved
+    const { data: step1 } = await supabase
       .from('request_approval_steps')
-      .select('id')
+      .select('status')
       .eq('request_id', requestId)
-      .order('step_order', { ascending: true })
-      .limit(1)
-      .maybeSingle<{ id: string }>();
+      .eq('step_order', 1)
+      .maybeSingle<{ status: string }>();
 
-    if (firstStep?.id) {
-      await supabase
+    if (step1?.status?.toLowerCase() === 'approved') {
+      // Step 1 was already approved! Now activate Step 2 (next waiting step) so it routes to the 2nd approver
+      const { data: nextWaitingStep } = await supabase
         .from('request_approval_steps')
-        .update({ status: 'pending' })
-        .eq('id', firstStep.id)
-        .eq('status', 'waiting');
+        .select('id')
+        .eq('request_id', requestId)
+        .eq('status', 'waiting')
+        .order('step_order', { ascending: true })
+        .limit(1)
+        .maybeSingle<{ id: string }>();
+
+      if (nextWaitingStep?.id) {
+        await supabase
+          .from('request_approval_steps')
+          .update({ status: 'pending' })
+          .eq('id', nextWaitingStep.id);
+      }
+    } else {
+      // If Step 1 was waiting, activate it
+      const { data: firstStep } = await supabase
+        .from('request_approval_steps')
+        .select('id')
+        .eq('request_id', requestId)
+        .order('step_order', { ascending: true })
+        .limit(1)
+        .maybeSingle<{ id: string }>();
+
+      if (firstStep?.id) {
+        await supabase
+          .from('request_approval_steps')
+          .update({ status: 'pending' })
+          .eq('id', firstStep.id)
+          .eq('status', 'waiting');
+      }
     }
   }
 

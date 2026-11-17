@@ -352,9 +352,33 @@ export async function loadPendingApprovals(forceRefresh = false): Promise<Pendin
     }),
   );
 
+      // Pre-approved requests: Step 2+ only appears once Step 1 is approved AND photo proof is attached
+      const filteredItems = enhancedItems.filter((item) => {
+        const rawStatus = (item.status || item.request_status || '').toLowerCase();
+        const isPre =
+          rawStatus.includes('pre_approved') ||
+          rawStatus.includes('pre-approved') ||
+          /\[PreApproved\]/i.test(item.reason || '') ||
+          (item.transaction_type || '').toLowerCase().includes('scheduled_ot');
+
+        if (!isPre) return true;
+
+        // Step 1 approver always sees their step immediately
+        const stepOrder = item.step_order || 1;
+        if (stepOrder <= 1) return true;
+
+        // Step 2+ approver: ONLY visible if photo proof is attached AND Step 1 is approved
+        const hasProof = /\[Proof:\s*[^\]]+\]/i.test(item.reason || '');
+        const step1Approved = (item.approval_summary || []).some(
+          (s) => Number(s.step_order) === 1 && s.status?.toLowerCase() === 'approved',
+        );
+
+        return hasProof && step1Approved;
+      });
+
       lastPendingApprovalsFetchAt = Date.now();
-      await setCacheJSON(cacheKey, enhancedItems);
-      return enhancedItems;
+      await setCacheJSON(cacheKey, filteredItems);
+      return filteredItems;
     } catch (err) {
       if (cached && cached.length > 0) {
         return cached;

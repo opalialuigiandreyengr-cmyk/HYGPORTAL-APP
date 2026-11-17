@@ -1231,6 +1231,7 @@ export function EsarfCardView({
   isEditableHours,
   adjustedHours,
   onHoursChange,
+  belowReasonSlot,
 }: {
   entry: ParsedEsarfEntry;
   timelineRows?: TimelineStep[];
@@ -1244,6 +1245,7 @@ export function EsarfCardView({
   isEditableHours?: boolean;
   adjustedHours?: string;
   onHoursChange?: (val: string) => void;
+  belowReasonSlot?: React.ReactNode;
 }) {
   const [previewProofUrl, setPreviewProofUrl] = useState<string | null>(null);
   const [activeModalProof, setActiveModalProof] = useState<ParsedEsarfProof | null>(null);
@@ -1695,6 +1697,9 @@ export function EsarfCardView({
           <Text style={[styles.reasonText, isEntryRejected && styles.dashedText]}>{entry.reason}</Text>
         </View>
       </View>
+
+      {/* Optional slot below Reason (e.g. Scheduled OT Photo Proof card/notice) */}
+      {belowReasonSlot}
 
       {/* Attached Photo Proofs (up to 5) */}
       {(() => {
