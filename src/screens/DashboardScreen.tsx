@@ -26,7 +26,7 @@ import { BalanceHistoryPage } from '../components/BalanceHistoryModal';
 import { DashboardFab } from '../components/DashboardFab';
 import type { DashboardSummary } from '../services/dashboard';
 import { loadPerkUsage, type PerkUsage } from '../services/perks';
-import { loadMyRequests, type MyRequest } from '../services/requests';
+import { loadMyRequests, loadMyRequestsCached, type MyRequest } from '../services/requests';
 import { syncAllOfflineItems } from '../services/offlineQueue';
 import { isAppOnline } from '../services/network';
 import { loadActiveEventsActivities } from '../services/eventsActivities';
@@ -41,7 +41,7 @@ import {
 import { formatUnifiedRequestType } from '../components/EsarfDetailsView';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { formatDateInput, hasCompletedOneYearOfService } from '../utils/dateTime';
-import { isScheduledOtRequest } from '../utils/scheduledOt';
+import { isFirstApproverApproved, isScheduledOtRequest } from '../utils/scheduledOt';
 import { supabase } from '../lib/supabase';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
@@ -167,8 +167,8 @@ export function DashboardScreen({
     void (async () => {
       try {
         const [cachedRequests, cachedPerks] = await Promise.all([
-          getCacheJSON<MyRequest[]>('my_requests_v1'),
-          getCacheJSON<PerkUsage>('my_perk_usage_v1'),
+          loadMyRequestsCached(),
+          loadPerkUsage(),
         ]);
         if (cachedRequests && cachedRequests.length > 0) {
           setRecentRequests(cachedRequests);
@@ -482,8 +482,8 @@ export function DashboardScreen({
             },
             {
               id: 'pre_approved',
-              label: 'Pre-approved\nOT/Offset',
-              accessibilityLabel: 'Apply Pre-approved OT/Offset',
+              label: 'Pre-approved\nOT',
+              accessibilityLabel: 'Apply Pre-approved OT',
               onPress: onApplyPreApprovedOtOffset,
               Icon: ActionIconClock,
             },
@@ -1216,16 +1216,12 @@ function isPreApprovedRequest(request?: MyRequest | null): boolean {
   if (!request) return false;
   const rawStatus = (request.status || '').toLowerCase().trim();
   if (
-    rawStatus === 'approved' ||
     rawStatus.includes('validat') ||
     rawStatus === 'rejected' ||
     rawStatus === 'cancelled' ||
     rawStatus.includes('reject') ||
     rawStatus.includes('denied')
   ) {
-    return false;
-  }
-  if (request.final_approved_at && !rawStatus.includes('reject') && !rawStatus.includes('denied')) {
     return false;
   }
   if (rawStatus.includes('pre_approved') || rawStatus.includes('pre-approved')) {
@@ -1236,24 +1232,28 @@ function isPreApprovedRequest(request?: MyRequest | null): boolean {
 
 function formatStatus(request: MyRequest) {
   if (isPreApprovedRequest(request)) {
-    return 'Pre-Approved';
+    const isFinalized = Boolean(request.final_approved_at) || isFirstApproverApproved(request);
+    return isFinalized ? 'Pre-Approved' : 'Pending';
   }
   return (request.status || 'Pending').replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function getActivityStatusTone(request: MyRequest): 'approved' | 'rejected' | 'pre_approved' | 'pending' {
   const lower = (request.status || '').toLowerCase().trim();
-  if (lower === 'approved' || lower.includes('validat')) {
+  if (lower === 'rejected' || lower === 'cancelled' || lower.includes('reject') || lower.includes('denied')) {
+    return 'rejected';
+  }
+  if (lower.includes('validat')) {
+    return 'approved';
+  }
+  if (isPreApprovedRequest(request)) {
+    return 'pre_approved';
+  }
+  if (lower === 'approved') {
     return 'approved';
   }
   if (request.final_approved_at && !lower.includes('reject') && !lower.includes('denied')) {
     return 'approved';
-  }
-  if (lower === 'rejected' || lower === 'cancelled' || lower.includes('reject') || lower.includes('denied')) {
-    return 'rejected';
-  }
-  if (isPreApprovedRequest(request)) {
-    return 'pre_approved';
   }
   return 'pending';
 }

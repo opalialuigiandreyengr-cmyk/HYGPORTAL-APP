@@ -42,6 +42,7 @@ import { supabase } from '../lib/supabase';
 import {
   EsarfCardView,
   EsarfRequestInfoPanel,
+  RequestCardDetailsGrid,
   TimelineStep,
   buildUpdatedReasonText,
   computeEffectiveTotalHours,
@@ -489,6 +490,7 @@ export function ApprovalsScreen({
     item: PendingApproval,
     rejectedIndices: number[] = [],
     adjustedHoursMap: Record<number, string> = {},
+    adjustmentReason: string = '',
   ) {
     setStatus('Approving request...');
     try {
@@ -496,7 +498,17 @@ export function ApprovalsScreen({
       const isTravel = isTravelOrderApproval(item);
       const entries = !isLeave && !isTravel ? parseEsarfEntries(item) : [];
       const isEditable = isRequestEditable(item, entries);
-      const hasHoursAdjustment = isEditable && Object.keys(adjustedHoursMap).length > 0;
+      const hasHoursAdjustment = isEditable && Object.keys(adjustedHoursMap).some((idxStr) => {
+        const idx = Number(idxStr);
+        if (rejectedIndices.includes(idx)) return false;
+        const entry = entries.find((e) => e.index === idx);
+        if (!entry) return false;
+        const val = adjustedHoursMap[idx];
+        const parsedVal = parseFloat(val);
+        const origVal = parseFloat(entry.totalHours || '0');
+        return val.trim() !== '' && !Number.isNaN(parsedVal) && Math.abs(parsedVal - (Number.isNaN(origVal) ? 0 : origVal)) > 0.0001;
+      });
+      const trimmedAdjustmentReason = adjustmentReason.trim();
 
       const newTotalHours = computeEffectiveTotalHours(
         entries,
@@ -505,39 +517,78 @@ export function ApprovalsScreen({
         item.total_hours,
       );
 
+      const trueOriginalTotalHours = (() => {
+        if (item.original_total_hours != null && !Number.isNaN(Number(item.original_total_hours))) {
+          return Math.round(Number(item.original_total_hours) * 100) / 100;
+        }
+        if (entries.length > 0) {
+          const active = entries.filter((e) => !rejectedIndices.includes(e.index));
+          let sum = 0;
+          for (const e of active) {
+            const hrs = parseFloat(e.originalHours || e.totalHours || '0');
+            if (!Number.isNaN(hrs)) sum += hrs;
+          }
+          if (sum > 0) return Math.round(sum * 100) / 100;
+        }
+        return item.total_hours ?? 0;
+      })();
+
       const updatedReason = buildUpdatedReasonText(
         item.reason,
         entries,
         adjustedHoursMap,
         rejectedIndices,
+        hasHoursAdjustment ? trimmedAdjustmentReason : undefined,
+        trueOriginalTotalHours,
       );
 
       // 1. Update time_request_details in database if hours were adjusted or entries rejected
       if (hasHoursAdjustment || rejectedIndices.length > 0) {
-        const updatePayload: Record<string, any> = {
-          total_hours: newTotalHours,
-        };
-        if (updatedReason !== item.reason) {
-          updatePayload.reason = updatedReason;
-        }
+        let savedViaRpc = false;
 
-        try {
-          const { error: updateErr } = await supabase
-            .from('time_request_details')
-            .update(updatePayload)
-            .eq('request_id', item.request_id);
-
-          if (updateErr) {
-            console.warn('Direct update failed, trying RPC fallback:', updateErr);
-            await supabase.rpc('admin_update_request_data', {
+        if (hasHoursAdjustment) {
+          try {
+            const { error: adjRpcErr } = await supabase.rpc('approver_adjust_time_request_hours', {
               p_request_id: item.request_id,
-              p_is_perk: false,
               p_total_hours: newTotalHours,
+              p_original_total_hours: trueOriginalTotalHours,
+              p_adjustment_reason: trimmedAdjustmentReason || null,
               p_reason: updatedReason,
             });
+            if (!adjRpcErr) {
+              savedViaRpc = true;
+            }
+          } catch {
+            // RPC may not be deployed yet; fall back cleanly below
           }
-        } catch (dbErr) {
-          console.warn('Error updating time_request_details:', dbErr);
+        }
+
+        if (!savedViaRpc) {
+          const updatePayload: Record<string, any> = {
+            total_hours: newTotalHours,
+          };
+          if (updatedReason !== item.reason) {
+            updatePayload.reason = updatedReason;
+          }
+
+          try {
+            const { error: updateErr } = await supabase
+              .from('time_request_details')
+              .update(updatePayload)
+              .eq('request_id', item.request_id);
+
+            if (updateErr) {
+              console.warn('Direct update failed, trying RPC fallback:', updateErr);
+              await supabase.rpc('admin_update_request_data', {
+                p_request_id: item.request_id,
+                p_is_perk: false,
+                p_total_hours: newTotalHours,
+                p_reason: updatedReason,
+              });
+            }
+          } catch (dbErr) {
+            console.warn('Error updating time_request_details:', dbErr);
+          }
         }
       }
 
@@ -558,11 +609,14 @@ export function ApprovalsScreen({
       if (!stepId) {
         throw new Error('Approval step ID was not found.');
       }
-      await decideApprovalStep(stepId, 'approved', 'Approved from mobile.');
+      const approvalRemarks = hasHoursAdjustment
+        ? `Total hours edited from ${trueOriginalTotalHours.toFixed(2)} hrs to ${newTotalHours.toFixed(2)} hrs.${trimmedAdjustmentReason ? `\nAdjustment reason: ${trimmedAdjustmentReason}` : ''}`
+        : 'Approved from mobile.';
+      await decideApprovalStep(stepId, 'approved', approvalRemarks);
       await refresh(true);
 
       const adjustedMsg = hasHoursAdjustment
-        ? ` with ${newTotalHours.toFixed(2)} hrs (adjusted)`
+        ? ` with ${newTotalHours.toFixed(2)} hrs (edited from ${trueOriginalTotalHours.toFixed(2)} hrs)`
         : '';
       onToast?.({
         tone: 'success',
@@ -584,23 +638,36 @@ export function ApprovalsScreen({
     item: PendingApproval,
     rejectedIndices: number[] = [],
     adjustedHoursMap: Record<number, string> = {},
+    adjustmentReason: string = '',
   ) {
     const isLeave = item.request_type_code === 'leave';
     const isTravel = isTravelOrderApproval(item);
     const entries = !isLeave && !isTravel ? parseEsarfEntries(item) : [];
     const isEditable = isRequestEditable(item, entries);
     const hasAdjustment = isEditable && Object.keys(adjustedHoursMap).some((idxStr) => {
-      const entry = entries.find((e) => e.index === Number(idxStr));
+      const idx = Number(idxStr);
+      if (rejectedIndices.includes(idx)) return false;
+      const entry = entries.find((e) => e.index === idx);
       if (!entry) return false;
-      const val = adjustedHoursMap[Number(idxStr)];
-      return val !== '' && parseFloat(val) !== parseFloat(entry.totalHours);
+      const val = adjustedHoursMap[idx];
+      const parsedVal = parseFloat(val);
+      const origVal = parseFloat(entry.totalHours || '0');
+      return val.trim() !== '' && !Number.isNaN(parsedVal) && Math.abs(parsedVal - (Number.isNaN(origVal) ? 0 : origVal)) > 0.0001;
     });
 
     const newTotal = computeEffectiveTotalHours(entries, rejectedIndices, adjustedHoursMap, item.total_hours);
+    const origTotal = item.original_total_hours != null
+      ? Number(item.original_total_hours)
+      : entries.length > 0
+        ? entries
+          .filter((e) => !rejectedIndices.includes(e.index))
+          .reduce((acc, e) => acc + (parseFloat(e.originalHours || e.totalHours || '0') || 0), 0)
+        : (item.total_hours ?? 0);
+    const trimmedReason = adjustmentReason.trim();
 
     let message = `Are you sure you want to approve ${formatApprovalType(item)} from ${item.requester_name || 'this employee'}?`;
     if (hasAdjustment) {
-      message = `Are you sure you want to approve ${formatApprovalType(item)} from ${item.requester_name || 'this employee'} with adjusted total of ${newTotal.toFixed(2)} hrs (originally ${(item.total_hours ?? 0).toFixed(2)} hrs)?`;
+      message = `Are you sure you want to approve ${formatApprovalType(item)} from ${item.requester_name || 'this employee'} with edited total of ${newTotal.toFixed(2)} hrs (actual before edit: ${origTotal.toFixed(2)} hrs)?${trimmedReason ? `\n\nAdjustment Reason: ${trimmedReason}` : ''}`;
     }
 
     platformAlert(
@@ -612,7 +679,7 @@ export function ApprovalsScreen({
           text: 'Approve',
           onPress: () => {
             setSelectedApproval(null);
-            void approve(item, rejectedIndices, adjustedHoursMap);
+            void approve(item, rejectedIndices, adjustedHoursMap, trimmedReason);
           },
         },
       ],
@@ -1064,10 +1131,10 @@ export function ApprovalsScreen({
                         ? `Approving (${batchProgress.current}/${batchProgress.total})...`
                         : 'Approving...'
                       : isSelectionMode && selectedCount > 0
-                      ? areAllFilteredSelected
-                        ? `Approve All (${filteredItems.length})`
-                        : `Approve Selected (${selectedCount})`
-                      : `Approve All (${filteredItems.length})`}
+                        ? areAllFilteredSelected
+                          ? `Approve All (${filteredItems.length})`
+                          : `Approve Selected (${selectedCount})`
+                        : `Approve All (${filteredItems.length})`}
                   </Text>
                 </Pressable>
               </View>
@@ -1084,10 +1151,10 @@ export function ApprovalsScreen({
               {selectedDepartment !== 'all'
                 ? `No ${mainTab === 'pending' ? 'pending approvals' : 'approved requests'} in "${selectedDepartment}".`
                 : query
-                ? `No requests match "${query}".`
-                : mainTab === 'pending'
-                ? 'No pending approvals.'
-                : 'No approved requests found.'}
+                  ? `No requests match "${query}".`
+                  : mainTab === 'pending'
+                    ? 'No pending approvals.'
+                    : 'No approved requests found.'}
             </Text>
             {selectedDepartment !== 'all' || query ? (
               <Pressable
@@ -1193,20 +1260,20 @@ export function ApprovalsScreen({
   );
 }
 
-function isPreApprovedApproval(item?: PendingApproval | null): boolean {
+function isPreApprovedApproval(item?: PendingApproval | ApprovedApproval | null): boolean {
   if (!item) return false;
-  const rawStatus = (item.status || item.request_status || '').toLowerCase().trim();
+  const rawStatus = (item.status || (item as any).request_status || '').toLowerCase().trim();
   if (rawStatus.includes('pre_approved') || rawStatus.includes('pre-approved')) {
     return true;
   }
 
   const reason = item.reason || '';
-  if (/\[PreApproved\]/i.test(reason)) {
+  if (/\[Pre-?Approved\]/i.test(reason)) {
     return true;
   }
 
   const trans = (item.transaction_type || item.request_type_code || '').toLowerCase();
-  if (trans.includes('scheduled_ot')) {
+  if (trans.includes('scheduled_ot') || trans.includes('for pre-approval')) {
     return true;
   }
 
@@ -1237,7 +1304,8 @@ function ApprovalCard({
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
   const department = item.department_name || profile?.departmentName || profile?.storeName || 'Department';
   const isTravel = isTravelOrderApproval(item);
-  const isEsarf = !isTravel && item.request_type_code !== 'leave' && item.request_type_code !== 'discount' && item.request_type_code !== 'charge';
+  const isPerk = item.request_type_code === 'discount' || item.request_type_code === 'charge';
+  const isEsarf = !isTravel && item.request_type_code !== 'leave' && !isPerk;
   const requestDate = isTravel ? (item.date_from || item.start_date || item.submitted_at) : isEsarf ? (item.submitted_at || item.date_from) : item.request_type_code === 'leave' ? item.start_date : item.date_from;
   const isPreApproved = isPreApprovedApproval(item);
 
@@ -1281,7 +1349,7 @@ function ApprovalCard({
               </Text>
               <Text style={styles.cardDept}>{department}</Text>
             </View>
-            <View style={styles.cardMeta}>
+            <View style={styles.cardStatusWrap}>
               <Text
                 style={[
                   styles.statusPill,
@@ -1289,19 +1357,41 @@ function ApprovalCard({
                 ]}
                 numberOfLines={1}
               >
-                {isPreApproved ? 'PRE-APPROVED' : 'PENDING'}
+                PENDING
               </Text>
-              <View style={styles.metaLine}>
-                <CalendarDays size={14} color={colors.muted} strokeWidth={2.2} />
-                <Text style={styles.metaText} numberOfLines={1}>
-                  {formatCompactDate(requestDate)}
+            </View>
+          </View>
+
+          <View style={styles.cardDetailsMetaWrap}>
+            <View style={styles.cardDetailsMetaHeaderRow}>
+              {!isPerk ? (
+                <Text style={styles.metaSubmittedLabel} numberOfLines={1}>
+                  Request Details:
                 </Text>
+              ) : (
+                <View />
+              )}
+              <Text style={styles.metaSubmittedLabel} numberOfLines={1}>
+                Submitted on:
+              </Text>
+            </View>
+            <View style={styles.cardDetailsMetaRow}>
+              <View style={styles.cardDetailsLeft}>
+                <RequestCardDetailsGrid item={item} />
               </View>
-              <View style={styles.metaLine}>
-                <Clock3 size={14} color={colors.muted} strokeWidth={2.2} />
-                <Text style={styles.metaText} numberOfLines={1}>
-                  {formatCompactTime(item.submitted_at || item.time_from)}
-                </Text>
+              <View style={styles.cardSubmittedDates}>
+                <View style={styles.metaLine}>
+                  <CalendarDays size={13} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.metaText} numberOfLines={1}>
+                    {formatCompactDate(requestDate)}
+                  </Text>
+                </View>
+                <View style={styles.metaLine}>
+                  <Clock3 size={13} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.metaText} numberOfLines={1}>
+                    {formatCompactTime(item.submitted_at || item.time_from)}
+                  </Text>
+                </View>
               </View>
             </View>
           </View>
@@ -1365,12 +1455,14 @@ function ApprovedCard({
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
   const department = item.department_name || profile?.departmentName || profile?.storeName || 'Department';
   const isTravel = isTravelOrderApproval(item);
-  const isEsarf = !isTravel && item.request_type_code !== 'leave' && item.request_type_code !== 'discount' && item.request_type_code !== 'charge';
+  const isPreApproved = isPreApprovedApproval(item);
+  const isPerk = item.request_type_code === 'discount' || item.request_type_code === 'charge';
+  const isEsarf = !isTravel && item.request_type_code !== 'leave' && !isPerk;
   const requestDate = isTravel ? (item.date_from || item.start_date || item.submitted_at) : isEsarf ? (item.submitted_at || item.date_from) : item.request_type_code === 'leave' ? item.start_date : item.date_from;
 
   return (
     <View style={styles.cardOuter}>
-      <View style={[styles.cardAccent, { backgroundColor: '#16a34a' }]} />
+      <View style={[styles.cardAccent, { backgroundColor: isPreApproved ? '#2563eb' : '#16a34a' }]} />
       <View style={styles.card}>
         <View style={styles.avatar}>
           <Avatar name={displayName} photoUrl={item.requester_photo_url ?? null} size={35} textSize={13} />
@@ -1387,21 +1479,43 @@ function ApprovedCard({
               </Text>
               <Text style={styles.cardDept}>{department}</Text>
             </View>
-            <View style={styles.cardMeta}>
-              <Text style={[styles.statusPill, styles.statusApproved]} numberOfLines={1}>
-                APPROVED
+            <View style={styles.cardStatusWrap}>
+              <Text style={[styles.statusPill, isPreApproved ? styles.statusPreApproved : styles.statusApproved]} numberOfLines={1}>
+                {isPreApproved ? 'PRE-APPROVED' : 'APPROVED'}
               </Text>
-              <View style={styles.metaLine}>
-                <CalendarDays size={14} color={colors.muted} strokeWidth={2.2} />
-                <Text style={styles.metaText} numberOfLines={1}>
-                  {formatCompactDate(requestDate)}
+            </View>
+          </View>
+
+          <View style={styles.cardDetailsMetaWrap}>
+            <View style={styles.cardDetailsMetaHeaderRow}>
+              {!isPerk ? (
+                <Text style={styles.metaSubmittedLabel} numberOfLines={1}>
+                  Request Details:
                 </Text>
+              ) : (
+                <View />
+              )}
+              <Text style={styles.metaSubmittedLabel} numberOfLines={1}>
+                Submitted on:
+              </Text>
+            </View>
+            <View style={styles.cardDetailsMetaRow}>
+              <View style={styles.cardDetailsLeft}>
+                <RequestCardDetailsGrid item={item} />
               </View>
-              <View style={styles.metaLine}>
-                <Clock3 size={14} color={colors.muted} strokeWidth={2.2} />
-                <Text style={styles.metaText} numberOfLines={1}>
-                  {formatCompactTime(item.approved_at || item.submitted_at || item.time_from)}
-                </Text>
+              <View style={styles.cardSubmittedDates}>
+                <View style={styles.metaLine}>
+                  <CalendarDays size={13} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.metaText} numberOfLines={1}>
+                    {formatCompactDate(requestDate)}
+                  </Text>
+                </View>
+                <View style={styles.metaLine}>
+                  <Clock3 size={13} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.metaText} numberOfLines={1}>
+                    {formatCompactTime(item.approved_at || item.submitted_at || item.time_from)}
+                  </Text>
+                </View>
               </View>
             </View>
           </View>
@@ -1451,7 +1565,12 @@ function ApprovalDetailsSheet({
   approval: { item: PendingApproval; sequence: number } | null;
   profile: EmployeeProfileSummary | null;
   onClose: () => void;
-  onApprove: (item: PendingApproval, rejectedIndices?: number[], adjustedHoursMap?: Record<number, string>) => void;
+  onApprove: (
+    item: PendingApproval,
+    rejectedIndices?: number[],
+    adjustedHoursMap?: Record<number, string>,
+    adjustmentReason?: string,
+  ) => void;
   onPerformReject: (item: PendingApproval, reason: string) => Promise<void>;
 }) {
   const item = approval?.item ?? null;
@@ -1471,6 +1590,9 @@ function ApprovalDetailsSheet({
   const [selectedEntryIndices, setSelectedEntryIndices] = useState<number[]>([]);
   const [rejectedEntryIndices, setRejectedEntryIndices] = useState<number[]>([]);
   const [adjustedHoursMap, setAdjustedHoursMap] = useState<Record<number, string>>({});
+  const [adjustmentReason, setAdjustmentReason] = useState('');
+  const [adjustmentReasonError, setAdjustmentReasonError] = useState('');
+  const adjustmentReasonInputRef = useRef<TextInput>(null);
   const [isRejectingInline, setIsRejectingInline] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [rejectError, setRejectError] = useState('');
@@ -1493,6 +1615,8 @@ function ApprovalDetailsSheet({
     setRejectError('');
     setIsSubmittingReject(false);
     setAdjustedHoursMap({});
+    setAdjustmentReason('');
+    setAdjustmentReasonError('');
   }, [approval]);
 
   useEffect(() => {
@@ -1721,7 +1845,7 @@ function ApprovalDetailsSheet({
                       isPreApproved ? styles.statusPreApproved : styles.statusPending,
                     ]}
                   >
-                    {isPreApproved ? 'PRE-APPROVED' : 'PENDING'}
+                    PENDING
                   </Text>
                 </View>
               </View>
@@ -1970,49 +2094,113 @@ function ApprovalDetailsSheet({
                 </Pressable>
               </View>
             </View>
-          ) : (
-            <>
-              {isEditable && Object.keys(adjustedHoursMap).some((idxStr) => {
-                const entry = esarfEntries.find((e) => e.index === Number(idxStr));
-                if (!entry) return false;
-                const val = adjustedHoursMap[Number(idxStr)];
-                return val !== '' && parseFloat(val) !== parseFloat(entry.totalHours);
-              }) ? (
-                <View style={styles.adjustedHoursBanner}>
-                  <Clock3 size={15} color="#854d0e" strokeWidth={2.4} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.adjustedHoursBannerTitle}>
-                      Adjusted Total: <Text style={styles.adjustedHoursBold}>{computeEffectiveTotalHours(esarfEntries, effectiveRejectedIndices, adjustedHoursMap, item.total_hours).toFixed(2)} hrs</Text>
-                    </Text>
-                    <Text style={styles.adjustedHoursBannerSub}>
-                      Original requested: {(item.total_hours ?? 0).toFixed(2)} hrs
-                    </Text>
-                  </View>
-                </View>
-              ) : null}
+          ) : (() => {
+            const hasHoursAdjustment = isEditable && Object.keys(adjustedHoursMap).some((idxStr) => {
+              const idx = Number(idxStr);
+              if (effectiveRejectedIndices.includes(idx)) return false;
+              const entry = esarfEntries.find((e) => e.index === idx);
+              if (!entry) return false;
+              const val = adjustedHoursMap[idx];
+              const parsedVal = parseFloat(val);
+              const origVal = parseFloat(entry.totalHours || '0');
+              return val.trim() !== '' && !Number.isNaN(parsedVal) && Math.abs(parsedVal - (Number.isNaN(origVal) ? 0 : origVal)) > 0.0001;
+            });
 
-              <View style={[styles.approverFooter, { paddingBottom: footerBottomPadding }]}>
-                <Pressable style={styles.approverRejectBtn} onPress={handleRejectAll}>
-                  <Text style={styles.approverRejectText}>Reject All</Text>
-                </Pressable>
-                <Pressable
-                  style={styles.approverConfirmBtn}
-                  onPress={() => {
-                    for (const [idxStr, val] of Object.entries(adjustedHoursMap)) {
-                      const parsed = parseFloat(val);
-                      if (val.trim() === '' || isNaN(parsed) || parsed < 0) {
-                        platformAlert('Invalid Hours', `Please enter a valid number of hours for Entry ${idxStr}.`);
+            const effectiveNewTotal = computeEffectiveTotalHours(
+              esarfEntries,
+              effectiveRejectedIndices,
+              adjustedHoursMap,
+              item.total_hours,
+            );
+            const originalBeforeEditTotal = item.original_total_hours != null
+              ? Number(item.original_total_hours)
+              : esarfEntries.length > 0
+                ? esarfEntries
+                  .filter((e) => !effectiveRejectedIndices.includes(e.index))
+                  .reduce((acc, e) => acc + (parseFloat(e.originalHours || e.totalHours || '0') || 0), 0)
+                : (item.total_hours ?? 0);
+
+            return (
+              <>
+                {hasHoursAdjustment ? (
+                  <View style={styles.adjustedHoursBanner}>
+                    <View style={styles.adjustedHoursTopRow}>
+                      <View style={styles.adjustedHoursTitleWrap}>
+                        <Edit3 size={14} color="#92400e" strokeWidth={2.4} />
+                        <Text style={styles.adjustedHoursBannerTitle}>
+                          Total Hours Edited:{' '}
+                          <Text style={styles.adjustedHoursBold}>{effectiveNewTotal.toFixed(2)} hrs</Text>
+                        </Text>
+                      </View>
+                      <Text style={styles.adjustedHoursActualText}>
+                        Actual Hours:{' '}
+                        <Text style={styles.adjustedHoursActualBold}>{originalBeforeEditTotal.toFixed(2)} hrs</Text>
+                      </Text>
+                    </View>
+
+                    <View style={styles.adjustmentReasonWrap}>
+                      <View style={styles.adjustmentReasonHeaderRow}>
+                        <Text style={styles.adjustmentReasonLabel}>
+                          Adjustment Reason <Text style={styles.adjustmentReasonRequired}>*</Text>
+                        </Text>
+                        <Text style={styles.adjustmentReasonCharCount}>{adjustmentReason.length}/300</Text>
+                      </View>
+                      <TextInput
+                        ref={adjustmentReasonInputRef}
+                        value={adjustmentReason}
+                        onChangeText={(val) => {
+                          setAdjustmentReason(val);
+                          if (adjustmentReasonError) setAdjustmentReasonError('');
+                        }}
+                        placeholder="Enter reason for editing total hours..."
+                        placeholderTextColor="#94a3b8"
+                        style={[
+                          styles.adjustmentReasonInput,
+                          adjustmentReasonError ? styles.adjustmentReasonInputError : null,
+                        ]}
+                        multiline
+                        numberOfLines={2}
+                        scrollEnabled
+                        maxLength={300}
+                        textAlignVertical="top"
+                      />
+                      {adjustmentReasonError ? (
+                        <Text style={styles.adjustmentReasonErrorText}>{adjustmentReasonError}</Text>
+                      ) : null}
+                    </View>
+                  </View>
+                ) : null}
+
+                <View style={[styles.approverFooter, { paddingBottom: footerBottomPadding }]}>
+                  <Pressable style={styles.approverRejectBtn} onPress={handleRejectAll}>
+                    <Text style={styles.approverRejectText}>Reject All</Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.approverConfirmBtn}
+                    onPress={() => {
+                      for (const [idxStr, val] of Object.entries(adjustedHoursMap)) {
+                        const idx = Number(idxStr);
+                        if (effectiveRejectedIndices.includes(idx)) continue;
+                        const parsed = parseFloat(val);
+                        if (val.trim() === '' || isNaN(parsed) || parsed < 0) {
+                          platformAlert('Invalid Hours', `Please enter a valid number of hours for Entry ${idxStr}.`);
+                          return;
+                        }
+                      }
+                      if (hasHoursAdjustment && !adjustmentReason.trim()) {
+                        setAdjustmentReasonError('Please enter a reason for editing the total hours.');
+                        adjustmentReasonInputRef.current?.focus();
                         return;
                       }
-                    }
-                    onApprove(item, effectiveRejectedIndices, adjustedHoursMap);
-                  }}
-                >
-                  <Text style={styles.approverConfirmText}>Confirm Approval</Text>
-                </Pressable>
-              </View>
-            </>
-          )}
+                      onApprove(item, effectiveRejectedIndices, adjustedHoursMap, adjustmentReason.trim());
+                    }}
+                  >
+                    <Text style={styles.approverConfirmText}>Confirm Approval</Text>
+                  </Pressable>
+                </View>
+              </>
+            );
+          })()}
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -2077,6 +2265,7 @@ function ApprovedDetailsSheet({
 
   const displayName = item.requester_name || formatEmployeeDisplayName(profile);
   const department = item.department_name || profile?.departmentName || profile?.storeName || 'Department';
+  const isPreApproved = isPreApprovedApproval(item);
   const timelineRows: TimelineStep[] = [
     {
       title: 'Submitted',
@@ -2103,7 +2292,9 @@ function ApprovedDetailsSheet({
                 <Text style={styles.sheetTitle}>{formatApprovalType(item)}</Text>
                 <View style={styles.sheetCodeRow}>
                   <Text style={styles.sheetCode}>{formatApprovalCode(item, sequence)}</Text>
-                  <Text style={[styles.sheetStatusPill, styles.statusApproved]}>APPROVED</Text>
+                  <Text style={[styles.sheetStatusPill, isPreApproved ? styles.statusPreApproved : styles.statusApproved]}>
+                    {isPreApproved ? 'PRE-APPROVED' : 'APPROVED'}
+                  </Text>
                 </View>
               </View>
               <Pressable style={styles.sheetIconClose} onPress={onClose}>
@@ -2273,7 +2464,17 @@ function ApprovedDetailsSheet({
                   <CheckCircle2 size={15} color="#16a34a" strokeWidth={2.2} />
                   <Text style={styles.panelTitle}>Approver Remarks</Text>
                 </View>
-                <Text style={styles.sheetReasonText}>{item.remarks}</Text>
+                {parseApproverRemarksLines(item.remarks).map((line, idx) => (
+                  <Text
+                    key={idx}
+                    style={[
+                      styles.sheetReasonText,
+                      idx > 0 ? styles.sheetReasonTextSubLine : null,
+                    ]}
+                  >
+                    {line}
+                  </Text>
+                ))}
               </View>
             ) : null}
           </ScrollView>
@@ -2407,8 +2608,23 @@ function formatApprovalType(item: PendingApproval | ApprovedApproval) {
 
 function cleanDisplayReason(reason?: string | null, fallback = 'No reason provided.'): string {
   if (!reason) return fallback;
-  const cleaned = reason.replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '').trim();
+  const cleaned = reason
+    .replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '')
+    .replace(/\[(?:OrigHours|OriginalHours):\s*[\d.]+\s*hrs?\]\s*/gi, '')
+    .replace(/\[(?:AdjustmentReason|AdjReason):\s*[^\]]+\]\s*/gi, '')
+    .trim();
   return cleaned || fallback;
+}
+
+function parseApproverRemarksLines(remarks?: string | null): string[] {
+  if (!remarks) return [];
+  const normalized = remarks
+    .replace(/\s*(?:(?:\r?\n)\s*)?(Adjustment\s+[Rr]eason:)/gi, '\n$1')
+    .trim();
+  return normalized
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
 function isUseOffsetApproval(item: PendingApproval | ApprovedApproval) {
@@ -2516,31 +2732,35 @@ function timelineTone(status: string) {
 }
 
 function approvalTimeline(item: PendingApproval | ApprovedApproval) {
-  const fallback = [1, 2];
-  const summary = (item.approval_summary && item.approval_summary.length > 0)
+  const isPreApproved = isPreApprovedApproval(item);
+  const fallback = isPreApproved ? [1] : [1, 2];
+  const rawSummary = (item.approval_summary && item.approval_summary.length > 0)
     ? item.approval_summary
     : [];
+  const summary = isPreApproved
+    ? rawSummary.filter((s) => Number(s.step_order) === 1).slice(0, 1)
+    : rawSummary;
   const rows: { label: string; status: string; actedAt: string | null }[] = summary.length
     ? summary.map((step) => {
-        const isAutoApproved =
-          step.approver_name === 'HYG Portal System' ||
-          step.remarks?.toLowerCase().includes('auto-approved') ||
-          item.reason?.toLowerCase().includes('auto-approved');
-        const levelNum = resolveApproverLevel(step);
-        const statusText = isAutoApproved
-          ? 'Auto-Approved'
-          : `L${levelNum} • ${approvalStepStatus(step.status)}`;
-        return {
-          label: approvalRoleLabel(step, (item as any)?.department || (item as any)?.department_name || (item as any)?.employee?.department),
-          status: statusText,
-          actedAt: step.acted_at,
-        };
-      })
+      const isAutoApproved =
+        step.approver_name === 'HYG Portal System' ||
+        step.remarks?.toLowerCase().includes('auto-approved') ||
+        item.reason?.toLowerCase().includes('auto-approved');
+      const levelNum = resolveApproverLevel(step);
+      const statusText = isAutoApproved
+        ? 'Auto-Approved'
+        : `L${levelNum} • ${approvalStepStatus(step.status)}`;
+      return {
+        label: approvalRoleLabel(step, (item as any)?.department || (item as any)?.department_name || (item as any)?.employee?.department),
+        status: statusText,
+        actedAt: step.acted_at,
+      };
+    })
     : fallback.map((level) => ({
-        label: fallbackApprovalRoleLabel(level),
-        status: `L${level} • ${level === 1 ? 'Pending to approve' : 'Not yet processed'}`,
-        actedAt: null,
-      }));
+      label: fallbackApprovalRoleLabel(level),
+      status: `L${level} • ${level === 1 ? 'Pending to approve' : 'Not yet processed'}`,
+      actedAt: null,
+    }));
 
   while (rows.length < fallback.length) {
     const level = fallback[rows.length];
@@ -3180,8 +3400,34 @@ const styles = StyleSheet.create({
     color: colors.muted,
     textTransform: 'uppercase',
   },
-  cardMeta: {
-    width: 125,
+  cardStatusWrap: {
+    flexShrink: 0,
+    alignItems: 'flex-end',
+  },
+  cardDetailsMetaWrap: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
+  cardDetailsMetaHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 2,
+  },
+  cardDetailsMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  cardDetailsLeft: {
+    flex: 1,
+    minWidth: 0,
+  },
+  cardSubmittedDates: {
     flexShrink: 0,
     alignItems: 'flex-end',
     gap: 3,
@@ -3215,16 +3461,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     color: '#15803d',
   },
+  metaSubmittedLabel: {
+    fontSize: 10.5,
+    lineHeight: 13,
+    fontWeight: fontWeights.semibold,
+    color: '#94a3b8',
+  },
   metaLine: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    width: 125,
     justifyContent: 'flex-end',
   },
   metaText: {
-    flexShrink: 1,
-    fontSize: 14,
+    fontSize: 13,
     lineHeight: 17,
     fontWeight: fontWeights.medium,
     color: colors.muted,
@@ -3530,6 +3780,9 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.medium,
     color: colors.text,
   },
+  sheetReasonTextSubLine: {
+    marginTop: 4,
+  },
   timelineHeader: {
     marginHorizontal: spacing.lg,
     marginTop: spacing.sm,
@@ -3668,31 +3921,91 @@ const styles = StyleSheet.create({
     color: '#ffffff',
   },
   adjustedHoursBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
     marginHorizontal: spacing.md,
     marginBottom: 10,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: '#fefce8',
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: '#fffbeb',
     borderWidth: 1,
-    borderColor: '#fef08a',
+    borderColor: '#fde68a',
+  },
+  adjustedHoursTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  adjustedHoursTitleWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   adjustedHoursBannerTitle: {
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: fontWeights.bold,
-    color: '#854d0e',
+    color: '#92400e',
   },
   adjustedHoursBold: {
     fontWeight: fontWeights.heavy,
-    color: '#713f12',
+    color: '#78350f',
   },
-  adjustedHoursBannerSub: {
-    fontSize: 11,
+  adjustedHoursActualText: {
+    fontSize: 12,
+    fontWeight: fontWeights.medium,
     color: '#a16207',
-    marginTop: 1,
+  },
+  adjustedHoursActualBold: {
+    fontWeight: fontWeights.bold,
+    color: '#78350f',
+  },
+  adjustmentReasonWrap: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#fde68a',
+  },
+  adjustmentReasonHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  adjustmentReasonLabel: {
+    fontSize: 11.5,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
+  },
+  adjustmentReasonRequired: {
+    color: '#dc2626',
+  },
+  adjustmentReasonCharCount: {
+    fontSize: 10.5,
+    color: '#b45309',
+    fontWeight: fontWeights.medium,
+  },
+  adjustmentReasonInput: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#fcd34d',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    height: 54,
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#0f172a',
+  },
+  adjustmentReasonInputError: {
+    borderColor: '#dc2626',
+    backgroundColor: '#fef2f2',
+  },
+  adjustmentReasonErrorText: {
+    marginTop: 4,
+    fontSize: 11,
+    fontWeight: fontWeights.semibold,
+    color: '#dc2626',
   },
   approvedSheetFooter: {
     flexDirection: 'row',

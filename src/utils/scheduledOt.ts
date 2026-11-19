@@ -114,7 +114,7 @@ export function isScheduledOtEntry(
 
 /**
  * Checks if a request object is or was a scheduled OT or Offset request.
- * ONLY requests applied from the Pre-approved OT/Offset screen are pre-approved.
+ * ONLY requests applied from the Pre-approved OT screen are pre-approved.
  * Regular ESARF requests applied in Apply ESARF (even with an event or activity)
  * are NEVER pre-approved and always remain pending.
  */
@@ -130,7 +130,7 @@ export function isScheduledOtRequest(
   }
 
   const reason = (request as any).reason || '';
-  // Explicitly tagged pre-approved requests from Pre-approved OT/Offset screen
+  // Explicitly tagged pre-approved requests from Pre-approved OT screen
   if (/\[PreApproved\]/i.test(reason)) {
     return true;
   }
@@ -181,105 +181,24 @@ export function isFirstApproverApproved(
 }
 
 /**
- * Checks if the current time has reached or passed the scheduled OT / Offset shift duration (end date & end time).
- * "The attach photo proof will also be activated or enabled once the time or duration of the request is already done."
+ * Backward compatibility helpers (photo proof flow for pre-approved OT has been undone).
+ * Pre-approved OT now has strictly one approver and does not require photo proof.
  */
 export function isScheduledOtReadyForProof(
-  target?: {
-    date_from?: string | null;
-    time_from?: string | null;
-    date_to?: string | null;
-    time_to?: string | null;
-    dateFrom?: string | null;
-    timeFrom?: string | null;
-    dateTo?: string | null;
-    timeTo?: string | null;
-  } | null,
-  nowDate?: Date,
+  _target?: any,
+  _nowDate?: Date,
 ): boolean {
-  if (!target) return false;
-  const endDate = target.date_to || target.dateTo || target.date_from || target.dateFrom;
-  const endTime = target.time_to || target.timeTo || target.time_from || target.timeFrom;
-  if (!endDate) return true;
-
-  const now = nowDate || new Date();
-  const todayStr = formatDateInput(now);
-
-  if (todayStr > endDate) {
-    return true; // Beyond the scheduled end date -> duration is done
-  }
-
-  if (todayStr === endDate) {
-    if (!endTime) return true; // On the date with no end time specified
-    const endMins = parseTimeToMinutes(endTime);
-    if (endMins === null) return true;
-    const nowMins = now.getHours() * 60 + now.getMinutes();
-    return nowMins >= endMins; // Current time has reached or passed end time -> duration is done
-  }
-
-  return false; // Scheduled end date is still in the future
+  return true;
 }
 
-/**
- * Checks if a request is a scheduled OT or Offset that is still awaiting photo proof.
- * In the pre-approved workflow:
- * 1. Photo proof only appears once the 1st approver has approved the request.
- * 2. It stays awaiting proof until photo proof is attached and submitted.
- */
 export function isScheduledOtAwaitingProof(
-  request?: ScheduledOtCandidate | MyRequest | PendingApproval | null,
+  _request?: ScheduledOtCandidate | MyRequest | PendingApproval | null,
 ): boolean {
-  if (!request) return false;
-  if (!isScheduledOtRequest(request)) return false;
-
-  const rawStatus = (((request as any)?.status || (request as any)?.request_status || '') as string).toLowerCase().trim();
-  if (rawStatus === 'approved' || rawStatus === 'rejected' || rawStatus === 'cancelled') {
-    return false;
-  }
-
-  if (hasPhotoProofAttached(request)) {
-    return false;
-  }
-
-  // Only awaits proof once the 1st approver has approved
-  return isFirstApproverApproved(request);
+  return false;
 }
 
-/**
- * Formats a user-friendly schedule countdown or unlock status message.
- */
 export function formatScheduledOtStatusMessage(
-  target?: {
-    date_from?: string | null;
-    time_from?: string | null;
-    date_to?: string | null;
-    time_to?: string | null;
-    dateFrom?: string | null;
-    timeFrom?: string | null;
-    dateTo?: string | null;
-    timeTo?: string | null;
-    transaction?: string | null;
-    transaction_type?: string | null;
-    request_type_code?: string | null;
-  } | null,
+  _target?: any,
 ): string {
-  if (!target) return '';
-  const endDate = target.date_to || target.dateTo || target.date_from || target.dateFrom;
-  const endTime = target.time_to || target.timeTo || target.time_from || target.timeFrom;
-  const trans =
-    (target as any).transaction ||
-    (target as any).transaction_type ||
-    (target as any).request_type_code ||
-    '';
-  const isOffset = isOffsetTransaction(trans);
-  const typeLabel = isOffset ? 'offset' : 'overtime';
-
-  const isReady = isScheduledOtReadyForProof(target);
-  if (isReady) {
-    return `Your scheduled ${typeLabel} duration has ended. Please attach photo proof to forward this request to your 2nd approver.`;
-  }
-
-  const dateDisplay = endDate || 'the scheduled date';
-  const timeDisplay = endTime ? ` at ${stripSecondsFromTimeString(endTime)}` : '';
-  return `Photo proof upload is locked until ${dateDisplay}${timeDisplay}. Please complete your ${typeLabel} shift before attaching proof.`;
+  return '';
 }

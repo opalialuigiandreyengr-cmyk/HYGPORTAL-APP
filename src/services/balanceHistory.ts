@@ -1,5 +1,5 @@
 import { ensureFreshSession, supabase } from '../lib/supabase';
-import { getCacheJSON, setCacheJSON } from '../lib/localCache';
+import { getCacheJSON, removeCacheItem, setCacheJSON } from '../lib/localCache';
 
 export type BalanceHistoryItem = {
   id: string;
@@ -34,14 +34,20 @@ let lastLeaveFetchAt = 0;
 export function invalidateBalanceHistoryCache() {
   lastOffsetFetchAt = 0;
   lastLeaveFetchAt = 0;
+  inFlightOffsetPromise = null;
+  inFlightLeavePromise = null;
 }
 
-export async function loadCachedOffsetHistory(): Promise<BalanceHistoryItem[]> {
-  return (await getCacheJSON<BalanceHistoryItem[]>(OFFSET_HISTORY_KEY)) ?? [];
+export async function loadCachedOffsetHistory(empId?: string): Promise<BalanceHistoryItem[]> {
+  const employeeId = empId || (await resolveEmployeeId());
+  const cacheKey = employeeId ? `offset_history_v2_${employeeId}` : OFFSET_HISTORY_KEY;
+  return (await getCacheJSON<BalanceHistoryItem[]>(cacheKey)) ?? [];
 }
 
-export async function loadCachedLeaveHistory(): Promise<BalanceHistoryItem[]> {
-  return (await getCacheJSON<BalanceHistoryItem[]>(LEAVE_HISTORY_KEY)) ?? [];
+export async function loadCachedLeaveHistory(empId?: string): Promise<BalanceHistoryItem[]> {
+  const employeeId = empId || (await resolveEmployeeId());
+  const cacheKey = employeeId ? `leave_history_v2_${employeeId}` : LEAVE_HISTORY_KEY;
+  return (await getCacheJSON<BalanceHistoryItem[]>(cacheKey)) ?? [];
 }
 
 const OFFSET_VALIDITY_DAYS = 90;
@@ -146,7 +152,9 @@ export async function fetchOffsetHistory(
   employeeId?: string,
   forceRefresh = false,
 ): Promise<BalanceHistoryItem[]> {
-  const cached = await getCacheJSON<BalanceHistoryItem[]>(OFFSET_HISTORY_KEY);
+  const empId = await resolveEmployeeId(userId, employeeId);
+  const cacheKey = empId ? `offset_history_v2_${empId}` : OFFSET_HISTORY_KEY;
+  const cached = await getCacheJSON<BalanceHistoryItem[]>(cacheKey);
 
   if (!forceRefresh && cached && cached.length > 0 && Date.now() - lastOffsetFetchAt < BALANCE_HISTORY_TTL_MS) {
     return cached;
@@ -159,7 +167,6 @@ export async function fetchOffsetHistory(
   const fetchPromise = (async (): Promise<BalanceHistoryItem[]> => {
     try {
       await ensureFreshSession().catch(() => {});
-      const empId = await resolveEmployeeId(userId, employeeId);
       if (!empId) return cached ?? [];
 
       const itemsMap = new Map<string, BalanceHistoryItem>();
@@ -434,10 +441,12 @@ export async function fetchOffsetHistory(
       return cached;
     }
     lastOffsetFetchAt = Date.now();
-    await setCacheJSON(OFFSET_HISTORY_KEY, processed);
+    await setCacheJSON(cacheKey, processed);
+    await removeCacheItem(OFFSET_HISTORY_KEY).catch(() => {});
   } else {
     lastOffsetFetchAt = Date.now();
-    await setCacheJSON(OFFSET_HISTORY_KEY, processed);
+    await setCacheJSON(cacheKey, processed);
+    await removeCacheItem(OFFSET_HISTORY_KEY).catch(() => {});
   }
 
   return processed;
@@ -460,7 +469,9 @@ export async function fetchLeaveHistory(
   employeeId?: string,
   forceRefresh = false,
 ): Promise<BalanceHistoryItem[]> {
-  const cached = await getCacheJSON<BalanceHistoryItem[]>(LEAVE_HISTORY_KEY);
+  const empId = await resolveEmployeeId(userId, employeeId);
+  const cacheKey = empId ? `leave_history_v2_${empId}` : LEAVE_HISTORY_KEY;
+  const cached = await getCacheJSON<BalanceHistoryItem[]>(cacheKey);
 
   if (!forceRefresh && cached && cached.length > 0 && Date.now() - lastLeaveFetchAt < BALANCE_HISTORY_TTL_MS) {
     return cached;
@@ -473,6 +484,7 @@ export async function fetchLeaveHistory(
   const fetchPromise = (async (): Promise<BalanceHistoryItem[]> => {
     try {
       await ensureFreshSession().catch(() => {});
+      if (!empId) return cached ?? [];
 
       // 1. Try RPC get_my_leave_history first
       try {
@@ -540,7 +552,8 @@ export async function fetchLeaveHistory(
           });
 
           lastLeaveFetchAt = Date.now();
-          await setCacheJSON(LEAVE_HISTORY_KEY, rpcItems);
+          await setCacheJSON(cacheKey, rpcItems);
+          await removeCacheItem(LEAVE_HISTORY_KEY).catch(() => {});
           return rpcItems;
         }
       } catch {
@@ -548,7 +561,6 @@ export async function fetchLeaveHistory(
       }
 
       // 2. Direct table fallback: query leave_transactions + leave_balances + audit_logs
-      const empId = await resolveEmployeeId(userId, employeeId);
       if (!empId) return cached ?? [];
 
       const items: BalanceHistoryItem[] = [];
@@ -759,17 +771,20 @@ export async function fetchLeaveHistory(
 
         if (items.length > 0) {
           lastLeaveFetchAt = Date.now();
-          await setCacheJSON(LEAVE_HISTORY_KEY, items);
+          await setCacheJSON(cacheKey, items);
+          await removeCacheItem(LEAVE_HISTORY_KEY).catch(() => {});
         } else if (cached && cached.length > 0) {
           const { data: sessionData } = await supabase.auth.getSession();
           if (!sessionData?.session?.user) {
             return cached;
           }
           lastLeaveFetchAt = Date.now();
-          await setCacheJSON(LEAVE_HISTORY_KEY, items);
+          await setCacheJSON(cacheKey, items);
+          await removeCacheItem(LEAVE_HISTORY_KEY).catch(() => {});
         } else {
           lastLeaveFetchAt = Date.now();
-          await setCacheJSON(LEAVE_HISTORY_KEY, items);
+          await setCacheJSON(cacheKey, items);
+          await removeCacheItem(LEAVE_HISTORY_KEY).catch(() => {});
         }
 
         return items;

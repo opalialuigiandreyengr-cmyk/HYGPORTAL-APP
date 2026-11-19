@@ -89,7 +89,10 @@ import {
 import { loadEmployeeProfile } from './src/services/profile';
 import { getCachedAvatarUri, primeAvatarCache } from './src/services/avatarCache';
 import { resolveLoginEmail } from './src/services/registerAccount';
-import { isTravelOrderRequest, type MyRequest } from './src/services/requests';
+import { clearLocalCacheMemory, removeCacheItem } from './src/lib/localCache';
+import { invalidateRequestsCache, isTravelOrderRequest, type MyRequest } from './src/services/requests';
+import { invalidateApprovalsCache } from './src/services/approvals';
+import { invalidateBalanceHistoryCache } from './src/services/balanceHistory';
 import {
   deleteMyTeamSchedule,
   loadMyTeamEmployees,
@@ -755,6 +758,14 @@ export default function App() {
     } catch (err) {
       console.error('Error during sign out:', err);
     } finally {
+      clearLocalCacheMemory();
+      invalidateRequestsCache();
+      invalidateApprovalsCache();
+      invalidateBalanceHistoryCache();
+      await removeCacheItem('my_requests_v1').catch(() => {});
+      await removeCacheItem('my_perk_usage_v1').catch(() => {});
+      await removeCacheItem('offset_history_v1').catch(() => {});
+      await removeCacheItem('leave_history_v1').catch(() => {});
       setSignedInUser(null);
       setProfileResult(null);
       setActiveTab('home');
@@ -1059,7 +1070,10 @@ export default function App() {
       const isOtOrOffset = trans.includes('ot') || trans.includes('offset') || request.request_type_code === 'overtime' || request.request_type_code === 'offset_earn';
       const today = formatDateInput(new Date());
       const isFuture = (request.date_from || '') > today;
-      const isPreApprovedStatus = (request.status || '').toLowerCase().includes('pre_approved') || (request.status || '').toLowerCase().includes('pre-approved');
+      const isPreApprovedStatus =
+        (request.status || '').toLowerCase().includes('pre_approved') ||
+        (request.status || '').toLowerCase().includes('pre-approved') ||
+        /\[PreApproved\]/i.test(request.reason || '');
       if (isPreApprovedStatus || (isFuture && isOtOrOffset)) {
         setActiveQuickRequestScreen('apply_pre_approved_ot_offset');
       } else {
@@ -1094,6 +1108,14 @@ export default function App() {
   }
 
   async function completeLogin(user: User) {
+    clearLocalCacheMemory();
+    invalidateRequestsCache();
+    invalidateApprovalsCache();
+    invalidateBalanceHistoryCache();
+    await removeCacheItem('my_requests_v1').catch(() => {});
+    await removeCacheItem('my_perk_usage_v1').catch(() => {});
+    await removeCacheItem('offset_history_v1').catch(() => {});
+    await removeCacheItem('leave_history_v1').catch(() => {});
     Keyboard.dismiss();
     setPublicScreen('login');
     setSignedInUser(user);

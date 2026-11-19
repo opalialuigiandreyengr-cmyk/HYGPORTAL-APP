@@ -1,7 +1,10 @@
 import { DeviceEventEmitter } from 'react-native';
 import { ensureFreshSession, supabase } from '../lib/supabase';
 import { getCacheJSON, removeCacheItem, setCacheJSON } from '../lib/localCache';
-import { isScheduledOtRequest, hasPhotoProofAttached } from '../utils/scheduledOt';
+import { isScheduledOtRequest, hasPhotoProofAttached, isFirstApproverApproved } from '../utils/scheduledOt';
+import { getCurrentUserId, getMyRequestsCacheKey } from '../utils/userCache';
+
+export { getMyRequestsCacheKey };
 
 export type RequestApprovalSummary = {
   step_order: number;
@@ -38,6 +41,8 @@ export type MyRequest = {
   payroll_class?: string | null;
   transaction_type?: string | null;
   total_hours: number | null;
+  original_total_hours?: number | null;
+  hours_adjustment_reason?: string | null;
   leave_type: string | null;
   leave_category: string | null;
   start_date: string | null;
@@ -63,10 +68,13 @@ import { enqueueOfflineItem, getOfflineQueue, removeOfflineItem, removeRequestFr
 
 let inFlightRequestsPromise: Promise<MyRequest[]> | null = null;
 let lastRequestsFetchAt = 0;
+let lastRequestsUserId: string | null = null;
 const REQUESTS_CACHE_TTL_MS = 60_000; // 60 seconds freshness window
 
 export function invalidateRequestsCache() {
   lastRequestsFetchAt = 0;
+  inFlightRequestsPromise = null;
+  lastRequestsUserId = null;
   invalidateBalanceHistoryCache();
 }
 
@@ -78,6 +86,8 @@ DeviceEventEmitter.addListener('my_requests_updated', () => {
 DeviceEventEmitter.addListener('requests_synced_online', async () => {
   try {
     invalidateRequestsCache();
+    const cacheKey = await getMyRequestsCacheKey();
+    await removeCacheItem(cacheKey).catch(() => {});
     await removeCacheItem('my_requests_v1').catch(() => {});
     if (isAppOnline()) {
       await loadMyRequests(true).catch(() => {});
@@ -88,7 +98,16 @@ DeviceEventEmitter.addListener('requests_synced_online', async () => {
 });
 
 export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]> {
-  const cacheKey = 'my_requests_v1';
+  const currentUserId = await getCurrentUserId();
+  const cacheKey = currentUserId ? `my_requests_v2_${currentUserId}` : 'my_requests_v1';
+
+  // If active user switched on device, immediately clear timers and in-flight promise
+  if (currentUserId && lastRequestsUserId && lastRequestsUserId !== currentUserId) {
+    lastRequestsFetchAt = 0;
+    inFlightRequestsPromise = null;
+  }
+  lastRequestsUserId = currentUserId ?? null;
+
   const cached = await getCacheJSON<MyRequest[]>(cacheKey);
 
   // When offline, immediately return cached data without attempting any network calls
@@ -142,9 +161,30 @@ export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]>
       isScheduledOtRequest(req) ||
       (wasCachedPreApproved && !hasPhotoProofAttached(req));
 
-    // If pre-approved from Pre-approved OT/Offset screen, ensure status is marked as pre_approved
-    if (isExplicitlyPreApproved && !req.final_approved_at && !rawLower.includes('reject') && !rawLower.includes('validat')) {
-      return { ...req, status: 'pre_approved' };
+    // If pre-approved from Pre-approved OT screen:
+    // - Keep strictly Step 1 in approval_summary (remove 2nd approver)
+    // - While awaiting 1st approver: status is 'pending' (with [PreApproved] preserved in reason)
+    // - Once approved by 1st approver: status is 'pre_approved'
+    if (isExplicitlyPreApproved) {
+      const singleApproverSummary = Array.isArray(req.approval_summary)
+        ? req.approval_summary.filter((s) => Number(s.step_order) === 1).slice(0, 1)
+        : req.approval_summary;
+
+      if (rawLower.includes('reject') || rawLower.includes('denied') || rawLower.includes('validat')) {
+        return { ...req, approval_summary: singleApproverSummary };
+      }
+
+      const isFinalized = Boolean(req.final_approved_at) || isFirstApproverApproved(req);
+      const taggedReason = /\[PreApproved\]/i.test(reason)
+        ? req.reason
+        : `${reason} [PreApproved]`.trim();
+
+      return {
+        ...req,
+        reason: taggedReason,
+        status: isFinalized ? 'pre_approved' : 'pending',
+        approval_summary: singleApproverSummary,
+      };
     }
 
     // If regular ESARF with Event or Activity (from Apply ESARF), it MUST ALWAYS be pending (unless already approved/validated/rejected)
@@ -189,22 +229,30 @@ export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]>
     }
   }
 
-  // Preserve any locally auto-approved Birthday Leave grants that aren't returned by RPC yet
   if (cached && cached.length) {
-    const localBdayGrants = cached.filter(
-      (item) => isAutoApprovedBirthdayGrant(item) && item.status === 'approved',
-    );
-    for (const bdayItem of localBdayGrants) {
-      const existsInServer = items.some(
-        (serverItem) =>
-          serverItem.request_id === bdayItem.request_id ||
-          (isAutoApprovedBirthdayGrant(serverItem) &&
-            serverItem.start_date &&
-            bdayItem.start_date &&
-            new Date(serverItem.start_date).getFullYear() === new Date(bdayItem.start_date).getFullYear()),
+    // Preserve only locally auto-approved Birthday Leave drafts for THIS user that aren't returned by RPC yet.
+    // Truly client-local drafts have request_id starting with 'bday_leave_'.
+    // Never preserve requests with server UUIDs from cache that get_my_requests did not return
+    // (as they either belong to another user who previously used the device or were deleted).
+    if (currentUserId) {
+      const localBdayGrants = cached.filter(
+        (item) =>
+          item.request_id?.startsWith('bday_leave_') &&
+          isAutoApprovedBirthdayGrant(item) &&
+          item.status === 'approved',
       );
-      if (!existsInServer) {
-        items = [bdayItem, ...items];
+      for (const bdayItem of localBdayGrants) {
+        const existsInServer = items.some(
+          (serverItem) =>
+            serverItem.request_id === bdayItem.request_id ||
+            (isAutoApprovedBirthdayGrant(serverItem) &&
+              serverItem.start_date &&
+              bdayItem.start_date &&
+              new Date(serverItem.start_date).getFullYear() === new Date(bdayItem.start_date).getFullYear()),
+        );
+        if (!existsInServer) {
+          items = [bdayItem, ...items];
+        }
       }
     }
 
@@ -267,6 +315,7 @@ export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]>
   }
 
     await setCacheJSON(cacheKey, items);
+    await removeCacheItem('my_requests_v1').catch(() => {});
     lastRequestsFetchAt = Date.now();
     return items;
   } catch (err) {
@@ -282,8 +331,12 @@ export async function loadMyRequests(forceRefresh = false): Promise<MyRequest[]>
   return inFlightRequestsPromise;
 }
 
-export async function loadMyRequestsCached() {
-  const cacheKey = 'my_requests_v1';
+export async function loadMyRequestsCached(userId?: string): Promise<MyRequest[]> {
+  const currentUserId = userId || (await getCurrentUserId());
+  if (!currentUserId) {
+    return [];
+  }
+  const cacheKey = `my_requests_v2_${currentUserId}`;
   return (await getCacheJSON<MyRequest[]>(cacheKey)) ?? [];
 }
 
@@ -444,7 +497,7 @@ export async function submitOfficialTravelOrder(payload: SubmitLocalTravelOrderP
         ],
   };
 
-  const cacheKey = 'my_requests_v1';
+  const cacheKey = await getMyRequestsCacheKey();
   const cached = (await getCacheJSON<MyRequest[]>(cacheKey)) || [];
   const updated = [newTravelReq, ...cached.filter((r) => r.request_id !== reqId)];
   await setCacheJSON(cacheKey, updated);
@@ -626,7 +679,7 @@ export async function updateOfficialTravelOrder(
 
   const { data: sessionData } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
   const userId = sessionData.session?.user?.id;
-  const cacheKey = userId ? `my_requests_v1_${userId}` : 'my_requests_v1';
+  const cacheKey = await getMyRequestsCacheKey(userId);
   const cached = (await getCacheJSON<MyRequest[]>(cacheKey)) || [];
   const existingReq = cached.find((r) => r.request_id === requestId);
 
@@ -785,7 +838,9 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
   if (rpcSuccess) {
     try {
       invalidateRequestsCache();
-      await removeCacheItem('my_requests_v1');
+      const cacheKey = await getMyRequestsCacheKey();
+      await removeCacheItem(cacheKey).catch(() => {});
+      await removeCacheItem('my_requests_v1').catch(() => {});
     } catch {
       // ignore
     }
@@ -918,7 +973,9 @@ export async function updateMyPendingRequest(params: UpdatePendingRequestParams)
 
   try {
     invalidateRequestsCache();
-    await removeCacheItem('my_requests_v1');
+    const cacheKey = await getMyRequestsCacheKey();
+    await removeCacheItem(cacheKey).catch(() => {});
+    await removeCacheItem('my_requests_v1').catch(() => {});
   } catch {
     // ignore
   }
@@ -1166,6 +1223,8 @@ export async function attachScheduledOtPhotoProof({ requestId, proofs }: AttachS
   }
 
   invalidateRequestsCache();
+  const cacheKey = await getMyRequestsCacheKey();
+  await removeCacheItem(cacheKey).catch(() => {});
   await removeCacheItem('my_requests_v1').catch(() => {});
   DeviceEventEmitter.emit('my_requests_updated');
 }

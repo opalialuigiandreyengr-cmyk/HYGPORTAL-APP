@@ -12,6 +12,7 @@ import type { MyRequest } from './requests';
 import { markBirthdayLeaveGrantedForYear } from './birthdayLeave';
 import { updateEmployeeProfile, type UpdateEmployeeProfileInput } from './profile';
 import { isScheduledOtRequest } from '../utils/scheduledOt';
+import { getMyRequestsCacheKey } from '../utils/userCache';
 
 export const OFFLINE_QUEUE_KEY = 'hyg_offline_queue_v2';
 export const MY_REQUESTS_CACHE_KEY = 'my_requests_v1';
@@ -208,7 +209,8 @@ export async function enqueueOfflineItem(item: OfflineQueueItem): Promise<void> 
 
 async function mergeRequestIntoLocalCache(req: MyRequest): Promise<void> {
   try {
-    const cached = (await getCacheJSON<MyRequest[]>(MY_REQUESTS_CACHE_KEY)) || [];
+    const cacheKey = await getMyRequestsCacheKey();
+    const cached = (await getCacheJSON<MyRequest[]>(cacheKey)) || [];
     const existingIndex = cached.findIndex((c) => c.request_id === req.request_id);
     let updatedList: MyRequest[];
     if (existingIndex !== -1) {
@@ -217,7 +219,8 @@ async function mergeRequestIntoLocalCache(req: MyRequest): Promise<void> {
     } else {
       updatedList = [req, ...cached];
     }
-    await setCacheJSON(MY_REQUESTS_CACHE_KEY, updatedList);
+    await setCacheJSON(cacheKey, updatedList);
+    await removeCacheItem(MY_REQUESTS_CACHE_KEY).catch(() => {});
     DeviceEventEmitter.emit('my_requests_updated');
   } catch {
     // ignore
@@ -227,14 +230,16 @@ async function mergeRequestIntoLocalCache(req: MyRequest): Promise<void> {
 export async function removeRequestFromLocalCache(requestId: string): Promise<void> {
   if (!requestId) return;
   try {
-    const cached = (await getCacheJSON<MyRequest[]>(MY_REQUESTS_CACHE_KEY)) || [];
+    const cacheKey = await getMyRequestsCacheKey();
+    const cached = (await getCacheJSON<MyRequest[]>(cacheKey)) || [];
     const baseId = requestId.replace(/_\d+$/, '');
     const filtered = cached.filter((c) => {
       if (c.request_id === requestId) return false;
       if (baseId && (c.request_id === baseId || c.request_id.startsWith(`${baseId}_`))) return false;
       return true;
     });
-    await setCacheJSON(MY_REQUESTS_CACHE_KEY, filtered);
+    await setCacheJSON(cacheKey, filtered);
+    await removeCacheItem(MY_REQUESTS_CACHE_KEY).catch(() => {});
     DeviceEventEmitter.emit('my_requests_updated');
   } catch {
     // ignore
@@ -244,7 +249,8 @@ export async function removeRequestFromLocalCache(requestId: string): Promise<vo
 export async function replaceOfflineRequestInLocalCache(oldRequestId: string, updatedRequest: MyRequest): Promise<void> {
   if (!oldRequestId) return;
   try {
-    const cached = (await getCacheJSON<MyRequest[]>(MY_REQUESTS_CACHE_KEY)) || [];
+    const cacheKey = await getMyRequestsCacheKey();
+    const cached = (await getCacheJSON<MyRequest[]>(cacheKey)) || [];
     const baseId = oldRequestId.replace(/_\d+$/, '');
     let replaced = false;
     const isPreApproved = Boolean(
@@ -252,17 +258,22 @@ export async function replaceOfflineRequestInLocalCache(oldRequestId: string, up
       (updatedRequest.status || '').toLowerCase().includes('pre_approved') ||
       (updatedRequest.reason || '').includes('[PreApproved]')
     );
-    const resolvedStatus = isPreApproved ? 'pre_approved' : (updatedRequest.status || 'pending');
+    const resolvedStatus = isPreApproved ? 'pending' : (updatedRequest.status || 'pending');
+    const resolvedReason =
+      isPreApproved && !(updatedRequest.reason || '').includes('[PreApproved]')
+        ? `${updatedRequest.reason || ''} [PreApproved]`.trim()
+        : updatedRequest.reason;
 
     const cleanUpdated: MyRequest = {
       ...updatedRequest,
+      reason: resolvedReason,
       status: resolvedStatus,
       approval_summary: (updatedRequest.approval_summary || []).map((step) => ({
         ...step,
         status:
           (step.status || '').toLowerCase().includes('offline') ||
           (step.status || '').toLowerCase().includes('pending sync')
-            ? (isPreApproved ? 'waiting' : 'pending')
+            ? 'pending'
             : step.status,
       })),
     };
@@ -276,7 +287,8 @@ export async function replaceOfflineRequestInLocalCache(oldRequestId: string, up
     if (!replaced) {
       newList.unshift(cleanUpdated);
     }
-    await setCacheJSON(MY_REQUESTS_CACHE_KEY, newList);
+    await setCacheJSON(cacheKey, newList);
+    await removeCacheItem(MY_REQUESTS_CACHE_KEY).catch(() => {});
     DeviceEventEmitter.emit('my_requests_updated');
   } catch {
     // ignore
@@ -753,6 +765,8 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
               if (esarfSubmittedSuccessfully) {
                 esarfSynced++;
                 await removeOfflineItem(item.id);
+                const cacheKey = await getMyRequestsCacheKey();
+                await removeCacheItem(cacheKey).catch(() => {});
                 await removeCacheItem(MY_REQUESTS_CACHE_KEY).catch(() => {});
                 DeviceEventEmitter.emit('my_requests_updated');
                 console.log('[OfflineQueue] ESARF update successfully synced to database:', item.payload.targetRequestId);
@@ -856,19 +870,16 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
                     item.displayItem.status?.toLowerCase().includes('pre_approved') ||
                     (item.displayItem.reason || '').includes('[PreApproved]')
                   );
-                  const syncedStatus = isPreApproved ? 'pre_approved' : 'pending';
-
-                  if (isPreApproved) {
-                    try {
-                      await supabase.from('requests').update({ status: 'pre_approved' }).eq('id', createdServerId);
-                    } catch (e) {
-                      // ignore if RLS does not allow direct updates
-                    }
-                  }
+                  const syncedStatus = 'pending';
+                  const syncedReason =
+                    isPreApproved && !(item.displayItem.reason || '').includes('[PreApproved]')
+                      ? `${item.displayItem.reason || ''} [PreApproved]`.trim()
+                      : item.displayItem.reason;
 
                   await replaceOfflineRequestInLocalCache(item.displayItem.request_id, {
                     ...item.displayItem,
                     request_id: createdServerId,
+                    reason: syncedReason,
                     status: syncedStatus,
                   });
                   DeviceEventEmitter.emit('offline_request_synced', {
@@ -945,6 +956,8 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
               if (leaveUpdatedSuccessfully) {
                 leaveSynced++;
                 await removeOfflineItem(item.id);
+                const cacheKey = await getMyRequestsCacheKey();
+                await removeCacheItem(cacheKey).catch(() => {});
                 await removeCacheItem(MY_REQUESTS_CACHE_KEY).catch(() => {});
                 DeviceEventEmitter.emit('my_requests_updated');
                 console.log('[OfflineQueue] Leave update successfully synced online to database:', item.payload.targetRequestId);
@@ -1116,6 +1129,8 @@ export async function syncAllOfflineItems(): Promise<SyncResult> {
         console.log(`[OfflineQueue] Sync completed! Synced: ${totalSynced} items (${esarfSynced} ESARF, ${leaveSynced} Leave, ${photosSynced} Photos, ${profileSynced} Profile, ${deleteSynced} Deleted)`);
         if (esarfSynced > 0 || leaveSynced > 0 || deleteSynced > 0) {
           try {
+            const cacheKey = await getMyRequestsCacheKey();
+            await removeCacheItem(cacheKey).catch(() => {});
             await removeCacheItem(MY_REQUESTS_CACHE_KEY).catch(() => {});
           } catch {
             // ignore

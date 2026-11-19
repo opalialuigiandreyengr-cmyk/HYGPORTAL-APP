@@ -2,7 +2,6 @@ import { ensureFreshSession, supabase } from '../lib/supabase';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { invalidateRequestsCache } from './requests';
 import { invalidateBalanceHistoryCache } from './balanceHistory';
-import { isScheduledOtAwaitingProof } from '../utils/scheduledOt';
 
 const APPROVALS_CACHE_TTL_MS = 60_000;
 let lastPendingApprovalsFetchAt = 0;
@@ -15,21 +14,96 @@ export function invalidateApprovalsCache() {
   lastApprovedApprovalsFetchAt = 0;
 }
 
+function isPreApprovedRequestItem(item: {
+  status?: string | null;
+  request_status?: string | null;
+  reason?: string | null;
+  transaction_type?: string | null;
+}): boolean {
+  const rawStatus = (item.status || item.request_status || '').toLowerCase();
+  return (
+    rawStatus.includes('pre_approved') ||
+    rawStatus.includes('pre-approved') ||
+    /\[Pre-?Approved\]/i.test(item.reason || '') ||
+    (item.transaction_type || '').toLowerCase().includes('scheduled_ot') ||
+    (item.transaction_type || '').toLowerCase().includes('for pre-approval')
+  );
+}
+
+function shouldShowPendingApprovalItem(item: PendingApproval): boolean {
+  if (!isPreApprovedRequestItem(item)) return true;
+
+  // Pre-approved OT strictly has ONLY 1 approver (Step 1).
+  // Never show to Step 2+ approver or once Step 1 has already been approved/rejected.
+  if (typeof item.step_order === 'number' && item.step_order > 1) {
+    return false;
+  }
+
+  if ((item as any).final_approved_at) {
+    return false;
+  }
+
+  const summary = Array.isArray(item.approval_summary) ? item.approval_summary : [];
+  const step1 = summary.find((s) => Number(s.step_order) === 1);
+  if (step1) {
+    const s1Status = (step1.status || '').toLowerCase().trim();
+    if (s1Status === 'approved' || s1Status === 'rejected' || s1Status === 'cancelled') {
+      return false;
+    }
+  }
+
+  // If Step 2+ is pending while Step 1 is not pending, this item belongs to Step 2+ and must not appear
+  const hasPendingStep2Plus = summary.some(
+    (s) => Number(s.step_order) > 1 && (s.status || '').toLowerCase().trim() === 'pending',
+  );
+  if (hasPendingStep2Plus && (!step1 || (step1.status || '').toLowerCase().trim() !== 'pending')) {
+    return false;
+  }
+
+  return true;
+}
+
 export async function loadCachedPendingApprovals(userId?: string): Promise<PendingApproval[]> {
   const currentUserId = userId || (await supabase.auth.getSession()).data.session?.user?.id;
   const cacheKey = currentUserId ? `pending_approvals_v2_${currentUserId}` : 'pending_approvals_v2';
   const cached = (await getCacheJSON<PendingApproval[]>(cacheKey)) ?? [];
-  return cached.map((it: any) => ({
+  return cached
+    .map((it: any) => ({
+      ...it,
+      step_id: it.step_id || it.pending_step_id,
+      pending_step_id: it.pending_step_id || it.step_id,
+    }))
+    .filter((it: PendingApproval) => shouldShowPendingApprovalItem(it))
+    .map((it: PendingApproval) =>
+      isPreApprovedRequestItem(it)
+        ? {
+            ...it,
+            approval_summary: (it.approval_summary || [])
+              .filter((s) => Number(s.step_order) === 1)
+              .slice(0, 1),
+          }
+        : it,
+    );
+}
+
+function normalizeApprovedApprovalItem(it: ApprovedApproval): ApprovedApproval {
+  if (!isPreApprovedRequestItem(it)) return it;
+  return {
     ...it,
-    step_id: it.step_id || it.pending_step_id,
-    pending_step_id: it.pending_step_id || it.step_id,
-  }));
+    status: 'pre_approved',
+    approval_summary: (it.approval_summary || [])
+      .filter((s) => Number(s.step_order) === 1)
+      .slice(0, 1),
+  };
 }
 
 export async function loadCachedApprovedApprovals(userId?: string): Promise<ApprovedApproval[]> {
   const currentUserId = userId || (await supabase.auth.getSession()).data.session?.user?.id;
   const cacheKey = currentUserId ? `approved_approvals_v2_${currentUserId}` : 'approved_approvals_v2';
-  return (await getCacheJSON<ApprovedApproval[]>(cacheKey)) ?? [];
+  const cached = (await getCacheJSON<ApprovedApproval[]>(cacheKey)) ?? [];
+  return cached
+    .filter((it) => !(isPreApprovedRequestItem(it) && Number(it.step_order) > 1))
+    .map(normalizeApprovedApprovalItem);
 }
 
 import { loadPositionAuthorities } from './positions';
@@ -64,6 +138,8 @@ export type PendingApproval = {
   time_from: string | null;
   time_to: string | null;
   total_hours: number | null;
+  original_total_hours?: number | null;
+  hours_adjustment_reason?: string | null;
   leave_type: string | null;
   leave_category: string | null;
   start_date: string | null;
@@ -114,7 +190,8 @@ export async function loadPendingApprovals(forceRefresh = false): Promise<Pendin
   const userId = sessionData.session?.user?.id;
   const cacheKey = userId ? `pending_approvals_v2_${userId}` : 'pending_approvals_v2';
 
-  const cached = await getCacheJSON<PendingApproval[]>(cacheKey);
+  const rawCached = await getCacheJSON<PendingApproval[]>(cacheKey);
+  const cached = rawCached ? rawCached.filter((it) => shouldShowPendingApprovalItem(it)) : null;
 
   // Fast path: If cache is fresh and not forced, return cached items immediately (0 network calls)
   if (!forceRefresh && cached && cached.length > 0 && Date.now() - lastPendingApprovalsFetchAt < APPROVALS_CACHE_TTL_MS) {
@@ -352,29 +429,19 @@ export async function loadPendingApprovals(forceRefresh = false): Promise<Pendin
     }),
   );
 
-      // Pre-approved requests: Step 2+ only appears once Step 1 is approved AND photo proof is attached
-      const filteredItems = enhancedItems.filter((item) => {
-        const rawStatus = (item.status || item.request_status || '').toLowerCase();
-        const isPre =
-          rawStatus.includes('pre_approved') ||
-          rawStatus.includes('pre-approved') ||
-          /\[PreApproved\]/i.test(item.reason || '') ||
-          (item.transaction_type || '').toLowerCase().includes('scheduled_ot');
-
-        if (!isPre) return true;
-
-        // Step 1 approver always sees their step immediately
-        const stepOrder = item.step_order || 1;
-        if (stepOrder <= 1) return true;
-
-        // Step 2+ approver: ONLY visible if photo proof is attached AND Step 1 is approved
-        const hasProof = /\[Proof:\s*[^\]]+\]/i.test(item.reason || '');
-        const step1Approved = (item.approval_summary || []).some(
-          (s) => Number(s.step_order) === 1 && s.status?.toLowerCase() === 'approved',
-        );
-
-        return hasProof && step1Approved;
-      });
+      // Pre-approved requests: Only Step 1 exists / appears (single-approver workflow)
+      // Remove any Pre-approved OT request belonging to Step 2+ or already approved by Step 1
+      const filteredItems = enhancedItems
+        .filter((item) => shouldShowPendingApprovalItem(item))
+        .map((item) => {
+          if (!isPreApprovedRequestItem(item)) return item;
+          return {
+            ...item,
+            approval_summary: (item.approval_summary || [])
+              .filter((s) => Number(s.step_order) === 1)
+              .slice(0, 1),
+          };
+        });
 
       lastPendingApprovalsFetchAt = Date.now();
       await setCacheJSON(cacheKey, filteredItems);
@@ -434,7 +501,12 @@ export async function loadApprovedApprovals(
   const userId = sessionData.session?.user?.id;
   const cacheKey = userId ? `approved_approvals_v2_${userId}` : 'approved_approvals_v2';
 
-  const cached = await getCacheJSON<ApprovedApproval[]>(cacheKey);
+  const rawCached = await getCacheJSON<ApprovedApproval[]>(cacheKey);
+  const cached = rawCached
+    ? rawCached
+        .filter((it) => !(isPreApprovedRequestItem(it) && Number(it.step_order) > 1))
+        .map(normalizeApprovedApprovalItem)
+    : null;
 
   // Fast path: If cache is fresh and not forced, return cached items immediately (0 network calls)
   if (!forceRefresh && cached && cached.length > 0 && Date.now() - lastApprovedApprovalsFetchAt < APPROVALS_CACHE_TTL_MS) {
@@ -463,8 +535,14 @@ export async function loadApprovedApprovals(
             return false;
           }
 
+          const isPre = isPreApprovedRequestItem(raw);
+          const relevantSteps = isPre
+            ? raw.approval_summary.filter((s: any) => Number(s.step_order) === 1)
+            : raw.approval_summary;
+
           // Strict filter: Check if THIS specific manager/approver approved a step in this request
-          return raw.approval_summary.some((step: any) => {
+          // For Pre-approved OT, ONLY Step 1 approver is ever matched (never Step 2+ approver)
+          return relevantSteps.some((step: any) => {
             const isApprovedStep = step.status?.toLowerCase() === 'approved';
             if (!isApprovedStep) return false;
 
@@ -486,8 +564,12 @@ export async function loadApprovedApprovals(
           });
         })
         .map((raw: any) => {
+          const isPre = isPreApprovedRequestItem(raw);
+          const candidateSteps = isPre
+            ? (raw.approval_summary || []).filter((s: any) => Number(s.step_order) === 1)
+            : (raw.approval_summary || []);
           const approvedStep =
-            (raw.approval_summary || []).find((s: any) => {
+            candidateSteps.find((s: any) => {
               if (s.status?.toLowerCase() !== 'approved') return false;
               if (!normEmployeeNo && !normFullName) return true;
               const stepEmpNo = s.approver_employee_no?.trim().toLowerCase();
@@ -498,7 +580,21 @@ export async function loadApprovedApprovals(
                   stepName &&
                   (stepName === normFullName || stepName.includes(normFullName) || normFullName.includes(stepName)))
               );
-            }) || (raw.approval_summary || []).find((s: any) => s.status?.toLowerCase() === 'approved');
+            }) || candidateSteps.find((s: any) => s.status?.toLowerCase() === 'approved');
+
+          const mappedSummary = (raw.approval_summary || []).map((step: any) => ({
+            step_order: step.step_order || 1,
+            required_level: step.required_level || 1,
+            position_level: step.position_level ?? step.approver_level ?? step.level ?? null,
+            approver_level: step.approver_level ?? step.position_level ?? step.level ?? null,
+            level: step.level ?? step.approver_level ?? step.position_level ?? null,
+            status: step.status || 'approved',
+            acted_at: step.acted_at || null,
+            skipped_reason: step.skipped_reason || null,
+            remarks: step.remarks || null,
+            approver_name: step.approver_name || null,
+            approver_position_name: step.approver_position_name || null,
+          }));
 
           return {
             step_id: approvedStep?.step_id || raw.request_id,
@@ -515,6 +611,8 @@ export async function loadApprovedApprovals(
             time_from: raw.time_from || null,
             time_to: raw.time_to || null,
             total_hours: raw.total_hours ?? null,
+            original_total_hours: raw.original_total_hours ?? null,
+            hours_adjustment_reason: raw.hours_adjustment_reason ?? null,
             leave_type: raw.leave_type || null,
             leave_category: raw.leave_category || null,
             start_date: raw.start_date || null,
@@ -529,21 +627,11 @@ export async function loadApprovedApprovals(
             transaction_type: raw.transaction_type || null,
             submitted_at: raw.submitted_at || new Date().toISOString(),
             approved_at: approvedStep?.acted_at || raw.final_approved_at || raw.submitted_at || null,
-            status: 'approved',
+            status: isPre ? 'pre_approved' : (raw.status || 'approved'),
             remarks: approvedStep?.remarks || null,
-            approval_summary: (raw.approval_summary || []).map((step: any) => ({
-              step_order: step.step_order || 1,
-              required_level: step.required_level || 1,
-              position_level: step.position_level ?? step.approver_level ?? step.level ?? null,
-              approver_level: step.approver_level ?? step.position_level ?? step.level ?? null,
-              level: step.level ?? step.approver_level ?? step.position_level ?? null,
-              status: step.status || 'approved',
-              acted_at: step.acted_at || null,
-              skipped_reason: step.skipped_reason || null,
-              remarks: step.remarks || null,
-              approver_name: step.approver_name || null,
-              approver_position_name: step.approver_position_name || null,
-            })),
+            approval_summary: isPre
+              ? mappedSummary.filter((s: any) => Number(s.step_order) === 1).slice(0, 1)
+              : mappedSummary,
           };
         });
     }
@@ -558,7 +646,7 @@ export async function loadApprovedApprovals(
       const { data: reqs } = await supabase
         .from('requests')
         .select('*')
-        .eq('status', 'approved');
+        .or('status.eq.approved,and(status.eq.pre_approved,final_approved_at.not.is.null)');
 
       if (reqs && reqs.length > 0) {
         items = await Promise.all(
@@ -647,12 +735,13 @@ export async function loadApprovedApprovals(
               payroll_class: timeDetails?.payroll_class || leaveDetails?.payroll_class || null,
               transaction_type: timeDetails?.transaction_type || null,
               submitted_at: req.created_at || req.submitted_at || new Date().toISOString(),
-              approved_at: req.updated_at || null,
-              status: 'approved',
+              approved_at: req.final_approved_at || req.updated_at || null,
+              status: req.status || 'approved',
               approval_summary: fallbackSummary,
             };
           }),
         );
+        items = items.map(normalizeApprovedApprovalItem);
       }
     } catch {
       // ignore

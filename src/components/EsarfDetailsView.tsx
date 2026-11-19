@@ -57,6 +57,9 @@ export type ParsedEsarfEntry = {
   timeToStr: string;
   totalHours: string;
   actualHours?: string;
+  originalHours?: string;
+  adjustmentReason?: string;
+  isHoursEdited?: boolean;
   breakTimeFrom?: string;
   breakTimeTo?: string;
   breakTime?: string;
@@ -322,7 +325,7 @@ export function formatUnifiedRequestCode(
 }
 
 function normalizeTransactionToken(token: string): string {
-  const cleaned = token.trim();
+  const cleaned = token.replace(/\s*for\s+pre-?approval\b/gi, '').trim();
   const lower = cleaned.toLowerCase();
 
   if (lower === 'scheduled_ot' || lower === 'scheduled ot') return 'OT';
@@ -344,6 +347,10 @@ export function formatUnifiedRequestType(
     transaction_type?: string | null;
     leave_type?: string | null;
     reason?: string | null;
+    status?: string | null;
+    request_status?: string | null;
+    final_approved_at?: string | null;
+    approval_summary?: Array<{ step_order?: number; status?: string | null }> | null;
     date_from?: string | null;
     date_to?: string | null;
     time_from?: string | null;
@@ -407,14 +414,46 @@ export function formatUnifiedRequestType(
     .filter((token) => Boolean(token) && token !== 'ESARF Request');
 
   const uniqueTokens = Array.from(new Set(normalizedTokens));
+  let baseType = '';
   if (uniqueTokens.length > 0) {
-    return uniqueTokens.join(' / ');
+    baseType = uniqueTokens.join(' / ');
+  } else if (item.request_type_code === 'overtime') {
+    baseType = 'OT';
+  } else if (item.request_type_code === 'offset_earn') {
+    baseType = 'Offset';
+  } else if (item.request_type_code === 'use_offset') {
+    baseType = 'Use Offset';
+  } else {
+    baseType = item.request_type_name || 'ESARF Request';
   }
 
-  if (item.request_type_code === 'overtime') return 'OT';
-  if (item.request_type_code === 'offset_earn') return 'Offset';
-  if (item.request_type_code === 'use_offset') return 'Use Offset';
-  return item.request_type_name || 'ESARF Request';
+  // Indicate "OT for Pre-Approval" (or "<Type> for Pre-Approval") for pending Pre-approved OT requests
+  const rawStatus = (item.status || item.request_status || '').toLowerCase().trim();
+  const isRejectedOrValidated =
+    rawStatus.includes('reject') ||
+    rawStatus.includes('denied') ||
+    rawStatus.includes('cancel') ||
+    rawStatus.includes('validat');
+  const isPreApprovedReq =
+    rawStatus.includes('pre_approved') ||
+    rawStatus.includes('pre-approved') ||
+    /\[PreApproved\]/i.test(item.reason || '') ||
+    (item.transaction_type || '').toLowerCase().includes('scheduled_ot') ||
+    (item.transaction_type || '').toLowerCase().includes('for pre-approval');
+  const isStep1Approved =
+    Array.isArray(item.approval_summary) &&
+    item.approval_summary.some(
+      (s) => Number(s.step_order) === 1 && String(s.status || '').toLowerCase() === 'approved',
+    );
+  const isFinalized = Boolean(item.final_approved_at) || isStep1Approved || rawStatus === 'approved';
+
+  if (isPreApprovedReq && !isRejectedOrValidated && !isFinalized) {
+    if (!/for\s+pre-?approval/i.test(baseType)) {
+      return `${baseType} for Pre-Approval`;
+    }
+  }
+
+  return baseType;
 }
 
 export function parseEsarfEntries(item: {
@@ -423,6 +462,8 @@ export function parseEsarfEntries(item: {
   time_from?: string | null;
   time_to?: string | null;
   total_hours?: number | null;
+  original_total_hours?: number | null;
+  hours_adjustment_reason?: string | null;
   transaction_type?: string | null;
   reason?: string | null;
   time_schedule?: string | null;
@@ -569,6 +610,24 @@ export function parseEsarfEntries(item: {
         const actualMatch = rawReasonText.match(/\[Actual:\s*([\d.]+)\s*hrs?\]/i);
         let actualHoursStr: string | undefined = actualMatch ? actualMatch[1] : undefined;
 
+        const origHoursMatch = rawReasonText.match(/\[(?:OrigHours|OriginalHours):\s*([\d.]+)\s*hrs?\]/i);
+        let originalHoursStr: string | undefined = origHoursMatch ? origHoursMatch[1] : undefined;
+        const adjReasonMatch = rawReasonText.match(/\[(?:AdjustmentReason|AdjReason):\s*([^\]]+)\]/i);
+        let adjustmentReasonStr: string | undefined = adjReasonMatch ? adjReasonMatch[1].trim() : undefined;
+
+        if (blocks.length === 1) {
+          if (!originalHoursStr && item.original_total_hours != null && Number(item.original_total_hours) !== Number(hoursStr || item.total_hours || 0)) {
+            originalHoursStr = Number(item.original_total_hours).toFixed(2);
+          }
+          if (!adjustmentReasonStr && item.hours_adjustment_reason && item.hours_adjustment_reason.trim()) {
+            adjustmentReasonStr = item.hours_adjustment_reason.trim();
+          }
+        }
+        const isHoursEdited = Boolean(
+          (originalHoursStr && Math.abs(parseFloat(originalHoursStr) - parseFloat(hoursStr || '0')) > 0.0001) ||
+          adjustmentReasonStr,
+        );
+
         const parsedProofsList = parseProofsFromReasonText(rawReasonText);
         let proofUrl: string | undefined = parsedProofsList[0]?.proofUrl;
         let proofTime: string | undefined = parsedProofsList[0]?.proofTime;
@@ -586,6 +645,8 @@ export function parseEsarfEntries(item: {
 
         let cleanReasonText = rawReasonText
           .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
+          .replace(/\[(?:OrigHours|OriginalHours):\s*[\d.]+\s*hrs?\]\s*/gi, '')
+          .replace(/\[(?:AdjustmentReason|AdjReason):\s*[^\]]+\]\s*/gi, '')
           .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
           .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
@@ -653,6 +714,9 @@ export function parseEsarfEntries(item: {
           timeToStr: timeToStr || '--',
           totalHours: hoursStr || '0',
           actualHours: actualHoursStr,
+          originalHours: originalHoursStr,
+          adjustmentReason: adjustmentReasonStr,
+          isHoursEdited,
           breakTimeFrom,
           breakTimeTo,
           breakTime,
@@ -683,6 +747,11 @@ export function parseEsarfEntries(item: {
   const actualMatch = rawReason.match(/\[Actual:\s*([\d.]+)\s*hrs?\]/i);
   let actualHoursStr: string | undefined = actualMatch ? actualMatch[1] : undefined;
 
+  const origHoursMatch = rawReason.match(/\[(?:OrigHours|OriginalHours):\s*([\d.]+)\s*hrs?\]/i);
+  let originalHoursStr: string | undefined = origHoursMatch ? origHoursMatch[1] : undefined;
+  const adjReasonMatch = rawReason.match(/\[(?:AdjustmentReason|AdjReason):\s*([^\]]+)\]/i);
+  let adjustmentReasonStr: string | undefined = adjReasonMatch ? adjReasonMatch[1].trim() : undefined;
+
   const parsedProofsList = parseProofsFromReasonText(rawReason);
   let proofUrl: string | undefined = parsedProofsList[0]?.proofUrl;
   let proofTime: string | undefined = parsedProofsList[0]?.proofTime;
@@ -700,6 +769,8 @@ export function parseEsarfEntries(item: {
 
   let cleanReason = rawReason
     .replace(/\[Actual:\s*[\d.]+\s*hrs?\]\s*/gi, '')
+    .replace(/\[(?:OrigHours|OriginalHours):\s*[\d.]+\s*hrs?\]\s*/gi, '')
+    .replace(/\[(?:AdjustmentReason|AdjReason):\s*[^\]]+\]\s*/gi, '')
     .replace(/\[Proof:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[ProofTime:\s*[^\]]+\]\s*/gi, '')
     .replace(/\[ProofLoc:\s*[^\]]+\]\s*/gi, '')
@@ -780,6 +851,17 @@ export function parseEsarfEntries(item: {
     }
   }
 
+  if (!originalHoursStr && item.original_total_hours != null && Math.abs(Number(item.original_total_hours) - Number(totalHours || 0)) > 0.0001) {
+    originalHoursStr = Number(item.original_total_hours).toFixed(2);
+  }
+  if (!adjustmentReasonStr && item.hours_adjustment_reason && item.hours_adjustment_reason.trim()) {
+    adjustmentReasonStr = item.hours_adjustment_reason.trim();
+  }
+  const isHoursEdited = Boolean(
+    (originalHoursStr && Math.abs(parseFloat(originalHoursStr) - parseFloat(totalHours || '0')) > 0.0001) ||
+    adjustmentReasonStr,
+  );
+
   return [
     {
       index: 1,
@@ -789,6 +871,9 @@ export function parseEsarfEntries(item: {
       timeToStr,
       totalHours,
       actualHours: actualHoursStr,
+      originalHours: originalHoursStr,
+      adjustmentReason: adjustmentReasonStr,
+      isHoursEdited,
       breakTimeFrom,
       breakTimeTo,
       breakTime,
@@ -877,36 +962,104 @@ export function buildUpdatedReasonText(
   entries: ParsedEsarfEntry[],
   adjustedHoursMap: Record<number, string>,
   rejectedIndices: number[],
+  adjustmentReason?: string,
+  originalTotalHours?: number | null,
 ): string {
   let text = currentReason || '';
-  if (!text) return text;
+  const safeAdjReason = (adjustmentReason || '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\]/g, ')')
+    .trim();
 
   if (text.includes('[Entry ')) {
-    entries.forEach((entry) => {
-      const idx = entry.index;
+    const parts = text.split(/(?=\[Entry\s+\d+\])/i);
+    const updatedParts = parts.map((part) => {
+      const idxMatch = part.match(/^\[Entry\s+(\d+)\]/i);
+      if (!idxMatch) return part;
+      const idx = parseInt(idxMatch[1], 10);
+      const entry = entries.find((e) => e.index === idx);
+      if (!entry) return part;
+
+      let block = part;
       const isRejected = rejectedIndices.includes(idx);
-      const hasAdjustedHours =
-        adjustedHoursMap[idx] !== undefined && adjustedHoursMap[idx].trim() !== '';
+      const rawAdjusted = adjustedHoursMap[idx];
+      const hasAdjustedInput = rawAdjusted !== undefined && rawAdjusted.trim() !== '';
+      const newHrs = hasAdjustedInput ? parseFloat(rawAdjusted) : NaN;
+      const currentHrs = parseFloat(entry.totalHours || '0');
+      const didHoursChange =
+        hasAdjustedInput &&
+        !Number.isNaN(newHrs) &&
+        Math.abs(newHrs - (Number.isNaN(currentHrs) ? 0 : currentHrs)) > 0.0001;
 
-      if (hasAdjustedHours) {
-        const newHrs = parseFloat(adjustedHoursMap[idx]) || 0;
-        const newHrsFormatted = Number.isInteger(newHrs) ? newHrs.toFixed(2) : String(newHrs);
-        const entryRegex = new RegExp(`(\\[Entry\\s+${idx}\\][^\n]*?\\()([0-9.]+\\s*hrs?\\))`, 'i');
-        if (text.match(entryRegex)) {
-          text = text.replace(entryRegex, `$1${newHrsFormatted} hrs)`);
+      if (didHoursChange) {
+        const newHrsFormatted = newHrs.toFixed(2);
+        const trueOrigNum = parseFloat(entry.originalHours || entry.totalHours || '0');
+        const origHrsFormatted = !Number.isNaN(trueOrigNum)
+          ? trueOrigNum.toFixed(2)
+          : (entry.originalHours || entry.totalHours || '0.00');
+
+        const entryHoursRegex = new RegExp(`(\\[Entry\\s+${idx}\\][^\n]*?\\()([0-9.]+\\s*hrs?\\))`, 'i');
+        if (entryHoursRegex.test(block)) {
+          block = block.replace(entryHoursRegex, `$1${newHrsFormatted} hrs)`);
         }
+
+        const trailingWhitespaceMatch = block.match(/(\s*)$/);
+        const trailingWs = trailingWhitespaceMatch ? trailingWhitespaceMatch[1] : '';
+        let trimmedBlock = block.slice(0, block.length - trailingWs.length);
+
+        trimmedBlock = trimmedBlock
+          .replace(/\s*\[(?:OrigHours|OriginalHours):\s*[\d.]+\s*hrs?\]/gi, '')
+          .replace(/\s*\[(?:AdjustmentReason|AdjReason):\s*[^\]]+\]/gi, '')
+          .trimEnd();
+
+        trimmedBlock += ` [OrigHours: ${origHrsFormatted} hrs]`;
+        if (safeAdjReason) {
+          trimmedBlock += ` [AdjustmentReason: ${safeAdjReason}]`;
+        }
+        block = `${trimmedBlock}${trailingWs}`;
       }
 
-      if (isRejected && !text.match(new RegExp(`\\[Entry\\s+${idx}\\][^\n]*\\[REJECTED\\]`, 'i'))) {
-        const regex = new RegExp(`(\\[Entry\\s+${idx}\\][^\n]*)`, 'gi');
-        if (text.match(regex)) {
-          text = text.replace(regex, `$1 [REJECTED]`);
-        } else {
-          text = `${text}\n[Entry ${idx}] [REJECTED]`;
-        }
+      if (isRejected && !/\[REJECTED\]/i.test(block)) {
+        const trailingWhitespaceMatch = block.match(/(\s*)$/);
+        const trailingWs = trailingWhitespaceMatch ? trailingWhitespaceMatch[1] : '';
+        const trimmedBlock = block.slice(0, block.length - trailingWs.length).trimEnd();
+        block = `${trimmedBlock} [REJECTED]${trailingWs}`;
       }
+
+      return block;
     });
-    return text;
+
+    return updatedParts.join('');
+  }
+
+  // Legacy / single-entry format (no "[Entry N]" prefix)
+  const firstEntry = entries[0];
+  const idx = firstEntry?.index ?? 1;
+  const rawAdjusted = adjustedHoursMap[idx];
+  const hasAdjustedInput = rawAdjusted !== undefined && rawAdjusted.trim() !== '';
+  const newHrs = hasAdjustedInput ? parseFloat(rawAdjusted) : NaN;
+  const currentHrs = parseFloat(firstEntry?.totalHours || String(originalTotalHours ?? 0));
+  const didHoursChange =
+    hasAdjustedInput &&
+    !Number.isNaN(newHrs) &&
+    Math.abs(newHrs - (Number.isNaN(currentHrs) ? 0 : currentHrs)) > 0.0001;
+
+  if (didHoursChange) {
+    const trueOrigNum = parseFloat(
+      firstEntry?.originalHours || firstEntry?.totalHours || String(originalTotalHours ?? 0),
+    );
+    const origHrsFormatted = !Number.isNaN(trueOrigNum) ? trueOrigNum.toFixed(2) : '0.00';
+
+    let cleaned = text
+      .replace(/\s*\[(?:OrigHours|OriginalHours):\s*[\d.]+\s*hrs?\]/gi, '')
+      .replace(/\s*\[(?:AdjustmentReason|AdjReason):\s*[^\]]+\]/gi, '')
+      .trim();
+
+    const tags = [`[OrigHours: ${origHrsFormatted} hrs]`];
+    if (safeAdjReason) {
+      tags.push(`[AdjustmentReason: ${safeAdjReason}]`);
+    }
+    text = cleaned ? `${cleaned} ${tags.join(' ')}` : tags.join(' ');
   }
 
   return text;
@@ -1591,78 +1744,101 @@ export function EsarfCardView({
           <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>{entry.dateStr}</Text>
         </View>
 
-        {!isFioOrObOnly(entry.transactionLabel) ? (
-          <View style={styles.gridCol}>
-            <View style={styles.gridLabelRow}>
-              <Text style={styles.gridLabel}>Total Hrs.</Text>
-              {isEditableHours && !isEntryRejected && !isDisabled ? (
-                <View style={styles.adjustablePill}>
-                  <Edit3 size={10} color="#854d0e" strokeWidth={2.4} />
-                  <Text style={styles.adjustablePillText}>Editable</Text>
-                </View>
-              ) : null}
-            </View>
+        {!isFioOrObOnly(entry.transactionLabel) ? (() => {
+          const hasPendingHoursEdit = Boolean(
+            adjustedHours !== undefined &&
+            adjustedHours.trim() !== '' &&
+            !Number.isNaN(parseFloat(adjustedHours)) &&
+            Math.abs(parseFloat(adjustedHours) - parseFloat(entry.totalHours || '0')) > 0.0001,
+          );
+          const showEditedBadge = Boolean(hasPendingHoursEdit || entry.isHoursEdited);
+          const beforeEditHours = entry.originalHours || (hasPendingHoursEdit ? entry.totalHours : undefined);
 
-            {isEditableHours && !isEntryRejected && !isDisabled ? (
-              <View>
-                <View style={styles.editableHoursRow}>
-                  <Pressable
-                    style={[
-                      styles.hoursInputShell,
-                      isHoursInputFocused && styles.hoursInputShellFocused,
-                    ]}
-                    onPress={() => inputRef.current?.focus()}
-                  >
-                    <TextInput
-                      ref={inputRef}
-                      style={styles.hoursInputField}
-                      value={
-                        adjustedHours !== undefined
-                          ? adjustedHours
-                          : entry.totalHours != null
-                          ? String(entry.totalHours)
-                          : ''
-                      }
-                      onChangeText={onHoursChange}
-                      onFocus={() => setIsHoursInputFocused(true)}
-                      onBlur={() => setIsHoursInputFocused(false)}
-                      keyboardType="decimal-pad"
-                      selectTextOnFocus={false}
-                      placeholder="0.00"
-                      placeholderTextColor="#94a3b8"
-                    />
-                    <Text style={styles.hoursUnitText}>hrs</Text>
-                  </Pressable>
-                  {entry.actualHours ? (
-                    <View style={styles.actualHoursBadge}>
-                      <Text style={styles.actualHoursBadgeText}>
-                        Actual: {formatDisplayHours(entry.actualHours)}h
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
-                {adjustedHours !== undefined && adjustedHours !== entry.totalHours ? (
-                  <Text style={styles.originalHoursNote}>
-                    Orig: {entry.totalHours} hrs
-                  </Text>
-                ) : null}
-              </View>
-            ) : (
-              <View style={styles.totalHoursValueRow}>
-                <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>
-                  {adjustedHours !== undefined ? adjustedHours : entry.totalHours}
-                </Text>
-                {entry.actualHours ? (
-                  <View style={styles.actualHoursBadge}>
-                    <Text style={styles.actualHoursBadgeText}>
-                      Actual: {formatDisplayHours(entry.actualHours)}h
-                    </Text>
+          return (
+            <View style={styles.gridCol}>
+              <View style={styles.gridLabelRow}>
+                <Text style={styles.gridLabel}>Total Hrs.</Text>
+                {showEditedBadge ? (
+                  <View style={styles.editedHoursPill}>
+                    <Edit3 size={10} color="#92400e" strokeWidth={2.4} />
+                    <Text style={styles.editedHoursPillText}>Edited</Text>
+                  </View>
+                ) : isEditableHours && !isEntryRejected && !isDisabled ? (
+                  <View style={styles.adjustablePill}>
+                    <Edit3 size={10} color="#854d0e" strokeWidth={2.4} />
+                    <Text style={styles.adjustablePillText}>Editable</Text>
                   </View>
                 ) : null}
               </View>
-            )}
-          </View>
-        ) : null}
+
+              {isEditableHours && !isEntryRejected && !isDisabled ? (
+                <View>
+                  <View style={styles.editableHoursRow}>
+                    <Pressable
+                      style={[
+                        styles.hoursInputShell,
+                        isHoursInputFocused && styles.hoursInputShellFocused,
+                      ]}
+                      onPress={() => inputRef.current?.focus()}
+                    >
+                      <TextInput
+                        ref={inputRef}
+                        style={styles.hoursInputField}
+                        value={
+                          adjustedHours !== undefined
+                            ? adjustedHours
+                            : entry.totalHours != null
+                            ? String(entry.totalHours)
+                            : ''
+                        }
+                        onChangeText={onHoursChange}
+                        onFocus={() => setIsHoursInputFocused(true)}
+                        onBlur={() => setIsHoursInputFocused(false)}
+                        keyboardType="decimal-pad"
+                        selectTextOnFocus={false}
+                        placeholder="0.00"
+                        placeholderTextColor="#94a3b8"
+                      />
+                      <Text style={styles.hoursUnitText}>hrs</Text>
+                    </Pressable>
+                    {entry.actualHours ? (
+                      <View style={styles.actualHoursBadge}>
+                        <Text style={styles.actualHoursBadgeText}>
+                          Actual: {formatDisplayHours(entry.actualHours)}h
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  {beforeEditHours ? (
+                    <Text style={styles.originalHoursNote}>
+                      Before edit: {formatDisplayHours(beforeEditHours)} hrs
+                    </Text>
+                  ) : null}
+                </View>
+              ) : (
+                <View>
+                  <View style={styles.totalHoursValueRow}>
+                    <Text style={[styles.gridValue, isEntryRejected && styles.dashedText]}>
+                      {adjustedHours !== undefined ? adjustedHours : entry.totalHours}
+                    </Text>
+                    {entry.actualHours ? (
+                      <View style={styles.actualHoursBadge}>
+                        <Text style={styles.actualHoursBadgeText}>
+                          Actual: {formatDisplayHours(entry.actualHours)}h
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  {beforeEditHours ? (
+                    <Text style={styles.originalHoursNote}>
+                      Before edit: {formatDisplayHours(beforeEditHours)} hrs
+                    </Text>
+                  ) : null}
+                </View>
+              )}
+            </View>
+          );
+        })() : null}
       </View>
 
       <View style={styles.gridRow}>
@@ -1697,6 +1873,31 @@ export function EsarfCardView({
           <Text style={[styles.reasonText, isEntryRejected && styles.dashedText]}>{entry.reason}</Text>
         </View>
       </View>
+
+      {/* Hours Adjusted Indicator & Reason (shown when approver edited total hours) */}
+      {entry.isHoursEdited || entry.originalHours || entry.adjustmentReason ? (
+        <View style={styles.hoursAdjustmentCard}>
+          <View style={styles.hoursAdjustmentHeader}>
+            <View style={styles.hoursAdjustmentTitleRow}>
+              <Edit3 size={13} color="#b45309" strokeWidth={2.4} />
+              <Text style={styles.hoursAdjustmentTitle}>Total Hours Edited</Text>
+            </View>
+            {entry.originalHours ? (
+              <View style={styles.hoursAdjustmentDiffPill}>
+                <Text style={styles.hoursAdjustmentDiffText}>
+                  {formatDisplayHours(entry.originalHours)} hrs → {formatDisplayHours(entry.totalHours)} hrs
+                </Text>
+              </View>
+            ) : null}
+          </View>
+          {entry.adjustmentReason ? (
+            <View style={styles.hoursAdjustmentReasonWrap}>
+              <Text style={styles.hoursAdjustmentReasonLabel}>Adjustment Reason</Text>
+              <Text style={styles.hoursAdjustmentReasonText}>{entry.adjustmentReason}</Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
 
       {/* Optional slot below Reason (e.g. Scheduled OT Photo Proof card/notice) */}
       {belowReasonSlot}
@@ -1926,6 +2127,190 @@ export function EsarfCardView({
   );
 }
 
+export type RequestCardDetailsItem = {
+  request_type_code?: string | null;
+  request_type_name?: string | null;
+  transaction_type?: string | null;
+  date_from?: string | null;
+  date_to?: string | null;
+  time_from?: string | null;
+  time_to?: string | null;
+  total_hours?: number | null;
+  original_total_hours?: number | null;
+  hours_adjustment_reason?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  total_days?: number | null;
+  reason?: string | null;
+};
+
+function formatCombinedTimeRange(timeFrom?: string | null, timeTo?: string | null): string {
+  const rawFrom = timeFrom ? stripSecondsFromTimeString(timeFrom).trim() : '';
+  const rawTo = timeTo ? stripSecondsFromTimeString(timeTo).trim() : '';
+  const cleanFrom = rawFrom && rawFrom !== '--' && rawFrom !== '--:--' && rawFrom !== '—' ? rawFrom : '';
+  const cleanTo = rawTo && rawTo !== '--' && rawTo !== '--:--' && rawTo !== '—' ? rawTo : '';
+  if (cleanFrom && cleanTo) return `${cleanFrom} - ${cleanTo}`;
+  return cleanFrom || cleanTo;
+}
+
+/**
+ * Compact inline details displayed on Request and Approval list cards
+ * (Date From-To, Total Hrs./Days, and combined Time From - Time To) without
+ * field labels, aligned alongside the submission date/time block.
+ */
+export const RequestCardDetailsGrid = React.memo(function RequestCardDetailsGrid({
+  item,
+}: {
+  item: RequestCardDetailsItem;
+}) {
+  if (!item) return null;
+
+  const code = (item.request_type_code || '').toLowerCase().trim();
+  const trans = (item.transaction_type || '').toLowerCase();
+
+  // Skip for employee perks (discount / charge)
+  if (code === 'discount' || code === 'charge') {
+    return null;
+  }
+
+  // Leave requests: Date From-To and Total Days
+  if (code === 'leave') {
+    const startDate = item.start_date || item.date_from;
+    const endDate = item.end_date || item.date_to || startDate;
+    if (!startDate && item.total_days == null) return null;
+
+    const dateRange = startDate ? formatEsarfDateRange(startDate, endDate) : '';
+    const daysNum = item.total_days != null ? Number(item.total_days) : null;
+    const daysLabel =
+      daysNum != null && !Number.isNaN(daysNum)
+        ? `${formatDisplayHours(String(daysNum))} ${daysNum === 1 ? 'day' : 'days'}`
+        : '';
+
+    return (
+      <View style={styles.cardDetailsGrid}>
+        <View style={styles.cardDetailsPrimaryRow}>
+          {dateRange ? (
+            <Text style={styles.cardDetailsValue} numberOfLines={1}>
+              {dateRange}
+            </Text>
+          ) : null}
+          {dateRange && daysLabel ? <Text style={styles.cardDetailsSeparator}>•</Text> : null}
+          {daysLabel ? (
+            <Text style={styles.cardDetailsHours} numberOfLines={1}>
+              {daysLabel}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+    );
+  }
+
+  // Travel Order requests: Date From-To + combined Departure/Return Time (if set)
+  const isTravel =
+    code === 'travel_order' ||
+    code === 'travel' ||
+    code === 'official_travel' ||
+    code === 'official_travel_order' ||
+    code === 'to' ||
+    trans.includes('travel order') ||
+    trans.includes('official travel');
+
+  if (isTravel) {
+    const startDate = item.date_from || item.start_date;
+    const endDate = item.date_to || item.end_date || startDate;
+    const dateRange = startDate ? formatEsarfDateRange(startDate, endDate) : '';
+    const timeRange = formatCombinedTimeRange(item.time_from, item.time_to);
+
+    if (!dateRange && !timeRange) return null;
+
+    return (
+      <View style={styles.cardDetailsGrid}>
+        {dateRange ? (
+          <View style={styles.cardDetailsPrimaryRow}>
+            <Text style={styles.cardDetailsValue} numberOfLines={1}>
+              {dateRange}
+            </Text>
+          </View>
+        ) : null}
+        {timeRange ? (
+          <Text style={styles.cardDetailsTimeValue} numberOfLines={1}>
+            {timeRange}
+          </Text>
+        ) : null}
+      </View>
+    );
+  }
+
+  // ESARF / Pre-approved OT requests: Date From-To, Total Hrs., combined Time From - Time To
+  const entries = parseEsarfEntries(item);
+  const firstEntry = entries[0];
+  const isMulti = entries.length > 1;
+
+  const dateRange = isMulti && item.date_from
+    ? formatEsarfDateRange(item.date_from, item.date_to || item.date_from)
+    : firstEntry?.dateStr && firstEntry.dateStr !== 'mm/dd-dd/yyyy'
+      ? firstEntry.dateStr
+      : item.date_from
+        ? formatEsarfDateRange(item.date_from, item.date_to || item.date_from)
+        : '';
+
+  const hideHours = entries.length > 0 && entries.every((e) => isFioOrObOnly(e.transactionLabel));
+  const rawHours = isMulti && item.total_hours != null
+    ? String(item.total_hours)
+    : firstEntry?.totalHours || (item.total_hours != null ? String(item.total_hours) : '');
+  const formattedHours = rawHours && !hideHours ? `${formatDisplayHours(rawHours)} hrs` : '';
+  const hasEditedHours = entries.some((e) => e.isHoursEdited) || Boolean(
+    item.original_total_hours != null &&
+    item.total_hours != null &&
+    Math.abs(Number(item.original_total_hours) - Number(item.total_hours)) > 0.0001,
+  );
+
+  const timeRange = formatCombinedTimeRange(
+    firstEntry?.timeFromStr || item.time_from,
+    firstEntry?.timeToStr || item.time_to,
+  );
+
+  if (!dateRange && !formattedHours && !timeRange) {
+    return null;
+  }
+
+  return (
+    <View style={styles.cardDetailsGrid}>
+      {dateRange || formattedHours ? (
+        <View style={styles.cardDetailsPrimaryRow}>
+          {dateRange ? (
+            <Text style={styles.cardDetailsValue} numberOfLines={1}>
+              {dateRange}
+            </Text>
+          ) : null}
+          {isMulti ? (
+            <View style={styles.cardDetailsMultiBadge}>
+              <Text style={styles.cardDetailsMultiBadgeText}>+{entries.length - 1}</Text>
+            </View>
+          ) : null}
+          {dateRange && formattedHours ? <Text style={styles.cardDetailsSeparator}>•</Text> : null}
+          {formattedHours ? (
+            <Text style={styles.cardDetailsHours} numberOfLines={1}>
+              {formattedHours}
+            </Text>
+          ) : null}
+          {hasEditedHours ? (
+            <View style={styles.cardDetailsEditedBadge}>
+              <Text style={styles.cardDetailsEditedBadgeText}>Edited</Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+
+      {timeRange ? (
+        <Text style={styles.cardDetailsTimeValue} numberOfLines={1}>
+          {timeRange}
+        </Text>
+      ) : null}
+    </View>
+  );
+});
+
 const styles = StyleSheet.create({
   requestInfoSection: {
     marginHorizontal: spacing.md,
@@ -2123,10 +2508,82 @@ const styles = StyleSheet.create({
     marginLeft: 3,
   },
   originalHoursNote: {
-    fontSize: 10,
-    color: '#854d0e',
+    fontSize: 10.5,
+    color: '#b45309',
     fontWeight: fontWeights.semibold,
     marginTop: 2,
+  },
+  editedHoursPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: '#fef3c7',
+    borderWidth: 1,
+    borderColor: '#fcd34d',
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+  },
+  editedHoursPillText: {
+    fontSize: 9.5,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
+  },
+  hoursAdjustmentCard: {
+    marginTop: 8,
+    backgroundColor: '#fffbeb',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    padding: 9,
+    gap: 5,
+  },
+  hoursAdjustmentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  hoursAdjustmentTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  hoursAdjustmentTitle: {
+    fontSize: 11.5,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
+  },
+  hoursAdjustmentDiffPill: {
+    backgroundColor: '#fef3c7',
+    borderWidth: 1,
+    borderColor: '#fcd34d',
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  hoursAdjustmentDiffText: {
+    fontSize: 10.5,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
+  },
+  hoursAdjustmentReasonWrap: {
+    marginTop: 2,
+    paddingTop: 5,
+    borderTopWidth: 1,
+    borderTopColor: '#fde68a',
+  },
+  hoursAdjustmentReasonLabel: {
+    fontSize: 10.5,
+    fontWeight: fontWeights.bold,
+    color: '#b45309',
+    marginBottom: 2,
+  },
+  hoursAdjustmentReasonText: {
+    fontSize: 12.5,
+    color: '#451a03',
+    lineHeight: 17,
   },
   totalHoursValueRow: {
     flexDirection: 'row',
@@ -2609,5 +3066,64 @@ const styles = StyleSheet.create({
     color: '#334155',
     fontSize: 13,
     fontWeight: fontWeights.semibold,
+  },
+  cardDetailsGrid: {
+    gap: 3,
+  },
+  cardDetailsPrimaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  cardDetailsValue: {
+    fontSize: 12.5,
+    lineHeight: 17,
+    fontWeight: fontWeights.bold,
+    color: '#0f172a',
+  },
+  cardDetailsSeparator: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: fontWeights.bold,
+    color: '#94a3b8',
+  },
+  cardDetailsHours: {
+    fontSize: 12.5,
+    lineHeight: 17,
+    fontWeight: fontWeights.semibold,
+    color: '#334155',
+  },
+  cardDetailsTimeValue: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: fontWeights.medium,
+    color: '#475569',
+  },
+  cardDetailsMultiBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 999,
+    backgroundColor: '#e0f2fe',
+    borderWidth: 1,
+    borderColor: '#bae6fd',
+  },
+  cardDetailsMultiBadgeText: {
+    fontSize: 9.5,
+    fontWeight: fontWeights.bold,
+    color: '#0369a1',
+  },
+  cardDetailsEditedBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 999,
+    backgroundColor: '#fef3c7',
+    borderWidth: 1,
+    borderColor: '#fcd34d',
+  },
+  cardDetailsEditedBadgeText: {
+    fontSize: 9.5,
+    fontWeight: fontWeights.bold,
+    color: '#92400e',
   },
 });

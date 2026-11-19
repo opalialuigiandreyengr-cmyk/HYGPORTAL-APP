@@ -18,7 +18,7 @@ export const TUTORIAL_CATEGORIES = [
   'All Categories',
   'Update and Install',
   'ESARF',
-  'Pre-approved OT/Offset',
+  'Pre-approved OT',
   'Leave',
   'Perks',
   'Travel Order',
@@ -111,7 +111,7 @@ export function inferTutorialCategory(title: string, description?: string, rawCa
     text.includes('ot/offset') ||
     text.includes('ot / offset')
   ) {
-    return 'Pre-approved OT/Offset';
+    return 'Pre-approved OT';
   }
   if (
     text.includes('leave') ||

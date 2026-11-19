@@ -89,6 +89,7 @@ import { updateMyPendingRequest, type MyRequest } from '../services/requests';
 import { removeCacheItem } from '../lib/localCache';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { isAppOnline, useNetworkStatus } from '../services/network';
+import { invalidateRequestsCache, getMyRequestsCacheKey } from '../services/requests';
 import { enqueueOfflineItem, removeOfflineItem, removeRequestFromLocalCache } from '../services/offlineQueue';
 import { ActiveReviewLockModal } from '../components/ActiveReviewLockModal';
 import { formatEsarfDateRange, parseEsarfEntries, getDirectProofImageUrl, getExternalProofWebUrl, parseProofsFromReasonText } from '../components/EsarfDetailsView';
@@ -130,7 +131,6 @@ import {
   isOffsetTransaction,
   isOvertimeTransaction,
   isScheduledTransaction,
-  isScheduledOtReadyForProof,
   isFirstApproverApproved,
 } from '../utils/scheduledOt';
 
@@ -153,6 +153,7 @@ export type EsarfEntry = {
   timeTo: string;
   breakFrom?: string;
   breakTo?: string;
+  showBreakTime?: boolean;
   reason: string;
   proof?: EsarfAttachment | null;
   proofs?: EsarfAttachment[];
@@ -584,11 +585,7 @@ export function ApplyEsarfScreen({
       ? parseTransactionStringToKeys(editingRequest.transaction_type, editingRequest.request_type_code)
       : '';
     const initialTransKey = isPreApprovedMode
-      ? (defaultKey === 'ot' || defaultKey === 'offset'
-        ? defaultKey
-        : initialTransactions[0] === 'offset'
-          ? 'offset'
-          : 'ot')
+      ? 'ot'
       : defaultKey || initialTransactions[0] || '';
     const isInitialUseOffset = initialTransKey.includes('use_offset');
     const fallbackProofs = parseProofsFromRawReason(editingRequest?.reason || '', initialDateFrom);
@@ -818,7 +815,7 @@ export function ApplyEsarfScreen({
     const currentEntry = entries[index];
     const isEntryObAlone = isObAloneTransaction(currentEntry?.transaction);
     if (!isPreApprovedMode && !isEventPassedOrDone(event) && !isEntryObAlone) {
-      const msg = 'In Apply ESARF, you cannot select events or activities ahead of time. You can only select events that have already passed or ended (unless the transaction type is OB alone). For upcoming events, please use Apply Pre-approved OT/Offset.';
+      const msg = 'In Apply ESARF, you cannot select events or activities ahead of time. You can only select events that have already passed or ended (unless the transaction type is OB alone). For upcoming events, please use Apply Pre-approved OT.';
       if (onToast) {
         onToast({ tone: 'warning', title: 'Event Not Yet Ended', message: msg });
       } else {
@@ -1606,7 +1603,7 @@ export function ApplyEsarfScreen({
         [`entry_${index}_dateFrom`]: futureNotAllowed
           ? (entryTransKeys.includes('ob')
             ? `Request #${index + 1}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`
-            : `Request #${index + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT or Offset ahead of time, please use Apply Pre-approved OT/Offset.`)
+            : `Request #${index + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT ahead of time, please use Apply Pre-approved OT.`)
           : undefined,
         [`entry_${index}_dateTo`]: undefined,
         [`entry_${index}_offsetHours`]: undefined,
@@ -1636,7 +1633,7 @@ export function ApplyEsarfScreen({
         [`entry_${index}_dateFrom`]: futureNotAllowed
           ? (entryTransKeys.includes('ob')
             ? `Request #${index + 1}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`
-            : `Request #${index + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT or Offset ahead of time, please use Apply Pre-approved OT/Offset.`)
+            : `Request #${index + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT ahead of time, please use Apply Pre-approved OT.`)
           : undefined,
         [`entry_${index}_dateTo`]: undefined,
         [`entry_${index}_offsetHours`]: undefined,
@@ -1912,7 +1909,7 @@ export function ApplyEsarfScreen({
         const todayStr = formatDateInput(new Date());
         if (isPreApprovedMode) {
           if (entry.dateFrom && entry.dateFrom < todayStr) {
-            errors[`entry_${i}_dateFrom`] = `Request #${num}: Pre-approved OT/Offset must be scheduled for today or a future date.`;
+            errors[`entry_${i}_dateFrom`] = `Request #${num}: Pre-approved OT must be scheduled for today or a future date.`;
           }
         } else {
           const isEntryUseOffset = transKeys.includes('use_offset');
@@ -1926,7 +1923,7 @@ export function ApplyEsarfScreen({
             if (hasOb) {
               errors[`entry_${i}_dateFrom`] = `Request #${num}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`;
             } else {
-              errors[`entry_${i}_dateFrom`] = `Request #${num}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT or Offset ahead of time, please use Apply Pre-approved OT/Offset.`;
+              errors[`entry_${i}_dateFrom`] = `Request #${num}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT ahead of time, please use Apply Pre-approved OT.`;
             }
           }
         }
@@ -1958,19 +1955,13 @@ export function ApplyEsarfScreen({
       if (!entry.reason.trim()) errors[`entry_${i}_reason`] = `Request #${num}: Reason is required.`;
 
       // Photo proof requirement:
-      // 1. Regular FIO transaction
-      // 2. Pre-approved OT/Offset where 1st approver has approved AND duration has completed
+      // Regular FIO transaction requires photo proof.
+      // Pre-approved OT does NOT require photo proof.
       const isScheduledOt = isScheduledOtEntry(entry);
-      const isPreApprovedAwaiting = isPreApprovedMode && isFirstApproverApproved(editingRequest) && isScheduledOtReadyForProof(entry);
-      const needsProof = (!isPreApprovedMode && !isScheduledOt && isProofRequiredForTransactions(entry.transaction))
-        || isPreApprovedAwaiting;
+      const needsProof = !isPreApprovedMode && !isScheduledOt && isProofRequiredForTransactions(entry.transaction);
       const entryProofs = getEntryProofs(entry);
       if (needsProof && entryProofs.length === 0) {
-        if (isPreApprovedAwaiting) {
-          errors[`entry_${i}_proof`] = `Request #${num}: Please attach at least 1 photo proof to forward this request to your 2nd Approver.`;
-        } else {
-          errors[`entry_${i}_proof`] = `Request #${num}: At least 1 photo proof is required for Failure to Punch In/Out (FIO).`;
-        }
+        errors[`entry_${i}_proof`] = `Request #${num}: At least 1 photo proof is required for Failure to Punch In/Out (FIO).`;
       }
     });
 
@@ -2245,7 +2236,8 @@ export function ApplyEsarfScreen({
           unpaid_days: null,
           reason: combinedReason,
           approval_summary: (() => {
-            const groupWorkflow = groupEntries.find((e) => e.workflowSteps && e.workflowSteps.length > 0)?.workflowSteps || defaultWorkflowSteps;
+            const rawWorkflow = groupEntries.find((e) => e.workflowSteps && e.workflowSteps.length > 0)?.workflowSteps || defaultWorkflowSteps;
+            const groupWorkflow = isPreApprovedMode ? rawWorkflow.slice(0, 1) : rawWorkflow;
             return groupWorkflow.length > 0
               ? groupWorkflow.map((ws) => {
                 const effLevel = resolveApproverLevel(ws);
@@ -2266,7 +2258,18 @@ export function ApplyEsarfScreen({
                   is_reassigned: Boolean(ws.is_reassigned),
                 };
               })
-              : editingRequest?.approval_summary || [
+              : editingRequest?.approval_summary || (isPreApprovedMode ? [
+                {
+                  step_order: 1,
+                  required_level: 1,
+                  status: 'Pending Sync (Offline)',
+                  acted_at: null,
+                  remarks: 'Saved locally on device. Will auto-sync to database once internet is restored.',
+                  skipped_reason: null,
+                  approver_name: 'Approver 1',
+                  approver_employee_no: 'SYS-LOCAL',
+                },
+              ] : [
                 {
                   step_order: 1,
                   required_level: 1,
@@ -2287,7 +2290,7 @@ export function ApplyEsarfScreen({
                   approver_name: 'Approver 2',
                   approver_employee_no: null,
                 },
-              ];
+              ]);
           })(),
         };
 
@@ -2295,6 +2298,7 @@ export function ApplyEsarfScreen({
         for (const entry of groupEntries) {
           if (entry.workflowSteps) {
             for (const s of entry.workflowSteps) {
+              if (isPreApprovedMode && s.step_order > 1) continue;
               if (s.is_reassigned && s.approver_employee_id) {
                 if (!customApproversPayload.some((c) => c.step_order === s.step_order)) {
                   customApproversPayload.push({
@@ -2665,25 +2669,21 @@ export function ApplyEsarfScreen({
             'Updating ESARF request timed out. Please check your network connection.',
           );
 
-          const hasAttachedProofs = entries.some((e) => getEntryProofs(e).length > 0);
-          const isPreWithProof = isPreApprovedMode && hasAttachedProofs && isFirstApproverApproved(editingRequest);
-
-          const successStatus = isPreWithProof
-            ? 'Photo proof attached! Your request has been forwarded to your 2nd Approver.'
-            : isPreApprovedMode
-              ? 'Pre-approved OT/Offset request updated.'
-              : `Updated ESARF request with ${entries.length} entry(ies).`;
+          const successStatus = isPreApprovedMode
+            ? 'Pre-approved OT request updated.'
+            : `Updated ESARF request with ${entries.length} entry(ies).`;
 
           setSubmitStatus(successStatus);
           onToast?.({
             tone: 'success',
-            title: isPreWithProof
-              ? 'Photo Proof Attached'
-              : isPreApprovedMode
-                ? 'Request Updated'
-                : 'ESARF updated',
+            title: isPreApprovedMode
+              ? 'Request Updated'
+              : 'ESARF updated',
             message: successStatus,
           });
+          invalidateRequestsCache();
+          const reqCacheKey = await getMyRequestsCacheKey();
+          await removeCacheItem(reqCacheKey).catch(() => { });
           await removeCacheItem('my_requests_v1').catch(() => { });
           await onSubmitted?.();
           return;
@@ -2887,6 +2887,7 @@ export function ApplyEsarfScreen({
             for (const entry of groupEntries) {
               if (entry.workflowSteps) {
                 for (const s of entry.workflowSteps) {
+                  if (isPreApprovedMode && s.step_order > 1) continue;
                   if (s.is_reassigned && s.approver_employee_id) {
                     if (!customApproversPayload.some((c) => c.step_order === s.step_order)) {
                       customApproversPayload.push({
@@ -3027,11 +3028,8 @@ export function ApplyEsarfScreen({
         : `Submitted ESARF request with ${entries.length} entry(ies)${offsetDeductedNote}.`);
 
       if (isPreApprovedMode) {
-        const hasOffset = entries.some((e) => parseEntryTransactions(e.transaction).includes('offset') || isOffsetTransaction(e.transaction));
-        const hasOt = entries.some((e) => parseEntryTransactions(e.transaction).includes('ot') || isOvertimeTransaction(e.transaction));
-        const typeLabel = hasOffset && hasOt ? 'OT / Offset' : (hasOffset ? 'OT for Offset' : 'Overtime');
-        successTitle = `Pre-approved ${typeLabel} Submitted ⏱️`;
-        successMessage = `Your Pre-approved ${typeLabel} request has been routed to your 1st Approver. Once approved and after your scheduled shift finishes, remember to attach photo proof to forward it to your 2nd Approver.`;
+        successTitle = 'Pre-approved OT Submitted ⏱️';
+        successMessage = 'Your Pre-approved OT request has been sent to your approver. Once approved, take a screenshot of it, then apply for OT in Apply ESARF and attach the screenshot.';
       }
 
       setSubmitStatus(successMessage);
@@ -3042,6 +3040,9 @@ export function ApplyEsarfScreen({
           ? successMessage
           : `${successMessage} Sent for approval.`,
       });
+      invalidateRequestsCache();
+      const reqCacheKey = await getMyRequestsCacheKey();
+      await removeCacheItem(reqCacheKey).catch(() => { });
       await removeCacheItem('my_requests_v1').catch(() => { });
       await onSubmitted?.();
     } catch (error) {
@@ -3129,7 +3130,10 @@ export function ApplyEsarfScreen({
 
     let preApprovedNote = '';
     if (isPreApprovedMode && !isEdit) {
-      preApprovedNote = '\n\n⏱️ Pre-approved Requests Process:\n Step 1: Your request will appear on your 1st Approver\'s screen for pre-approval.\n Step 2: Once approved and after your shift duration concludes, return to attach photo proof.\n Step 3: Your request will then forward to your 2nd Approver for final approval.';
+      preApprovedNote =
+        '\n\n📌 Important Reminder:\n' +
+        '1. Once approved by your approver, take a screenshot of your Pre-approved OT request.\n' +
+        '2. Go to Apply ESARF, apply for Overtime (OT), and attach the screenshot of your approved Pre-approved OT request.';
     }
 
     let offlineNote = '';
@@ -3138,10 +3142,10 @@ export function ApplyEsarfScreen({
     }
 
     const confirmMsg = (isEdit
-      ? `Are you sure you want to update this ${isPreApprovedMode ? 'pre-approved OT/Offset' : 'ESARF'} request?${offsetNote}`
+      ? `Are you sure you want to update this ${isPreApprovedMode ? 'pre-approved OT' : 'ESARF'} request?${offsetNote}`
       : isSplit
         ? `Your request contains both regular ESARF entries and Use Offset Balance. These will be automatically split and submitted as 2 separate requests for approval.${offsetNote}${preApprovedNote}`
-        : `Are you sure you want to submit this ${isPreApprovedMode ? 'pre-approved OT/Offset' : 'ESARF'} request with ${entries.length} entry(ies)?${offsetNote}${preApprovedNote}`) + offlineNote;
+        : `Are you sure you want to submit this ${isPreApprovedMode ? 'pre-approved OT' : 'ESARF'} request with ${entries.length} entry(ies)?${offsetNote}${preApprovedNote}`) + offlineNote;
 
     platformAlert(confirmTitle, confirmMsg, [
       { text: 'Cancel', style: 'cancel' },
@@ -3165,8 +3169,8 @@ export function ApplyEsarfScreen({
         onBackHome={() => confirmDiscard(onBack)}
         backTitle={
           editingRequest
-            ? (isPreApprovedMode ? 'Edit Pre-approved Request' : 'Edit ESARF Request')
-            : (isPreApprovedMode ? 'Apply Pre-approved OT/Offset' : 'Apply ESARF')
+            ? (isPreApprovedMode ? 'Edit Pre-approved OT' : 'Edit ESARF Request')
+            : (isPreApprovedMode ? 'Apply Pre-approved OT' : 'Apply ESARF')
         }
         backAccessory="info"
         onBackAccessory={() => setShowSubmissionNotes(true)}
@@ -3335,7 +3339,7 @@ export function ApplyEsarfScreen({
           >
             <View style={styles.entriesSectionHeader}>
               <Text style={styles.entriesSectionTitle}>
-                {isPreApprovedMode ? 'Pre-approved OT/Offset Request/s' : 'ESARF Request/s'}
+                {isPreApprovedMode ? 'Pre-approved OT Request/s' : 'ESARF Request/s'}
               </Text>
             </View>
 
@@ -3351,7 +3355,7 @@ export function ApplyEsarfScreen({
               <View style={styles.preApprovedGuideCard}>
                 <View style={styles.preApprovedGuideHeader}>
                   <Info size={16} color="#1d4ed8" strokeWidth={2.4} />
-                  <Text style={styles.preApprovedGuideTitle}>Pre-approved OT/Offset Instructions</Text>
+                  <Text style={styles.preApprovedGuideTitle}>Pre-approved OT Instructions</Text>
                 </View>
                 <View style={styles.preApprovedGuideSteps}>
                   <View style={styles.preApprovedGuideStepItem}>
@@ -3359,7 +3363,7 @@ export function ApplyEsarfScreen({
                       <Text style={styles.preApprovedGuideStepBadgeText}>1</Text>
                     </View>
                     <Text style={styles.preApprovedGuideStepText}>
-                      <Text style={styles.preApprovedGuideStepBold}>Submit in Advance:</Text> Apply for your scheduled OT or Offset ahead of time. Photo proof is not required upon submission.
+                      <Text style={styles.preApprovedGuideStepBold}>Submit for Pre-Approval:</Text> Submit your Pre-approved OT request ahead of time for your approver&apos;s approval.
                     </Text>
                   </View>
                   <View style={styles.preApprovedGuideStepItem}>
@@ -3367,7 +3371,7 @@ export function ApplyEsarfScreen({
                       <Text style={styles.preApprovedGuideStepBadgeText}>2</Text>
                     </View>
                     <Text style={styles.preApprovedGuideStepText}>
-                      <Text style={styles.preApprovedGuideStepBold}>1st Approver View:</Text> Your request will immediately appear on your 1st Approver's screen for pre-approval.
+                      <Text style={styles.preApprovedGuideStepBold}>Screenshot Once Approved:</Text> Once approved by your approver, take a screenshot of your Pre-approved OT request.
                     </Text>
                   </View>
                   <View style={styles.preApprovedGuideStepItem}>
@@ -3375,15 +3379,7 @@ export function ApplyEsarfScreen({
                       <Text style={styles.preApprovedGuideStepBadgeText}>3</Text>
                     </View>
                     <Text style={styles.preApprovedGuideStepText}>
-                      <Text style={styles.preApprovedGuideStepBold}>Complete Shift:</Text> Once approved by your 1st Approver, the photo proof card will appear and activate after your shift duration finishes.
-                    </Text>
-                  </View>
-                  <View style={styles.preApprovedGuideStepItem}>
-                    <View style={styles.preApprovedGuideStepBadge}>
-                      <Text style={styles.preApprovedGuideStepBadgeText}>4</Text>
-                    </View>
-                    <Text style={styles.preApprovedGuideStepText}>
-                      <Text style={styles.preApprovedGuideStepBold}>2nd Approver View:</Text> Your request will only appear to your 2nd Approver after you attach photo proof of your completed shift.
+                      <Text style={styles.preApprovedGuideStepBold}>Apply for OT in Apply ESARF:</Text> Go to <Text style={styles.preApprovedGuideStepBold}>Apply ESARF</Text>, apply for <Text style={styles.preApprovedGuideStepBold}>Overtime (OT)</Text>, and attach the screenshot of your Pre-approved OT request.
                     </Text>
                   </View>
                 </View>
@@ -3454,7 +3450,7 @@ export function ApplyEsarfScreen({
                       <Text style={styles.entryBadgeText}>{badgeNumber}</Text>
                     </View>
                     <Text style={styles.entryCardTitle}>
-                      {isPreApprovedMode ? 'Pre-approved Request Information' : 'ESARF Request Information'}
+                      {isPreApprovedMode ? 'Pre-approved OT Information' : 'ESARF Request Information'}
                     </Text>
                     {entries.length > 1 ? (
                       <Pressable
@@ -3467,55 +3463,57 @@ export function ApplyEsarfScreen({
                     ) : null}
                   </View>
 
-                  {/* Event or Activity Linker */}
-                  <View style={styles.eventRowWrap}>
-                    {entry.eventName ? (
-                      <View style={styles.selectedEventCard}>
-                        <View style={styles.selectedEventIconWrap}>
-                          <Sparkles size={16} color="#d97706" strokeWidth={2.4} />
+                  {/* Event or Activity Linker (Apply ESARF only) */}
+                  {!isPreApprovedMode ? (
+                    <View style={styles.eventRowWrap}>
+                      {entry.eventName ? (
+                        <View style={styles.selectedEventCard}>
+                          <View style={styles.selectedEventIconWrap}>
+                            <Sparkles size={16} color="#d97706" strokeWidth={2.4} />
+                          </View>
+                          <View style={styles.selectedEventDetails}>
+                            <Text style={styles.selectedEventTag}>LINKED EVENT / ACTIVITY</Text>
+                            <Text style={styles.selectedEventTitle} numberOfLines={1}>
+                              {entry.eventName}
+                            </Text>
+                            <Text style={styles.selectedEventSub}>
+                              Auto-populated date & time • Still editable
+                            </Text>
+                          </View>
+                          <Pressable
+                            style={styles.selectedEventClearBtn}
+                            onPress={() => handleClearEvent(actualIndex)}
+                            hitSlop={8}
+                          >
+                            <X size={16} color="#64748b" strokeWidth={2.4} />
+                          </Pressable>
                         </View>
-                        <View style={styles.selectedEventDetails}>
-                          <Text style={styles.selectedEventTag}>LINKED EVENT / ACTIVITY</Text>
-                          <Text style={styles.selectedEventTitle} numberOfLines={1}>
-                            {entry.eventName}
-                          </Text>
-                          <Text style={styles.selectedEventSub}>
-                            Auto-populated date & time • Still editable
-                          </Text>
-                        </View>
+                      ) : (
                         <Pressable
-                          style={styles.selectedEventClearBtn}
-                          onPress={() => handleClearEvent(actualIndex)}
-                          hitSlop={8}
+                          style={styles.selectEventTriggerBtn}
+                          onPress={() => {
+                            setEventSearchQuery('');
+                            setActiveEventModalIndex(actualIndex);
+                            if (availableEvents.length === 0) {
+                              loadCachedEventsActivities()
+                                .then((cached) => {
+                                  if (cached.length > 0) setAvailableEvents(cached);
+                                })
+                                .catch(() => { });
+                            }
+                          }}
                         >
-                          <X size={16} color="#64748b" strokeWidth={2.4} />
+                          <View style={styles.selectEventTriggerLeft}>
+                            <CalendarDays size={16} color={colors.primary} strokeWidth={2.2} />
+                            <Text style={styles.selectEventTriggerText}>
+                              Select Event or Activity <Text style={styles.selectEventTriggerOptional}>(Optional)</Text>
+                            </Text>
+                          </View>
+                          <ChevronDown size={15} color="#94a3b8" strokeWidth={2.2} />
                         </Pressable>
-                      </View>
-                    ) : (
-                      <Pressable
-                        style={styles.selectEventTriggerBtn}
-                        onPress={() => {
-                          setEventSearchQuery('');
-                          setActiveEventModalIndex(actualIndex);
-                          if (availableEvents.length === 0) {
-                            loadCachedEventsActivities()
-                              .then((cached) => {
-                                if (cached.length > 0) setAvailableEvents(cached);
-                              })
-                              .catch(() => { });
-                          }
-                        }}
-                      >
-                        <View style={styles.selectEventTriggerLeft}>
-                          <CalendarDays size={16} color={colors.primary} strokeWidth={2.2} />
-                          <Text style={styles.selectEventTriggerText}>
-                            Select Event or Activity <Text style={styles.selectEventTriggerOptional}>(Optional)</Text>
-                          </Text>
-                        </View>
-                        <ChevronDown size={15} color="#94a3b8" strokeWidth={2.2} />
-                      </Pressable>
-                    )}
-                  </View>
+                      )}
+                    </View>
+                  ) : null}
 
                   {/* Row 1: Transaction Type & Date From-To */}
                   <View style={styles.underlineRow}>
@@ -3866,7 +3864,7 @@ export function ApplyEsarfScreen({
                         </Text>
                       ) : null}
                     </View>
-                  ) : !hideTotalHours && entry.timeFrom && entry.timeTo && entryOtHours >= MIN_OFFSETABLE_HOURS && !entryTransKeys.includes('offset') && !entryTransKeys.includes('use_offset') && !entryTransKeys.includes('ut') && isOffsetAllowed(payrollClass) ? (
+                  ) : !isPreApprovedMode && !hideTotalHours && entry.timeFrom && entry.timeTo && entryOtHours >= MIN_OFFSETABLE_HOURS && !entryTransKeys.includes('offset') && !entryTransKeys.includes('use_offset') && !entryTransKeys.includes('ut') && isOffsetAllowed(payrollClass) ? (
                     <View style={styles.offsetFeedbackWrap}>
                       <View style={styles.offsetEncouragementCard}>
                         <View style={styles.offsetEncouragementCardHeader}>
@@ -3904,97 +3902,112 @@ export function ApplyEsarfScreen({
                     </View>
                   ) : null}
 
-                  {/* Break Time Card (Optional) - Appears if OT or OT for Offset (or combined with OT/Offset) is selected */}
-                  {hasOtOrOffsetTransaction ? (
-                    <View style={styles.breakTimeCard}>
-                      <View style={styles.breakTimeCardHeader}>
-                        <View style={styles.breakTimeCardTitleRow}>
-                          <Coffee size={15} color="#1e293b" strokeWidth={2.4} />
-                          <Text style={styles.breakTimeCardTitle}>Break Time</Text>
-                          <View style={styles.breakTimeOptionalBadge}>
-                            <Text style={styles.breakTimeOptionalBadgeText}>Optional</Text>
+                  {/* Break Time (Optional, Apply ESARF only) - Show "Add Break Time" button before revealing the Break Time card */}
+                  {!isPreApprovedMode && hasOtOrOffsetTransaction ? (
+                    entry.showBreakTime || entry.breakFrom || entry.breakTo ? (
+                      <View style={styles.breakTimeCard}>
+                        <View style={styles.breakTimeCardHeader}>
+                          <View style={styles.breakTimeCardTitleRow}>
+                            <Coffee size={15} color="#1e293b" strokeWidth={2.4} />
+                            <Text style={styles.breakTimeCardTitle}>Break Time</Text>
+                            <View style={styles.breakTimeOptionalBadge}>
+                              <Text style={styles.breakTimeOptionalBadgeText}>Optional</Text>
+                            </View>
                           </View>
-                        </View>
-                        {entry.breakFrom || entry.breakTo ? (
                           <Pressable
                             style={styles.breakTimeClearBtn}
                             onPress={() => {
-                              updateEntry(actualIndex, { breakFrom: '', breakTo: '' });
+                              updateEntry(actualIndex, { breakFrom: '', breakTo: '', showBreakTime: false });
                             }}
                             hitSlop={6}
                           >
                             <X size={12} color="#64748b" strokeWidth={2.4} />
-                            <Text style={styles.breakTimeClearBtnText}>Clear</Text>
+                            <Text style={styles.breakTimeClearBtnText}>
+                              {entry.breakFrom || entry.breakTo ? 'Clear' : 'Remove'}
+                            </Text>
                           </Pressable>
+                        </View>
+
+                        <Text style={styles.breakTimeCardSubtitle}>
+                          Set break time only outside of your time schedule.
+                        </Text>
+
+                        <View style={styles.breakTimeInputsRow}>
+                          <View style={styles.breakTimeField}>
+                            <Pressable
+                              style={styles.breakTimeBox}
+                              onPress={() =>
+                                setActiveScrollableTimePicker({ index: actualIndex, field: 'break_from' })
+                              }
+                            >
+                              <Text
+                                style={[
+                                  styles.breakTimeBoxText,
+                                  !entry.breakFrom ? styles.breakTimeBoxPlaceholder : null,
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {entry.breakFrom ? formatTimeDisplay(entry.breakFrom) : '--:-- --'}
+                              </Text>
+                              <Clock3 size={15} color="#64748b" strokeWidth={2} />
+                            </Pressable>
+                            <Text style={styles.breakTimeFieldLabel}>Time From</Text>
+                          </View>
+
+                          <View style={styles.breakTimeField}>
+                            <Pressable
+                              style={styles.breakTimeBox}
+                              onPress={() =>
+                                setActiveScrollableTimePicker({ index: actualIndex, field: 'break_to' })
+                              }
+                            >
+                              <Text
+                                style={[
+                                  styles.breakTimeBoxText,
+                                  !entry.breakTo ? styles.breakTimeBoxPlaceholder : null,
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {entry.breakTo ? formatTimeDisplay(entry.breakTo) : '--:-- --'}
+                              </Text>
+                              <Clock3 size={15} color="#64748b" strokeWidth={2} />
+                            </Pressable>
+                            <Text style={styles.breakTimeFieldLabel}>Time To</Text>
+                          </View>
+                        </View>
+
+                        {entry.breakFrom && entry.breakTo ? (
+                          <View style={styles.breakTimeDeductionBanner}>
+                            <Check size={12} color="#334155" strokeWidth={2.4} />
+                            <Text style={styles.breakTimeDeductionBannerText}>
+                              {(() => {
+                                const bMins = computeBreakMinutes(entry.breakFrom, entry.breakTo);
+                                const bHours = (bMins / 60).toFixed(2);
+                                const typeLabel = isOffsetEarn && !entryTransKeys.includes('ot') ? 'Offset' : 'OT';
+                                return `${bHours} hr break will be deducted from total ${typeLabel} hours`;
+                              })()}
+                            </Text>
+                          </View>
+                        ) : (entry.breakFrom || entry.breakTo) ? (
+                          <Text style={styles.breakTimeIncompleteHint}>
+                            Please select both Time From and Time To to apply the break deduction.
+                          </Text>
                         ) : null}
                       </View>
-
-                      <Text style={styles.breakTimeCardSubtitle}>
-                        Set break time only outside of your time schedule.
-                      </Text>
-
-                      <View style={styles.breakTimeInputsRow}>
-                        <View style={styles.breakTimeField}>
-                          <Pressable
-                            style={styles.breakTimeBox}
-                            onPress={() =>
-                              setActiveScrollableTimePicker({ index: actualIndex, field: 'break_from' })
-                            }
-                          >
-                            <Text
-                              style={[
-                                styles.breakTimeBoxText,
-                                !entry.breakFrom ? styles.breakTimeBoxPlaceholder : null,
-                              ]}
-                              numberOfLines={1}
-                            >
-                              {entry.breakFrom ? formatTimeDisplay(entry.breakFrom) : '--:-- --'}
-                            </Text>
-                            <Clock3 size={15} color="#64748b" strokeWidth={2} />
-                          </Pressable>
-                          <Text style={styles.breakTimeFieldLabel}>Time From</Text>
-                        </View>
-
-                        <View style={styles.breakTimeField}>
-                          <Pressable
-                            style={styles.breakTimeBox}
-                            onPress={() =>
-                              setActiveScrollableTimePicker({ index: actualIndex, field: 'break_to' })
-                            }
-                          >
-                            <Text
-                              style={[
-                                styles.breakTimeBoxText,
-                                !entry.breakTo ? styles.breakTimeBoxPlaceholder : null,
-                              ]}
-                              numberOfLines={1}
-                            >
-                              {entry.breakTo ? formatTimeDisplay(entry.breakTo) : '--:-- --'}
-                            </Text>
-                            <Clock3 size={15} color="#64748b" strokeWidth={2} />
-                          </Pressable>
-                          <Text style={styles.breakTimeFieldLabel}>Time To</Text>
-                        </View>
-                      </View>
-
-                      {entry.breakFrom && entry.breakTo ? (
-                        <View style={styles.breakTimeDeductionBanner}>
-                          <Check size={12} color="#334155" strokeWidth={2.4} />
-                          <Text style={styles.breakTimeDeductionBannerText}>
-                            {(() => {
-                              const bMins = computeBreakMinutes(entry.breakFrom, entry.breakTo);
-                              const bHours = (bMins / 60).toFixed(2);
-                              const typeLabel = isOffsetEarn && !entryTransKeys.includes('ot') ? 'Offset' : 'OT';
-                              return `${bHours} hr break will be deducted from total ${typeLabel} hours`;
-                            })()}
+                    ) : (
+                      <Pressable
+                        style={styles.addBreakTimeBtn}
+                        onPress={() => updateEntry(actualIndex, { showBreakTime: true })}
+                      >
+                        <View style={styles.addBreakTimeBtnLeft}>
+                          <Coffee size={15} color="#334155" strokeWidth={2.3} />
+                          <Text style={styles.addBreakTimeBtnText}>
+                            Add Break Time <Text style={styles.addBreakTimeBtnOptional}>(Optional)</Text>
                           </Text>
                         </View>
-                      ) : (entry.breakFrom || entry.breakTo) ? (
-                        <Text style={styles.breakTimeIncompleteHint}>
-                          Please select both Time From and Time To to apply the break deduction.
-                        </Text>
-                      ) : null}
-                    </View>
+                        <Plus size={15} color="#475569" strokeWidth={2.4} />
+                      </Pressable>
+                    )
                   ) : null}
 
                   {/* Row 3: Reason Text Area */}
@@ -4040,9 +4053,10 @@ export function ApplyEsarfScreen({
 
                   {/* Approval Workflow Timeline (Positioned below Reason field) */}
                   {(() => {
-                    const displaySteps = (entry.workflowSteps && entry.workflowSteps.length > 0)
+                    const allSteps = (entry.workflowSteps && entry.workflowSteps.length > 0)
                       ? entry.workflowSteps
                       : defaultWorkflowSteps;
+                    const displaySteps = isPreApprovedMode ? allSteps.slice(0, 1) : allSteps;
 
                     if (displaySteps.length === 0 && !entry.isLoadingWorkflow && !isLoadingDefaultWorkflow) {
                       return null;
@@ -4126,216 +4140,7 @@ export function ApplyEsarfScreen({
                   {/* Photo Proof / Gallery Attachment Section */}
                   {(() => {
                     if (isPreApprovedMode) {
-                      const isFirstApproved = isFirstApproverApproved(editingRequest);
-
-                      if (!isFirstApproved) {
-                        if (editingRequest) {
-                          return (
-                            <View style={styles.preApprovedPendingNoticeCard}>
-                              <View style={styles.preApprovedPendingNoticeHeader}>
-                                <Clock3 size={15} color="#b45309" strokeWidth={2.4} />
-                                <Text style={styles.preApprovedPendingNoticeTitle}>
-                                  Photo Proof (Awaiting 1st Approver)
-                                </Text>
-                              </View>
-                              <Text style={styles.preApprovedPendingNoticeText}>
-                                The attach photo proof will only appear here once your 1st Approver approves this request.
-                              </Text>
-                            </View>
-                          );
-                        }
-                        return null;
-                      }
-
-                      const isDurationDone = isScheduledOtReadyForProof(entry);
-                      const attachedProofs = getEntryProofs(entry);
-                      const hasProof = attachedProofs.length > 0;
-                      const proofError = validationErrors[`entry_${actualIndex}_proof`];
-                      const durationEndDisplay = `${entry.dateTo || entry.dateFrom}${entry.timeTo ? ` at ${formatTimeDisplay(entry.timeTo)}` : ''}`;
-
-                      return (
-                        <View style={[styles.proofCardSection, !isDurationDone ? styles.proofCardSectionLocked : null, proofError ? styles.proofCardSectionError : null]}>
-                          <View style={styles.proofSectionHeaderRow}>
-                            <View style={styles.proofHeaderTitleRow}>
-                              {!isDurationDone ? (
-                                <Lock size={16} color="#d97706" strokeWidth={2.4} style={{ marginTop: 2 }} />
-                              ) : (
-                                <Camera size={16} color={hasProof ? '#15803d' : '#2563eb'} strokeWidth={2.2} style={{ marginTop: 2 }} />
-                              )}
-                              <View style={{ flex: 1, minWidth: 0 }}>
-                                <View style={styles.proofTitleCountRow}>
-                                  <Text style={[styles.proofSectionTitle, !isDurationDone ? { color: '#92400e' } : null]}>
-                                    Photo Proof {!isDurationDone ? '(Locked)' : ''}
-                                  </Text>
-                                  <Text style={styles.proofSectionCount}>
-                                    ({attachedProofs.length}/5)
-                                  </Text>
-                                </View>
-                                <Text style={styles.proofSectionSubtitle} numberOfLines={2}>
-                                  {!isDurationDone
-                                    ? `Upload activates once shift ends on ${durationEndDisplay}`
-                                    : '1 Required to forward request to 2nd Approver'}
-                                </Text>
-                              </View>
-                            </View>
-
-                            {!isDurationDone ? (
-                              <View style={[styles.proofReqBadge, { backgroundColor: '#fef3c7', borderColor: '#fde68a' }]}>
-                                <Text style={[styles.proofReqBadgeText, { color: '#b45309' }]}>
-                                  Locked
-                                </Text>
-                              </View>
-                            ) : hasProof ? (
-                              <View style={[styles.proofReqBadge, styles.proofReqBadgeSuccess]}>
-                                <Check size={11} color="#15803d" strokeWidth={2.8} />
-                                <Text style={[styles.proofReqBadgeText, styles.proofReqBadgeTextSuccess]}>
-                                  {attachedProofs.length === 1 ? '1 Attached' : `${attachedProofs.length} Attached`}
-                                </Text>
-                              </View>
-                            ) : (
-                              <View style={[styles.proofReqBadge, styles.proofReqBadgeRequired]}>
-                                <Text style={[styles.proofReqBadgeText, styles.proofReqBadgeTextRequired]}>
-                                  1 Required
-                                </Text>
-                              </View>
-                            )}
-                          </View>
-
-                          {!isDurationDone ? (
-                            <View style={styles.proofLockedNoticeBox}>
-                              <Text style={styles.proofLockedNoticeText}>
-                                🔒 Photo proof upload is locked until your scheduled shift duration concludes on {durationEndDisplay}. Please finish your shift before attaching proof.
-                              </Text>
-                            </View>
-                          ) : (
-                            <>
-                              {hasProof ? (
-                                <View style={styles.proofsAttachedList}>
-                                  {attachedProofs.map((prf, pIdx) => (
-                                    <View key={prf.photoProofId || `${prf.uri}_${pIdx}`} style={styles.proofAttachedCard}>
-                                      <Pressable
-                                        style={styles.proofThumbnailBox}
-                                        onPress={() => setPreviewProof(prf)}
-                                        hitSlop={6}
-                                      >
-                                        {Platform.OS === 'web' ? (
-                                          React.createElement('img', {
-                                            src: getDirectProofImageUrl(prf.uri),
-                                            referrerPolicy: 'no-referrer',
-                                            style: { width: '100%', height: '100%', objectFit: 'cover' },
-                                          })
-                                        ) : (
-                                          <Image source={{ uri: getDirectProofImageUrl(prf.uri) }} style={styles.proofThumbnailImage} resizeMode="cover" />
-                                        )}
-                                        <View style={styles.proofThumbnailOverlay}>
-                                          <Eye size={12} color="#ffffff" strokeWidth={2.2} />
-                                        </View>
-                                      </Pressable>
-
-                                      <View style={styles.proofMetaInfo}>
-                                        <View style={styles.proofSourceRow}>
-                                          <View
-                                            style={[
-                                              styles.proofSourceBadge,
-                                              prf.source === 'photo_proof'
-                                                ? styles.proofSourceBadgeLog
-                                                : prf.source === 'gallery'
-                                                  ? styles.proofSourceBadgeGallery
-                                                  : styles.proofSourceBadgeCamera,
-                                            ]}
-                                          >
-                                            <Text style={styles.proofSourceBadgeText}>
-                                              {prf.source === 'photo_proof'
-                                                ? 'Photo Proof Log'
-                                                : prf.source === 'gallery'
-                                                  ? 'Gallery Upload'
-                                                  : 'Camera Photo'}
-                                            </Text>
-                                          </View>
-                                          <Text style={styles.proofIndexCounterBadge}>
-                                            Photo {pIdx + 1} of {attachedProofs.length}
-                                          </Text>
-                                        </View>
-
-                                        <Text style={styles.proofMetaName} numberOfLines={1}>
-                                          {prf.name || (prf.source === 'gallery' ? `Gallery Photo ${pIdx + 1}` : `Attached Proof Photo ${pIdx + 1}`)}
-                                        </Text>
-
-                                        {prf.source !== 'gallery' && prf.locationText ? (
-                                          <View style={styles.proofLocationRow}>
-                                            <MapPin size={11} color="#64748b" strokeWidth={2} />
-                                            <Text style={styles.proofLocationText} numberOfLines={1}>
-                                              {prf.locationText}
-                                            </Text>
-                                          </View>
-                                        ) : null}
-                                      </View>
-
-                                      <View style={styles.proofItemActions}>
-                                        <Pressable
-                                          style={styles.proofActionButton}
-                                          onPress={() => setPreviewProof(prf)}
-                                          hitSlop={6}
-                                          accessibilityLabel="View proof"
-                                        >
-                                          <Eye size={16} color="#2563eb" strokeWidth={2.2} />
-                                        </Pressable>
-                                        <Pressable
-                                          style={[styles.proofActionButton, styles.proofRemoveBtn]}
-                                          onPress={() => removeProofForEntry(actualIndex, pIdx)}
-                                          hitSlop={6}
-                                          accessibilityLabel="Remove proof"
-                                        >
-                                          <Trash2 size={15} color="#ef4444" strokeWidth={2.2} />
-                                        </Pressable>
-                                      </View>
-                                    </View>
-                                  ))}
-
-                                  {attachedProofs.length < 5 ? (
-                                    <View style={styles.addAnotherProofRow}>
-                                      <Pressable
-                                        style={({ pressed }) => [
-                                          styles.addAnotherProofBtn,
-                                          pressed ? styles.proofButtonPressed : null,
-                                        ]}
-                                        onPress={() => openProofPickerModal(actualIndex)}
-                                      >
-                                        <Plus size={14} color="#2563eb" strokeWidth={2.4} />
-                                        <Text style={styles.addAnotherProofBtnText}>
-                                          Add Another Photo ({attachedProofs.length}/5)
-                                        </Text>
-                                      </Pressable>
-                                    </View>
-                                  ) : null}
-                                </View>
-                              ) : (
-                                <View style={styles.proofActionsRow}>
-                                  <Pressable
-                                    style={({ pressed }) => [
-                                      styles.proofButtonPrimary,
-                                      pressed ? styles.proofButtonPressed : null,
-                                    ]}
-                                    onPress={() => openProofPickerModal(actualIndex)}
-                                  >
-                                    <Camera size={15} color="#ffffff" strokeWidth={2.2} />
-                                    <Text style={styles.proofButtonPrimaryText}>
-                                      Attach Photo Proof
-                                    </Text>
-                                  </Pressable>
-                                </View>
-                              )}
-                            </>
-                          )}
-
-                          {proofError ? (
-                            <View style={styles.proofErrorBanner}>
-                              <AlertTriangle size={13} color="#ef4444" strokeWidth={2.4} />
-                              <Text style={styles.proofErrorBannerText}>{proofError}</Text>
-                            </View>
-                          ) : null}
-                        </View>
-                      );
+                      return null;
                     }
 
                     const isAllowed = isProofAllowedForTransactions(entry.transaction);
@@ -5236,11 +5041,11 @@ export function ApplyEsarfScreen({
                   </Text>
                   <Text style={styles.transactionModalSubtitle}>
                     {isPreApprovedMode
-                      ? 'Choose Overtime (OT) or OT for Offset for this pre-approved request.'
+                      ? 'Overtime (OT) is the transaction type for pre-approved OT requests.'
                       : 'Choose one or more transaction types for this request entry.'}
                   </Text>
                   {(isPreApprovedMode
-                    ? transactionOptions.filter((option) => option.key === 'ot' || option.key === 'offset')
+                    ? transactionOptions.filter((option) => option.key === 'ot')
                     : transactionOptions
                   ).map((option) => {
                     const currentTransStr = entries[activeTransactionSelectIndex]?.transaction || '';
@@ -5295,7 +5100,7 @@ export function ApplyEsarfScreen({
                             transaction: newTransStr,
                             ...(!proofAllowed ? { proof: null } : {}),
                             ...(isNowUseOffset && activeEntry?.dateFrom ? { dateTo: activeEntry.dateFrom } : {}),
-                            ...(!hasNowOtOrOffset ? { breakFrom: '', breakTo: '' } : {}),
+                            ...(!hasNowOtOrOffset ? { breakFrom: '', breakTo: '', showBreakTime: false } : {}),
                           });
                           setValidationErrors((current) => ({
                             ...current,
@@ -5303,7 +5108,7 @@ export function ApplyEsarfScreen({
                             [`entry_${activeTransactionSelectIndex}_dateFrom`]: futureNotAllowed
                               ? (newKeys.includes('ob')
                                 ? `Request #${activeTransactionSelectIndex + 1}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`
-                                : `Request #${activeTransactionSelectIndex + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT or Offset ahead of time, please use Apply Pre-approved OT/Offset.`)
+                                : `Request #${activeTransactionSelectIndex + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT ahead of time, please use Apply Pre-approved OT.`)
                               : undefined,
                             [`entry_${activeTransactionSelectIndex}_offsetHours`]: undefined,
                             [`entry_${activeTransactionSelectIndex}_offsetBalance`]: undefined,
@@ -5385,7 +5190,7 @@ export function ApplyEsarfScreen({
                       [`entry_${idx}_dateFrom`]: futureNotAllowed
                         ? (entryTransKeys.includes('ob')
                           ? `Request #${idx + 1}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`
-                          : `Request #${idx + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT or Offset ahead of time, please use Apply Pre-approved OT/Offset.`)
+                          : `Request #${idx + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT ahead of time, please use Apply Pre-approved OT.`)
                         : undefined,
                       [`entry_${idx}_dateTo`]: undefined,
                       [`entry_${idx}_offsetHours`]: undefined,
@@ -5458,7 +5263,9 @@ export function ApplyEsarfScreen({
                 <View style={styles.notesHeader}>
                   <View>
                     <Text style={styles.notesTitle}>Submission Notes</Text>
-                    <Text style={styles.notesSubtitle}>Review before sending your ESARF.</Text>
+                    <Text style={styles.notesSubtitle}>
+                      {isPreApprovedMode ? 'Review before sending your Pre-approved OT request.' : 'Review before sending your ESARF.'}
+                    </Text>
                   </View>
                   <Pressable style={styles.notesCloseButton} onPress={() => setShowSubmissionNotes(false)}>
                     <X size={18} color={colors.text} strokeWidth={2.7} />
@@ -5492,13 +5299,14 @@ export function ApplyEsarfScreen({
             </View>
           </Modal>
 
-          {/* Event Selection Modal */}
-          <Modal
-            visible={activeEventModalIndex !== null}
-            transparent
-            animationType="slide"
-            onRequestClose={() => setActiveEventModalIndex(null)}
-          >
+          {/* Event Selection Modal (Apply ESARF only) */}
+          {!isPreApprovedMode ? (
+            <Modal
+              visible={activeEventModalIndex !== null}
+              transparent
+              animationType="slide"
+              onRequestClose={() => setActiveEventModalIndex(null)}
+            >
             <View style={styles.eventModalOverlay}>
               <Pressable
                 style={styles.eventModalBackdrop}
@@ -5621,7 +5429,7 @@ export function ApplyEsarfScreen({
                               const title = isPreApprovedMode ? 'Event Already Ended' : 'Event Not Yet Ended';
                               const message = isPreApprovedMode
                                 ? 'This event or activity has already ended. For past events, please file using regular Apply ESARF.'
-                                : 'In Apply ESARF, you cannot select events or activities ahead of time. You can only select events that have already passed or ended (unless the transaction type is OB alone). For upcoming events, please use Apply Pre-approved OT/Offset.';
+                                : 'In Apply ESARF, you cannot select events or activities ahead of time. You can only select events that have already passed or ended (unless the transaction type is OB alone). For upcoming events, please use Apply Pre-approved OT.';
                               if (onToast) {
                                 onToast({ tone: 'warning', title, message });
                               } else {
@@ -5708,7 +5516,8 @@ export function ApplyEsarfScreen({
                 </ScrollView>
               </View>
             </View>
-          </Modal>
+            </Modal>
+          ) : null}
 
           {/* Reassign Approver Modal (matching Admin Desktop Requests Screen concept) */}
           <Modal
@@ -6736,6 +6545,36 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     fontWeight: fontWeights.heavy,
     marginTop: 4,
+  },
+  addBreakTimeBtn: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderStyle: 'dashed',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 6,
+    marginBottom: 8,
+  },
+  addBreakTimeBtnLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  addBreakTimeBtnText: {
+    fontSize: 13,
+    fontWeight: fontWeights.bold,
+    color: '#1e293b',
+  },
+  addBreakTimeBtnOptional: {
+    fontSize: 12,
+    fontWeight: fontWeights.medium,
+    color: '#64748b',
   },
   breakTimeCard: {
     width: '100%',

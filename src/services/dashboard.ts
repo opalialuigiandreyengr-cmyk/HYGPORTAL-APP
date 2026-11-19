@@ -1,6 +1,7 @@
 import { ensureFreshSession, supabase } from '../lib/supabase';
 import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { loadMyRequestsCached } from './requests';
+import { isFirstApproverApproved, isScheduledOtRequest } from '../utils/scheduledOt';
 
 
 export type DashboardSummary = {
@@ -68,7 +69,8 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
           .from('requests')
           .select('id', { count: 'exact', head: true })
           .eq('submitted_by_employee_id', empId)
-          .in('status', ['pending', 'pre_approved', 'submitted', 'waiting']),
+          .in('status', ['pending', 'pre_approved', 'submitted', 'waiting'])
+          .is('final_approved_at', null),
       ]);
       leaveBalanceRow = leaveBal;
       offsetBalanceRow = offsetBal;
@@ -138,6 +140,9 @@ export async function loadDashboardSummary(userId?: string, employeeId?: string)
       return false;
     }
     if (r.final_approved_at && !s.includes('reject') && !s.includes('denied')) {
+      return false;
+    }
+    if (isScheduledOtRequest(r) && isFirstApproverApproved(r)) {
       return false;
     }
     return (

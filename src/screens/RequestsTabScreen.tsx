@@ -11,7 +11,6 @@ import { getSafeBottomInset, getScreenBottomPadding } from '../utils/safeArea';
 import { Avatar } from '../components/Avatar';
 import { TopBar } from '../components/TopBar';
 import {
-  attachScheduledOtPhotoProof,
   deleteMyPendingRequest,
   isUUID,
   loadMyRequests,
@@ -19,14 +18,10 @@ import {
   type MyRequest,
 } from '../services/requests';
 import {
-  isScheduledOtAwaitingProof,
-  isScheduledOtReadyForProof,
   isScheduledOtRequest,
   isFirstApproverApproved,
   hasPhotoProofAttached,
-  formatScheduledOtStatusMessage,
 } from '../utils/scheduledOt';
-import { PhotoProofPickerModal, type SelectedProofAttachment } from '../components/PhotoProofPickerModal';
 import { formatTimeDisplay, stripSecondsFromTimeString } from '../utils/dateTime';
 import { syncAllOfflineItems, removeRequestFromLocalCache } from '../services/offlineQueue';
 import { invalidateTravelOrderDetailsCache } from '../services/travelOrder';
@@ -44,6 +39,7 @@ import {
   formatUnifiedRequestType,
   getDirectProofImageUrl,
   parseEsarfEntries,
+  RequestCardDetailsGrid,
   type ParsedEsarfEntry,
 } from '../components/EsarfDetailsView';
 import { lookupCachedApproverName, lookupCachedApproverByLevel } from '../services/storeApprovalWorkflow';
@@ -955,10 +951,6 @@ export function RequestsTabScreen({
             ? (req) => handleDeleteRequest(req, selectedRequest.sequence)
             : undefined
         }
-        onProofAttached={async () => {
-          setSelectedRequest(null);
-          await refresh(true);
-        }}
         onShare={handleShareRequest}
       />
 
@@ -1101,47 +1093,46 @@ const RequestCard = memo(function RequestCard({
               </Text>
               <Text style={styles.cardDept}>{department}</Text>
             </View>
-            <View style={styles.cardMeta}>
+            <View style={styles.cardStatusWrap}>
               <Text style={[styles.statusPill, statusPillStyle(statusKey, item)]} numberOfLines={1}>
                 {renderStatusPillContent(item)}
               </Text>
-              <View style={styles.metaLine}>
-                <CalendarDays size={14} color={colors.muted} strokeWidth={2.2} />
-                <Text style={styles.metaText} numberOfLines={1}>
-                  {formatCompactDate(requestDate)}
-                </Text>
-              </View>
-              <View style={styles.metaLine}>
-                <Clock3 size={14} color={colors.muted} strokeWidth={2.2} />
-                <Text style={styles.metaText} numberOfLines={1}>
-                  {formatCompactTime(item.submitted_at || item.time_from)}
-                </Text>
-              </View>
             </View>
           </View>
 
-          {isScheduledOtAwaitingProof(item) ? (
-            <View
-              style={[
-                styles.cardOtBadge,
-                isScheduledOtReadyForProof(item) ? styles.cardOtBadgeReady : styles.cardOtBadgeLocked,
-              ]}
-            >
-              {isScheduledOtReadyForProof(item) ? (
-                <>
-                  <Camera size={13} color="#b45309" strokeWidth={2.3} />
-                  <Text style={styles.cardOtBadgeTextReady}>Shift Done • Attach Photo Proof Required</Text>
-                </>
+          <View style={styles.cardDetailsMetaWrap}>
+            <View style={styles.cardDetailsMetaHeaderRow}>
+              {!isPerk ? (
+                <Text style={styles.metaSubmittedLabel} numberOfLines={1}>
+                  Request Information
+                </Text>
               ) : (
-                <>
-                  <Lock size={13} color="#1d4ed8" strokeWidth={2.3} />
-                  <Text style={styles.cardOtBadgeTextLocked}>
-                    Attach proof opens on schedule ({formatCompactDate(item.date_to || item.date_from || item.submitted_at)})
-                  </Text>
-                </>
+                <View />
               )}
+              <Text style={styles.metaSubmittedLabel} numberOfLines={1}>
+                Submitted on
+              </Text>
             </View>
-          ) : null}
+            <View style={styles.cardDetailsMetaRow}>
+              <View style={styles.cardDetailsLeft}>
+                <RequestCardDetailsGrid item={item} />
+              </View>
+              <View style={styles.cardSubmittedDates}>
+                <View style={styles.metaLine}>
+                  <CalendarDays size={13} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.metaText} numberOfLines={1}>
+                    {formatCompactDate(requestDate)}
+                  </Text>
+                </View>
+                <View style={styles.metaLine}>
+                  <Clock3 size={13} color={colors.muted} strokeWidth={2.2} />
+                  <Text style={styles.metaText} numberOfLines={1}>
+                    {formatCompactTime(item.submitted_at || item.time_from)}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          </View>
 
           <View style={styles.cardBottomRow}>
             <View style={styles.typePill}>
@@ -1271,7 +1262,6 @@ function RequestDetailsSheet({
   onClose,
   onEdit,
   onDelete,
-  onProofAttached,
   onShare,
 }: {
   request: { item: MyRequest; sequence: number } | null;
@@ -1281,7 +1271,6 @@ function RequestDetailsSheet({
   onClose: () => void;
   onEdit?: (request: MyRequest) => void;
   onDelete?: (request: MyRequest) => void;
-  onProofAttached?: () => void | Promise<void>;
   onShare?: (item: MyRequest, sequence: number) => void;
 }) {
   const insets = useSafeAreaInsets();
@@ -1561,34 +1550,12 @@ function RequestDetailsSheet({
             ) : (
               /* ESARF entry cards matching exact image design */
               <View style={{ marginTop: 0 }}>
-                {getCachedEsarfEntries(item).map((entry, entryIndex) => (
+                {getCachedEsarfEntries(item).map((entry) => (
                   <EsarfCardView
                     key={entry.index}
                     entry={entry}
                     timelineRows={timelineRows}
-                    belowReasonSlot={
-                      entryIndex === 0 ? (
-                        isScheduledOtAwaitingProof(item) ? (
-                          <ScheduledOtPhotoProofCard
-                            item={item}
-                            profile={profile}
-                            onProofAttached={onProofAttached}
-                          />
-                        ) : isScheduledOtRequest(item) && !hasPhotoProofAttached(item) && !isFirstApproverApproved(item) ? (
-                          <View style={styles.scheduledOtPendingNoticeCard}>
-                            <View style={styles.scheduledOtPendingNoticeHeader}>
-                              <Clock3 size={15} color="#b45309" strokeWidth={2.4} />
-                              <Text style={styles.scheduledOtPendingNoticeTitle}>
-                                Photo Proof (Awaiting 1st Approver Pre-Approval)
-                              </Text>
-                            </View>
-                            <Text style={styles.scheduledOtPendingNoticeText}>
-                              The attach photo proof will only appear here once your 1st Approver approves this request.
-                            </Text>
-                          </View>
-                        ) : null
-                      ) : null
-                    }
+                    belowReasonSlot={null}
                   />
                 ))}
                 {rejectedReason ? (
@@ -1681,244 +1648,6 @@ function RequestDetailsSheet({
         ) : null}
       </View>
     </Modal>
-  );
-}
-
-function ScheduledOtPhotoProofCard({
-  item,
-  profile,
-  onProofAttached,
-}: {
-  item: MyRequest;
-  profile: EmployeeProfileSummary | null;
-  onProofAttached?: () => void | Promise<void>;
-}) {
-  const [selectedProofs, setSelectedProofs] = useState<SelectedProofAttachment[]>([]);
-  const [isPickerOpen, setIsPickerOpen] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const isReady = isScheduledOtReadyForProof(item);
-  const statusMessage = formatScheduledOtStatusMessage(item);
-
-  const userInfo = useMemo(() => ({
-    resolvedEmpId: profile?.employeeId,
-    resolvedName: profile?.fullName,
-    resolvedEmail: profile?.email,
-    resolvedStore: profile?.storeName,
-    resolvedAuthId: profile?.profileId,
-  }), [profile]);
-
-  async function handleSubmitProof() {
-    if (selectedProofs.length === 0) {
-      const msg = 'Please select at least 1 photo proof to attach before submitting.';
-      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        window.alert(msg);
-      } else {
-        Alert.alert('Photo Proof Required', msg);
-      }
-      return;
-    }
-
-    setIsSubmitting(true);
-    try {
-      await attachScheduledOtPhotoProof({
-        requestId: item.request_id,
-        proofs: selectedProofs,
-      });
-
-      const successMsg = 'Photo proof attached successfully! Your scheduled OT request has been forwarded to your approver(s).';
-      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        window.alert(successMsg);
-      } else {
-        Alert.alert('Proof Attached', successMsg);
-      }
-
-      if (onProofAttached) {
-        await onProofAttached();
-      }
-    } catch (err: any) {
-      const errMsg = err?.message || 'Failed to attach photo proof. Please try again.';
-      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        window.alert(errMsg);
-      } else {
-        Alert.alert('Submission Failed', errMsg);
-      }
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  function handleRemoveProof(index: number) {
-    setSelectedProofs((prev) => prev.filter((_, i) => i !== index));
-  }
-
-  const unlockEndDate = item.date_to || item.date_from || item.submitted_at;
-  const unlockDate = formatCompactDate(unlockEndDate);
-  const unlockTime = item.time_to ? ` at ${formatTimeDisplay(item.time_to)}` : item.time_from ? ` at ${formatTimeDisplay(item.time_from)}` : '';
-  const unlockDisplay = `${unlockDate}${unlockTime}`;
-
-  function handlePressAttach() {
-    if (!isReady) {
-      const lockMsg = `Photo proof upload unlocks once your scheduled shift ends on ${unlockDisplay}. Please complete your shift before attaching proof.`;
-      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        window.alert(lockMsg);
-      } else {
-        Alert.alert('Photo Proof Locked', lockMsg);
-      }
-      return;
-    }
-    setIsPickerOpen(true);
-  }
-
-  return (
-    <View style={[styles.scheduledOtProofCard, !isReady ? styles.scheduledOtProofCardDisabled : null]}>
-      <View style={styles.scheduledOtProofHeaderRow}>
-        <View style={styles.scheduledOtProofHeaderTitleRow}>
-          {!isReady ? (
-            <Lock size={16} color="#d97706" strokeWidth={2.4} style={{ marginTop: 2 }} />
-          ) : (
-            <Camera
-              size={16}
-              color={selectedProofs.length > 0 ? '#15803d' : '#2563eb'}
-              strokeWidth={2.2}
-              style={{ marginTop: 2 }}
-            />
-          )}
-          <View style={{ flex: 1, minWidth: 0 }}>
-            <View style={styles.scheduledOtProofTitleCountRow}>
-              <Text style={[styles.scheduledOtProofSectionTitle, !isReady ? { color: '#92400e' } : null]}>
-                Photo Proof {!isReady ? '(Locked)' : ''}
-              </Text>
-              <Text style={styles.scheduledOtProofSectionCount}>
-                ({selectedProofs.length}/5)
-              </Text>
-            </View>
-            <Text style={styles.scheduledOtProofSectionSubtitle} numberOfLines={2}>
-              {!isReady
-                ? `Upload activates once shift ends on ${unlockDisplay}`
-                : '1 Required to forward request to 2nd Approver'}
-            </Text>
-          </View>
-        </View>
-
-        <View
-          style={[
-            styles.scheduledOtReqBadge,
-            !isReady
-              ? { backgroundColor: '#fef3c7', borderColor: '#fde68a' }
-              : selectedProofs.length > 0
-                ? styles.scheduledOtReqBadgeSuccess
-                : styles.scheduledOtReqBadgeRequired,
-          ]}
-        >
-          {selectedProofs.length > 0 ? (
-            <Check size={11} color="#15803d" strokeWidth={2.8} />
-          ) : !isReady ? (
-            <Lock size={11} color="#b45309" strokeWidth={2.4} />
-          ) : null}
-          <Text
-            style={[
-              styles.scheduledOtReqBadgeText,
-              !isReady
-                ? { color: '#b45309' }
-                : selectedProofs.length > 0
-                  ? styles.scheduledOtReqBadgeTextSuccess
-                  : styles.scheduledOtReqBadgeTextRequired,
-            ]}
-          >
-            {!isReady ? 'Locked' : selectedProofs.length > 0 ? `${selectedProofs.length} Attached` : '1 Required'}
-          </Text>
-        </View>
-      </View>
-
-      {selectedProofs.length > 0 ? (
-        <View style={styles.scheduledOtThumbnailRow}>
-          {selectedProofs.map((proof, idx) => (
-            <View key={proof.uri + idx} style={styles.scheduledOtThumbWrap}>
-              {Platform.OS === 'web' ? (
-                React.createElement('img', {
-                  src: getDirectProofImageUrl(proof.uri),
-                  referrerPolicy: 'no-referrer',
-                  style: { width: 64, height: 64, borderRadius: 10, objectFit: 'cover' },
-                })
-              ) : (
-                <Image
-                  source={{ uri: getDirectProofImageUrl(proof.uri) }}
-                  style={styles.scheduledOtThumbImg}
-                  resizeMode="cover"
-                />
-              )}
-              <Pressable
-                style={styles.scheduledOtThumbRemoveBtn}
-                onPress={() => handleRemoveProof(idx)}
-                hitSlop={6}
-              >
-                <X size={12} color="#ffffff" strokeWidth={3} />
-              </Pressable>
-            </View>
-          ))}
-        </View>
-      ) : null}
-
-      {isReady && selectedProofs.length === 0 ? (
-        <View style={styles.scheduledOtReadyNoticeBox}>
-          <View style={styles.scheduledOtReadyNoticeHeader}>
-            <Check size={14} color="#15803d" strokeWidth={2.6} />
-            <Text style={styles.scheduledOtReadyNoticeTitle}>Shift Completed • Photo Proof Open</Text>
-          </View>
-          <Text style={styles.scheduledOtReadyNoticeText}>
-            {statusMessage}
-          </Text>
-        </View>
-      ) : null}
-
-      <View style={styles.scheduledOtActionRow}>
-        <Pressable
-          style={[
-            styles.scheduledOtPrimaryBtn,
-            !isReady ? styles.scheduledOtPrimaryBtnDisabled : null,
-          ]}
-          onPress={handlePressAttach}
-          disabled={isSubmitting}
-        >
-          <Camera size={15} color="#ffffff" strokeWidth={2.2} />
-          <Text style={styles.scheduledOtPrimaryBtnText}>
-            {selectedProofs.length > 0
-              ? `Manage Proofs (${selectedProofs.length}/5)`
-              : 'Attach Photo Proof'}
-          </Text>
-        </Pressable>
-
-        {selectedProofs.length > 0 ? (
-          <Pressable
-            style={[styles.scheduledOtSubmitBtn, isSubmitting ? { opacity: 0.7 } : null]}
-            onPress={handleSubmitProof}
-            disabled={isSubmitting}
-          >
-            {isSubmitting ? (
-              <ActivityIndicator size="small" color="#ffffff" />
-            ) : (
-              <>
-                <Check size={16} color="#ffffff" strokeWidth={2.4} />
-                <Text style={styles.scheduledOtSubmitBtnText}>Submit Proof & Forward Request</Text>
-              </>
-            )}
-          </Pressable>
-        ) : null}
-      </View>
-
-      {isPickerOpen ? (
-        <PhotoProofPickerModal
-          visible={isPickerOpen}
-          onClose={() => setIsPickerOpen(false)}
-          selectedProofs={selectedProofs}
-          onSelectProofs={(proofs) => setSelectedProofs(proofs)}
-          userInfo={userInfo}
-          title="Attach Photo Proof for Scheduled OT"
-          subtitle="Select up to 5 photos from your Photo Log or upload from Gallery"
-          maxSlots={5}
-        />
-      ) : null}
-    </View>
   );
 }
 
@@ -2023,7 +1752,7 @@ export function clearEsarfEntriesCache() {
 
 function getCachedEsarfEntries(item: MyRequest): ParsedEsarfEntry[] {
   const key = [
-    'v3',
+    'v4',
     item.request_id || '',
     item.status || '',
     item.time_schedule || '',
@@ -2034,6 +1763,8 @@ function getCachedEsarfEntries(item: MyRequest): ParsedEsarfEntry[] {
     item.time_from || '',
     item.time_to || '',
     item.total_hours ?? '',
+    item.original_total_hours ?? '',
+    item.hours_adjustment_reason || '',
     item.transaction_type || '',
     item.reason || '',
   ].join('|');
@@ -2069,10 +1800,9 @@ function normalizeStatus(status: string, item?: MyRequest): StatusFilter {
   if (value === 'rejected' || value.includes('reject') || value.includes('denied')) {
     return 'rejected';
   }
-  // Scheduled OT awaiting proof or in pre_approved status:
-  // Must map to 'pending' so it appears in 'All' and 'Pending' tabs, NOT 'approved'!
-  if (item && isScheduledOtAwaitingProof(item)) {
-    return 'pending';
+  // Pre-approved OT request whose 1st approver already approved is approved
+  if (item && isScheduledOtRequest(item) && isFirstApproverApproved(item)) {
+    return 'approved';
   }
   if (value.includes('pre_approved') || value.includes('pre-approved') || (item && isScheduledOtRequest(item))) {
     return 'pending';
@@ -2101,12 +1831,13 @@ function statusLabel(item: MyRequest): string {
   const rawStatus = (item.status || '').trim();
   const lower = rawStatus.toLowerCase();
 
-  // If final approved or rejected, display those first
-  if (lower === 'approved' || (item?.final_approved_at && !lower.includes('reject') && !lower.includes('denied'))) {
-    return 'APPROVED';
-  }
   if (lower === 'rejected' || lower.includes('reject') || lower.includes('denied')) {
     return 'REJECTED';
+  }
+
+  // If validated in database, display as is ("VALIDATED")
+  if (lower.includes('validat')) {
+    return 'VALIDATED';
   }
 
   // Partial approval takes precedence over pre-approved status (e.g. 1/2 APPROVED)
@@ -2116,18 +1847,21 @@ function statusLabel(item: MyRequest): string {
     return `${approvedCount}/${entries.length} APPROVED`;
   }
 
+  // Pre-approved OT requests:
+  // - While pending 1st approver: display as PENDING (styled with the blue badge)
+  // - Once approved by 1st approver: display as PRE-APPROVED
   if (
-    isScheduledOtAwaitingProof(item) ||
     lower.includes('pre_approved') ||
     lower.includes('pre-approved') ||
     isScheduledOtRequest(item)
   ) {
-    return 'PRE-APPROVED';
+    const isFinalized = Boolean(item.final_approved_at) || isFirstApproverApproved(item);
+    return isFinalized ? 'PRE-APPROVED' : 'PENDING';
   }
 
-  // If validated in database, display as is ("VALIDATED")
-  if (lower.includes('validat')) {
-    return 'VALIDATED';
+  // Final approved for regular requests
+  if (lower === 'approved' || item?.final_approved_at) {
+    return 'APPROVED';
   }
 
   const statusKey = normalizeStatus(item.status, item);
@@ -2156,26 +1890,27 @@ function renderStatusPillContent(item: MyRequest) {
 
 function statusPillStyle(status: StatusFilter | 'partial', item?: MyRequest) {
   const rawStatus = (item?.status || '').toLowerCase();
-  const isFinalDone = rawStatus === 'approved' || rawStatus.includes('reject') || Boolean(item?.final_approved_at);
 
+  if (rawStatus.includes('reject') || rawStatus.includes('denied') || status === 'rejected') {
+    return { backgroundColor: colors.background, color: colors.semantic.danger };
+  }
+  if (status === 'validated' || rawStatus.includes('validat')) {
+    return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
+  }
   if (item && isPartialApproval(item)) {
     return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
   }
   if (
     item &&
-    !isFinalDone &&
-    (isScheduledOtAwaitingProof(item) ||
-      rawStatus.includes('pre_approved') ||
+    (rawStatus.includes('pre_approved') ||
       rawStatus.includes('pre-approved') ||
       isScheduledOtRequest(item))
   ) {
     return { backgroundColor: '#eff6ff', borderColor: '#93c5fd', borderWidth: 1, color: '#1d4ed8' };
   }
-  if (status === 'validated' || rawStatus.includes('validat')) {
+  if (status === 'approved' || rawStatus === 'approved' || Boolean(item?.final_approved_at)) {
     return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
   }
-  if (status === 'approved') return { backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, color: '#15803d' };
-  if (status === 'rejected') return { backgroundColor: colors.background, color: colors.semantic.danger };
   return { backgroundColor: '#fef3c7', borderColor: '#fde68a', borderWidth: 1, color: '#92400e' };
 }
 
@@ -2264,8 +1999,9 @@ function canEditRequest(item: MyRequest): boolean {
     return false;
   }
 
-  if (isScheduledOtAwaitingProof(item)) {
-    return true;
+  // Pre-approved OT whose 1st approver already approved cannot be edited
+  if (isScheduledOtRequest(item) && isFirstApproverApproved(item)) {
+    return false;
   }
 
   const statusKey = normalizeStatus(item.status, item);
@@ -2277,6 +2013,7 @@ function canEditRequest(item: MyRequest): boolean {
 function isShareableRequest(item?: MyRequest | null): boolean {
   if (!item) return false;
   if (item.final_approved_at || item.rejected_at) return false;
+  if (isScheduledOtRequest(item) && isFirstApproverApproved(item)) return false;
 
   const rawLower = (item.status || '').toLowerCase().trim();
   // Do NOT include approved requests or rejected/validated
@@ -2294,9 +2031,8 @@ function isShareableRequest(item?: MyRequest | null): boolean {
     return false;
   }
 
-  // Pre-approved requests (e.g. Scheduled OT pre-approved awaiting proof or explicit pre-approved status)
+  // Pre-approved requests (e.g. Scheduled OT in pre-approved status)
   const isPreApproved =
-    isScheduledOtAwaitingProof(item) ||
     rawLower.includes('pre_approved') ||
     rawLower.includes('pre-approved') ||
     isScheduledOtRequest(item);
@@ -2350,8 +2086,8 @@ function canDeleteRequest(item: MyRequest, isOnline = true): boolean {
 
   if (!isPendingOrPreApproved) return false;
 
-  // Cannot delete if already final approved, rejected, or validated
-  if (rawStatus === 'approved' || Boolean(item.final_approved_at)) return false;
+  // Cannot delete if already final approved, rejected, or validated, or 1st approver approved for pre-approved OT
+  if (rawStatus === 'approved' || Boolean(item.final_approved_at) || (isScheduledOtRequest(item) && isFirstApproverApproved(item))) return false;
   if (rawStatus.includes('reject') || rawStatus.includes('denied')) return false;
   if (rawStatus.includes('validat')) return false;
 
@@ -2523,10 +2259,14 @@ function approvalTimeline(item: MyRequest) {
   }
 
   const isOffline = isOfflineUnsyncedRequest(item);
-  const fallback = [1, 2];
-  const summary = (item.approval_summary && item.approval_summary.length > 0)
+  const isPreApproved = isScheduledOtRequest(item);
+  const fallback = isPreApproved ? [1] : [1, 2];
+  const rawSummary = (item.approval_summary && item.approval_summary.length > 0)
     ? item.approval_summary
     : [];
+  const summary = isPreApproved
+    ? rawSummary.filter((s) => Number(s.step_order) === 1).slice(0, 1)
+    : rawSummary;
   const rows: { label: string; status: string; actedAt: string | null }[] = summary.length
     ? summary.map((step) => {
       const isAutoApproved =
@@ -2674,7 +2414,11 @@ function getRejectedReason(item: MyRequest) {
 
 function cleanDisplayReason(reason?: string | null, fallback = 'No reason provided.'): string {
   if (!reason) return fallback;
-  const cleaned = reason.replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '').trim();
+  const cleaned = reason
+    .replace(/\[Pre-?Approved(?::\s*[^\]]+)?\]\s*/gi, '')
+    .replace(/\[(?:OrigHours|OriginalHours):\s*[\d.]+\s*hrs?\]\s*/gi, '')
+    .replace(/\[(?:AdjustmentReason|AdjReason):\s*[^\]]+\]\s*/gi, '')
+    .trim();
   return cleaned || fallback;
 }
 
@@ -3580,8 +3324,34 @@ const styles = StyleSheet.create({
     color: colors.muted,
     textTransform: 'uppercase',
   },
-  cardMeta: {
-    width: 130,
+  cardStatusWrap: {
+    flexShrink: 0,
+    alignItems: 'flex-end',
+  },
+  cardDetailsMetaWrap: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
+  cardDetailsMetaHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 2,
+  },
+  cardDetailsMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  cardDetailsLeft: {
+    flex: 1,
+    minWidth: 0,
+  },
+  cardSubmittedDates: {
     flexShrink: 0,
     alignItems: 'flex-end',
     gap: 3,
@@ -3597,16 +3367,20 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     textTransform: 'uppercase',
   },
+  metaSubmittedLabel: {
+    fontSize: 10.5,
+    lineHeight: 13,
+    fontWeight: fontWeights.semibold,
+    color: '#94a3b8',
+  },
   metaLine: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    width: 116,
     justifyContent: 'flex-end',
   },
   metaText: {
-    flexShrink: 1,
-    fontSize: 14,
+    fontSize: 13,
     lineHeight: 17,
     fontWeight: fontWeights.medium,
     color: colors.muted,

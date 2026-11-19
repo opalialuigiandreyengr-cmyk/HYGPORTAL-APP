@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase';
 import { env } from '../lib/env';
-import { getCacheJSON, setCacheJSON } from '../lib/localCache';
+import { getCacheJSON, removeCacheItem, setCacheJSON } from '../lib/localCache';
+import { getPerkUsageCacheKey } from '../utils/userCache';
 
 export type PerkFormType = 'discount' | 'charge';
 
@@ -50,7 +51,7 @@ export type PerkUsage = {
 };
 
 export async function loadPerkUsage(): Promise<PerkUsage | null> {
-  const cacheKey = 'my_perk_usage_v1';
+  const cacheKey = await getPerkUsageCacheKey();
   try {
     const { data, error } = await supabase.rpc('get_my_perk_usage');
 
@@ -79,6 +80,7 @@ export async function loadPerkUsage(): Promise<PerkUsage | null> {
     } satisfies PerkUsage;
 
     await setCacheJSON(cacheKey, result);
+    await removeCacheItem('my_perk_usage_v1').catch(() => {});
     return result;
   } catch (err) {
     const cached = await getCacheJSON<PerkUsage>(cacheKey);
