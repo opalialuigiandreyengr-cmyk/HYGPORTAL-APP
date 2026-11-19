@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import type { EmployeeProfileSummary, MyRequest } from '../types/domain';
 import { formatDateInput, hasCompletedOneYearOfService } from '../utils/dateTime';
 import { isAppOnline } from './network';
-import { getOfflineQueue } from './offlineQueue';
+import type { OfflineQueueItem } from './offlineQueue';
 import { getMyRequestsCacheKey } from '../utils/userCache';
 
 export { hasCompletedOneYearOfService };
@@ -347,13 +347,15 @@ export async function markBirthdayLeaveGrantedForYear(
   }
 }
 
+const OFFLINE_QUEUE_KEY = 'hyg_offline_queue_v2';
+
 async function checkPendingOfflineBirthdayLeave(
   employeeId?: string | null,
   userEmail?: string | null,
   year: number = new Date().getFullYear(),
 ): Promise<boolean> {
   try {
-    const queue = await getOfflineQueue();
+    const queue = (await getCacheJSON<OfflineQueueItem[]>(OFFLINE_QUEUE_KEY)) || [];
     const empLower = employeeId?.trim().toLowerCase();
     const emailLower = userEmail?.trim().toLowerCase();
 

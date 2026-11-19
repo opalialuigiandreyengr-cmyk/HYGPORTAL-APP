@@ -1366,13 +1366,13 @@ function ApprovalCard({
             <View style={styles.cardDetailsMetaHeaderRow}>
               {!isPerk ? (
                 <Text style={styles.metaSubmittedLabel} numberOfLines={1}>
-                  Request Details:
+                  Request Information
                 </Text>
               ) : (
                 <View />
               )}
               <Text style={styles.metaSubmittedLabel} numberOfLines={1}>
-                Submitted on:
+                Submitted on
               </Text>
             </View>
             <View style={styles.cardDetailsMetaRow}>
@@ -1490,13 +1490,13 @@ function ApprovedCard({
             <View style={styles.cardDetailsMetaHeaderRow}>
               {!isPerk ? (
                 <Text style={styles.metaSubmittedLabel} numberOfLines={1}>
-                  Request Details:
+                  Request Information
                 </Text>
               ) : (
                 <View />
               )}
               <Text style={styles.metaSubmittedLabel} numberOfLines={1}>
-                Submitted on:
+                Submitted on
               </Text>
             </View>
             <View style={styles.cardDetailsMetaRow}>
@@ -2457,26 +2457,6 @@ function ApprovedDetailsSheet({
                 ))}
               </View>
             )}
-
-            {item.remarks ? (
-              <View style={styles.reasonBlock}>
-                <View style={styles.panelTitleRow}>
-                  <CheckCircle2 size={15} color="#16a34a" strokeWidth={2.2} />
-                  <Text style={styles.panelTitle}>Approver Remarks</Text>
-                </View>
-                {parseApproverRemarksLines(item.remarks).map((line, idx) => (
-                  <Text
-                    key={idx}
-                    style={[
-                      styles.sheetReasonText,
-                      idx > 0 ? styles.sheetReasonTextSubLine : null,
-                    ]}
-                  >
-                    {line}
-                  </Text>
-                ))}
-              </View>
-            ) : null}
           </ScrollView>
 
           {/* Action Footer */}
@@ -2614,17 +2594,6 @@ function cleanDisplayReason(reason?: string | null, fallback = 'No reason provid
     .replace(/\[(?:AdjustmentReason|AdjReason):\s*[^\]]+\]\s*/gi, '')
     .trim();
   return cleaned || fallback;
-}
-
-function parseApproverRemarksLines(remarks?: string | null): string[] {
-  if (!remarks) return [];
-  const normalized = remarks
-    .replace(/\s*(?:(?:\r?\n)\s*)?(Adjustment\s+[Rr]eason:)/gi, '\n$1')
-    .trim();
-  return normalized
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
 }
 
 function isUseOffsetApproval(item: PendingApproval | ApprovedApproval) {

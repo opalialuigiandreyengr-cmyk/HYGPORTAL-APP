@@ -14,6 +14,8 @@ import {
   ChevronDown,
   Contact,
   Edit3,
+  Eye,
+  EyeOff,
   GraduationCap,
   Hash,
   Heart,
@@ -42,7 +44,7 @@ import { normalizeUsername } from '../services/registerAccount';
 import { ensureMyHygPointGifts } from '../services/notificationCenter';
 import { isAppOnline, useNetworkStatus } from '../services/network';
 import { enqueueOfflineItem } from '../services/offlineQueue';
-import { setCacheJSON } from '../lib/localCache';
+import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { saveAvatarToCache } from '../services/avatarCache';
 
 type Props = {
@@ -132,15 +134,15 @@ const PROFILE_SECTION_TABS: {
   icon: typeof UserRound;
   color: string;
 }[] = [
-  { key: 'personal', label: 'Personal Information', icon: User, color: colors.primary },
-  { key: 'contact', label: 'Contact Details', icon: Contact, color: '#2563eb' },
-  { key: 'employment', label: 'Employment Info', icon: Briefcase, color: '#059669' },
-  { key: 'governmentBank', label: 'Government & Bank', icon: Landmark, color: '#7c3aed' },
-  { key: 'education', label: 'Education Attainment', icon: GraduationCap, color: '#d97706' },
-  { key: 'family', label: 'Family & Parents', icon: Heart, color: '#dc2626' },
-  { key: 'spouse', label: 'Spouse Information', icon: UsersRound, color: '#0284c7' },
-  { key: 'children', label: 'Children Information', icon: Baby, color: '#4f46e5' },
-];
+    { key: 'personal', label: 'Personal Information', icon: User, color: colors.primary },
+    { key: 'contact', label: 'Contact Details', icon: Contact, color: '#2563eb' },
+    { key: 'employment', label: 'Employment Info', icon: Briefcase, color: '#059669' },
+    { key: 'governmentBank', label: 'Government & Bank', icon: Landmark, color: '#7c3aed' },
+    { key: 'education', label: 'Education Attainment', icon: GraduationCap, color: '#d97706' },
+    { key: 'family', label: 'Family & Parents', icon: Heart, color: '#dc2626' },
+    { key: 'spouse', label: 'Spouse Information', icon: UsersRound, color: '#0284c7' },
+    { key: 'children', label: 'Children Information', icon: Baby, color: '#4f46e5' },
+  ];
 
 export function ProfileTabScreen({ email, username, userId, isLoading, result, onToast, onSignOut, onProfileUpdated, notificationCount = 0, onAssistant, onNotifications, onHelpTutorials, onOpenProfile, onOpenSettings, onOpenMyTeam, onOpenRewards, pointsBalance = 0 }: Props) {
   const resultProfile = result?.status === 'linked' ? result.profile : null;
@@ -157,6 +159,9 @@ export function ProfileTabScreen({ email, username, userId, isLoading, result, o
   const [form, setForm] = useState<UpdateEmployeeProfileInput>(() => profileToForm(profile, username));
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const modalScrollRef = useRef<ScrollView>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [activeDateField, setActiveDateField] = useState<keyof UpdateEmployeeProfileInput | null>(null);
@@ -282,11 +287,21 @@ export function ProfileTabScreen({ email, username, userId, isLoading, result, o
     setForm(profileToForm(profile, username));
     setNewPassword('');
     setConfirmPassword('');
+    setShowNewPassword(false);
+    setShowConfirmPassword(false);
     setShowModal(true);
   }
 
   async function pickProfilePhoto() {
-    if (!profile?.employeeId || isUploadingPhoto) {
+    const empId = profile?.employeeId || resultProfile?.employeeId;
+    if (!empId || isUploadingPhoto) {
+      if (!empId) {
+        onToast?.({
+          tone: 'warning',
+          title: 'Profile incomplete',
+          message: 'Unable to identify employee record. Please reload your profile.',
+        });
+      }
       return;
     }
 
@@ -336,7 +351,7 @@ export function ProfileTabScreen({ email, username, userId, isLoading, result, o
     setIsUploadingPhoto(true);
     try {
       const photoUrl = await uploadEmployeeProfilePhoto({
-        employeeId: profile.employeeId,
+        employeeId: empId,
         base64: asset.base64,
         mimeType: asset.mimeType,
         uri: asset.uri,
@@ -346,7 +361,19 @@ export function ProfileTabScreen({ email, username, userId, isLoading, result, o
         await saveAvatarToCache(photoUrl, asset.uri);
       }
 
+      const targetUserId = userId || (await supabase.auth.getSession()).data.session?.user?.id;
+      if (targetUserId) {
+        const cachedRes = await getCacheJSON<ProfileLoadResult>(`employee_profile_result_v1:${targetUserId}`);
+        if (cachedRes && cachedRes.status === 'linked') {
+          await setCacheJSON(`employee_profile_result_v1:${targetUserId}`, {
+            ...cachedRes,
+            profile: { ...cachedRes.profile, photoUrl },
+          });
+        }
+      }
+
       setLocalProfile((current) => current ? { ...current, photoUrl } : current);
+      await onProfileUpdated?.();
       onToast?.({
         tone: 'success',
         title: 'Photo updated',
@@ -495,6 +522,8 @@ export function ProfileTabScreen({ email, username, userId, isLoading, result, o
             setShowModal(false);
             setNewPassword('');
             setConfirmPassword('');
+            setShowNewPassword(false);
+            setShowConfirmPassword(false);
           }
           setInlineEditSection(null);
           setLocalProfile(updatedProfile);
@@ -542,6 +571,8 @@ export function ProfileTabScreen({ email, username, userId, isLoading, result, o
         setShowModal(false);
         setNewPassword('');
         setConfirmPassword('');
+        setShowNewPassword(false);
+        setShowConfirmPassword(false);
       }
       setInlineEditSection(null);
       setLocalProfile(updatedProfile);
@@ -662,7 +693,7 @@ export function ProfileTabScreen({ email, username, userId, isLoading, result, o
           <View style={styles.profileActionRow}>
             <Pressable style={styles.updateBtn} onPress={openModal}>
               <Edit3 size={14} color="#111827" strokeWidth={2.7} />
-              <Text style={styles.updateBtnText}>UPDATE INFORMATION</Text>
+              <Text style={styles.updateBtnText}>UPDATE PROFILE</Text>
             </Pressable>
             <Pressable style={styles.profileSignOutBtn} onPress={onSignOut}>
               <LogOut size={15} color="#ffffff" strokeWidth={2.5} />
@@ -793,29 +824,45 @@ export function ProfileTabScreen({ email, username, userId, isLoading, result, o
       </ScrollView>
 
       {/* Update Information Modal */}
-      <Modal visible={showModal} animationType="fade" transparent>
-        <View style={styles.modalOverlay}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 12 : 0}
-            style={styles.modalKeyboardView}
-          >
+      <Modal
+        visible={showModal}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setShowModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 0}
+          style={styles.modalOverlay}
+        >
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowModal(false)} />
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Update Information</Text>
-              <Pressable onPress={() => setShowModal(false)}>
+              <Text style={styles.modalTitle}>Update Profile</Text>
+              <Pressable onPress={() => setShowModal(false)} hitSlop={10}>
                 <X size={22} color="#334155" strokeWidth={2.5} />
               </Pressable>
             </View>
 
             <ScrollView
+              ref={modalScrollRef}
               showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.modalScroll}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
+              bounces={false}
             >
               {/* Profile Photo */}
-              <View style={styles.modalPhotoRow}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.modalPhotoRow,
+                  pressed && { opacity: 0.75 },
+                ]}
+                onPress={pickProfilePhoto}
+                disabled={isUploadingPhoto}
+                accessibilityRole="button"
+                accessibilityLabel="Click photo to change profile photo"
+              >
                 <View style={styles.modalAvatar}>
                   <Avatar
                     name={displayName}
@@ -825,33 +872,69 @@ export function ProfileTabScreen({ email, username, userId, isLoading, result, o
                     borderRadius={10}
                     textColor={colors.brand.gold}
                   />
+                  {isUploadingPhoto ? (
+                    <View style={styles.modalAvatarUploadingOverlay}>
+                      <ActivityIndicator size="small" color="#ffffff" />
+                    </View>
+                  ) : (
+                    <View style={styles.modalAvatarBadge}>
+                      <Camera size={11} color="#ffffff" strokeWidth={2.4} />
+                    </View>
+                  )}
                 </View>
-                <View>
+                <View style={{ flex: 1, justifyContent: 'center' }}>
                   <Text style={styles.modalPhotoLabel}>Profile Photo</Text>
-                  <Text style={styles.modalPhotoHint}>Click photo to change</Text>
+                  <Text style={[styles.modalPhotoHint, isUploadingPhoto && { color: colors.muted }]}>
+                    {isUploadingPhoto ? 'Uploading photo...' : 'Click photo to change'}
+                  </Text>
                 </View>
-              </View>
+              </Pressable>
 
               {/* Name Fields */}
               <View style={styles.modalRow}>
                 <View style={styles.modalField}>
                   <Text style={styles.modalLabel}>First Name</Text>
-                  <TextInput style={styles.modalInput} value={form.firstName} onChangeText={(value) => updateField('firstName', value)} placeholder="First Name" placeholderTextColor="#94a3b8" />
+                  <TextInput
+                    style={styles.modalInput}
+                    value={form.firstName}
+                    onChangeText={(value) => updateField('firstName', value)}
+                    placeholder="First Name"
+                    placeholderTextColor="#94a3b8"
+                  />
                 </View>
                 <View style={styles.modalField}>
                   <Text style={styles.modalLabel}>Last Name</Text>
-                  <TextInput style={styles.modalInput} value={form.lastName} onChangeText={(value) => updateField('lastName', value)} placeholder="Last Name" placeholderTextColor="#94a3b8" />
+                  <TextInput
+                    style={styles.modalInput}
+                    value={form.lastName}
+                    onChangeText={(value) => updateField('lastName', value)}
+                    placeholder="Last Name"
+                    placeholderTextColor="#94a3b8"
+                  />
                 </View>
               </View>
 
               <View style={styles.modalRow}>
                 <View style={styles.modalField}>
                   <Text style={styles.modalLabel}>Middle Name</Text>
-                  <TextInput style={styles.modalInput} value={form.middleName} onChangeText={(value) => updateField('middleName', value)} placeholder="Middle Name" placeholderTextColor="#94a3b8" />
+                  <TextInput
+                    style={styles.modalInput}
+                    value={form.middleName}
+                    onChangeText={(value) => updateField('middleName', value)}
+                    placeholder="Middle Name"
+                    placeholderTextColor="#94a3b8"
+                  />
                 </View>
                 <View style={styles.modalField}>
                   <Text style={styles.modalLabel}>Username</Text>
-                  <TextInput style={styles.modalInput} value={form.username} onChangeText={(value) => updateField('username', value)} placeholder="Username" placeholderTextColor="#94a3b8" autoCapitalize="none" />
+                  <TextInput
+                    style={styles.modalInput}
+                    value={form.username}
+                    onChangeText={(value) => updateField('username', value)}
+                    placeholder="Username"
+                    placeholderTextColor="#94a3b8"
+                    autoCapitalize="none"
+                  />
                 </View>
               </View>
 
@@ -872,26 +955,78 @@ export function ProfileTabScreen({ email, username, userId, isLoading, result, o
               </Text>
 
               <Text style={styles.modalLabel}>New Password</Text>
-              <TextInput
-                style={[styles.modalInput, !isOnline && styles.modalInputDisabled]}
-                value={newPassword}
-                onChangeText={setNewPassword}
-                placeholder={isOnline ? "Enter new password" : "Requires internet connection"}
-                placeholderTextColor="#94a3b8"
-                secureTextEntry
-                editable={isOnline}
-              />
+              <View style={styles.passwordInputWrap}>
+                <TextInput
+                  style={[
+                    styles.modalInput,
+                    styles.modalPasswordInput,
+                    !isOnline && styles.modalInputDisabled,
+                  ]}
+                  value={newPassword}
+                  onChangeText={setNewPassword}
+                  placeholder={isOnline ? "Enter new password" : "Requires internet connection"}
+                  placeholderTextColor="#94a3b8"
+                  secureTextEntry={!showNewPassword}
+                  editable={isOnline}
+                  autoCapitalize="none"
+                  onFocus={() => {
+                    setTimeout(() => {
+                      modalScrollRef.current?.scrollToEnd({ animated: true });
+                    }, 120);
+                  }}
+                />
+                {isOnline && (
+                  <Pressable
+                    style={styles.modalEyeBtn}
+                    onPress={() => setShowNewPassword((v) => !v)}
+                    hitSlop={8}
+                    accessibilityLabel={showNewPassword ? "Hide password" : "Show password"}
+                  >
+                    {showNewPassword ? (
+                      <EyeOff size={18} color="#64748b" strokeWidth={2.2} />
+                    ) : (
+                      <Eye size={18} color="#64748b" strokeWidth={2.2} />
+                    )}
+                  </Pressable>
+                )}
+              </View>
 
               <Text style={styles.modalLabel}>Confirm Password</Text>
-              <TextInput
-                style={[styles.modalInput, !isOnline && styles.modalInputDisabled]}
-                value={confirmPassword}
-                onChangeText={setConfirmPassword}
-                placeholder={isOnline ? "Confirm new password" : "Requires internet connection"}
-                placeholderTextColor="#94a3b8"
-                secureTextEntry
-                editable={isOnline}
-              />
+              <View style={styles.passwordInputWrap}>
+                <TextInput
+                  style={[
+                    styles.modalInput,
+                    styles.modalPasswordInput,
+                    !isOnline && styles.modalInputDisabled,
+                  ]}
+                  value={confirmPassword}
+                  onChangeText={setConfirmPassword}
+                  placeholder={isOnline ? "Confirm new password" : "Requires internet connection"}
+                  placeholderTextColor="#94a3b8"
+                  secureTextEntry={!showConfirmPassword}
+                  editable={isOnline}
+                  autoCapitalize="none"
+                  onFocus={() => {
+                    setTimeout(() => {
+                      modalScrollRef.current?.scrollToEnd({ animated: true });
+                    }, 120);
+                  }}
+                />
+                {isOnline && (
+                  <Pressable
+                    style={styles.modalEyeBtn}
+                    onPress={() => setShowConfirmPassword((v) => !v)}
+                    hitSlop={8}
+                    accessibilityLabel={showConfirmPassword ? "Hide password" : "Show password"}
+                  >
+                    {showConfirmPassword ? (
+                      <EyeOff size={18} color="#64748b" strokeWidth={2.2} />
+                    ) : (
+                      <Eye size={18} color="#64748b" strokeWidth={2.2} />
+                    )}
+                  </Pressable>
+                )}
+              </View>
 
               {/* Actions */}
               <View style={styles.modalActions}>
@@ -904,8 +1039,7 @@ export function ProfileTabScreen({ email, username, userId, isLoading, result, o
               </View>
             </ScrollView>
           </View>
-          </KeyboardAvoidingView>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
       <DatePickerModal
         visible={Boolean(activeDateField) || activeChildDateIndex !== null}
@@ -1066,11 +1200,11 @@ function DetailRow({
                   Platform.OS === 'web'
                     ? undefined
                     : () => {
-                        onFocusRow?.(rowKey);
-                        if (childIndex !== undefined) {
-                          onOpenChildDate?.(childIndex, child?.birthday);
-                        }
+                      onFocusRow?.(rowKey);
+                      if (childIndex !== undefined) {
+                        onOpenChildDate?.(childIndex, child?.birthday);
                       }
+                    }
                 }
               >
                 <Calendar size={15} color="#475569" strokeWidth={2.4} />
@@ -1308,20 +1442,20 @@ function SelectModal({
                   onValueChange(config.options[selectedIndex]);
                 }}
               >
-              {config?.options.map((option) => {
-                const isSelected = (value || config.options[0]) === option;
+                {config?.options.map((option) => {
+                  const isSelected = (value || config.options[0]) === option;
 
-                return (
-                  <Pressable
-                    key={option}
-                    style={[styles.optionRow, isSelected ? styles.optionRowSelected : null]}
-                    onPress={() => onValueChange(option)}
-                    android_ripple={{ color: '#fde68a' }}
-                  >
-                    <Text style={[styles.optionText, isSelected ? styles.optionTextSelected : null]}>{option}</Text>
-                  </Pressable>
-                );
-              })}
+                  return (
+                    <Pressable
+                      key={option}
+                      style={[styles.optionRow, isSelected ? styles.optionRowSelected : null]}
+                      onPress={() => onValueChange(option)}
+                      android_ripple={{ color: '#fde68a' }}
+                    >
+                      <Text style={[styles.optionText, isSelected ? styles.optionTextSelected : null]}>{option}</Text>
+                    </Pressable>
+                  );
+                })}
               </ScrollView>
             </View>
           )}
@@ -2188,6 +2322,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
+    alignItems: 'center',
     padding: 20,
   },
   modalKeyboardView: {
@@ -2196,43 +2331,74 @@ const styles = StyleSheet.create({
   modalContent: {
     backgroundColor: '#ffffff',
     borderRadius: 16,
-    height: '84%',
-    maxHeight: '88%',
+    width: '100%',
+    maxHeight: '90%',
     overflow: 'hidden',
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
   },
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm + 4,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
   },
   modalTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: fontWeights.heavy,
     color: '#0f172a',
   },
   modalScroll: {
     padding: spacing.md,
-    paddingBottom: spacing.lg,
+    paddingBottom: spacing.xl,
   },
   modalPhotoRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 14,
     marginBottom: spacing.md,
+    paddingVertical: 2,
   },
   modalAvatar: {
-    width: 56,
-    height: 56,
-    borderRadius: 10,
+    width: 58,
+    height: 58,
+    borderRadius: 12,
     backgroundColor: colors.brand.panel,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
     borderColor: colors.border,
-    overflow: 'hidden',
+    position: 'relative',
+  },
+  modalAvatarUploadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalAvatarBadge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    backgroundColor: colors.primary,
+    borderRadius: 10,
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#ffffff',
   },
   modalPhotoLabel: {
     fontSize: 16,
@@ -2278,6 +2444,21 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#64748b',
     backgroundColor: '#e2e8f0',
+  },
+  passwordInputWrap: {
+    position: 'relative',
+    justifyContent: 'center',
+  },
+  modalPasswordInput: {
+    paddingRight: 44,
+  },
+  modalEyeBtn: {
+    position: 'absolute',
+    right: 12,
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
   },
   modalTextArea: {
     minHeight: 76,
