@@ -1586,7 +1586,7 @@ function RequestDetailsSheet({
             ) : null}
             {itemStatusKey === 'pending' ? (
               <>
-                {!isPerk && onEdit ? (
+                {!isPerk && canEditRequest(item) && onEdit ? (
                   <Pressable
                     style={styles.sheetEditButton}
                     onPress={() => {
@@ -1994,8 +1994,8 @@ function canEditRequest(item: MyRequest): boolean {
     return false;
   }
 
-  // If request has at least one approved status in the timeline, it cannot be edited
-  if ((isEsarfRequest(item) || isTravelOrderRequest(item)) && hasApprovedTimelineStatus(item)) {
+  // If request has at least one approved status in the timeline (e.g. ESARF, Travel Order, or Leave), it cannot be edited
+  if ((isEsarfRequest(item) || isTravelOrderRequest(item) || item.request_type_code === 'leave') && hasApprovedTimelineStatus(item)) {
     return false;
   }
 

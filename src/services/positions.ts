@@ -173,3 +173,44 @@ export function resolveApproverLevel(step: {
 
   return 1;
 }
+
+/**
+ * Checks whether a position name corresponds to a Store Manager (excluding Assistant Store Manager).
+ */
+export function isStoreManager(positionName?: string | null): boolean {
+  if (!positionName) return false;
+  if (isAssistantStoreManager(positionName)) return false;
+  const pos = positionName.trim().replace(/\s+/g, ' ').toLowerCase();
+  if (!pos) return false;
+  return (
+    pos === 'store manager' ||
+    pos === 'store mgr' ||
+    pos.includes('store manager') ||
+    pos.includes('store mgr')
+  );
+}
+
+/**
+ * All Managers, Directors, and Department Heads (including Corporate HR and Legal Head,
+ * Finance Director, Operations Director, and General Manager) except Store Managers and
+ * Assistant Store Managers can award badges to employees under their department.
+ */
+export function canAwardBadges(
+  positionName?: string | null,
+  authorityLevel?: number | null,
+): boolean {
+  if (!positionName) return false;
+  if (isAssistantStoreManager(positionName)) return false;
+  if (isStoreManager(positionName)) return false;
+
+  const pos = positionName.trim().replace(/\s+/g, ' ').toLowerCase();
+  if (!pos) return false;
+
+  return (
+    pos.includes('manager') ||
+    pos.includes('mgr') ||
+    pos.includes('director') ||
+    (pos.includes('head') && !pos.includes('store head')) ||
+    Number(authorityLevel ?? 0) >= 3
+  );
+}
