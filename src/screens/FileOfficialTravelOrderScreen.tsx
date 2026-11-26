@@ -46,6 +46,12 @@ import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain'
 import { dateStringToDate, formatDateInput } from '../utils/dateTime';
 import { platformAlert } from '../utils/platformAlert';
 import { submitOfficialTravelOrder, updateOfficialTravelOrder, type MyRequest } from '../services/requests';
+import {
+  deleteTravelOrderDraft,
+  isTravelDraftRequest,
+  saveTravelOrderDraft,
+  type TravelOrderDraft,
+} from '../services/requestDrafts';
 import { fetchTravelOrderDetails } from '../services/travelOrder';
 import {
   loadStoreApprovalWorkflow,
@@ -80,6 +86,7 @@ export type FileOfficialTravelOrderScreenProps = {
   onToast?: (toast: AppToastMessage) => void;
   onRefresh?: () => void | Promise<void>;
   onSubmitted?: () => void | Promise<void>;
+  onDraftSaved?: () => void | Promise<void>;
 };
 
 const GOLDILOCKS_COMPANIES = [
@@ -207,7 +214,14 @@ export function FileOfficialTravelOrderScreen({
   onToast,
   onRefresh,
   onSubmitted,
+  onDraftSaved,
 }: FileOfficialTravelOrderScreenProps) {
+  const isDraftEditing = isTravelDraftRequest(editingRequest);
+  const draftUserKey = employeeId || authUserId || username || 'local_user';
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
+  const [savedDraftId, setSavedDraftId] = useState<string | null>(
+    isDraftEditing && editingRequest?.request_id ? editingRequest.request_id : null,
+  );
   const insets = useSafeAreaInsets();
   const safeModalBottomPadding = useMemo(() => {
     return isThreeKeyNavigation(insets.bottom)
@@ -346,9 +360,29 @@ export function FileOfficialTravelOrderScreen({
     return () => sub.remove();
   }, [handleConfirmBack]);
 
-  // Pre-load data if editing an existing travel order
+  // Pre-load data if editing an existing travel order or saved draft
   useEffect(() => {
     if (editingRequest) {
+      const embeddedDraft = (editingRequest as any).__travelDraft as TravelOrderDraft | undefined;
+      if (embeddedDraft) {
+        setSavedDraftId(embeddedDraft.id);
+        setSelectedStores(embeddedDraft.selectedStores || []);
+        setDepartureDate(embeddedDraft.departureDate || '');
+        setReturnDate(embeddedDraft.returnDate || '');
+        setDepartureTime(embeddedDraft.departureTime || '');
+        setReturnTime(embeddedDraft.returnTime || '');
+        setTransportMode(embeddedDraft.transportMode || '');
+        setPlateNo(embeddedDraft.plateNo || '');
+        setPurposeOfTravel(embeddedDraft.purposeOfTravel || '');
+        setOtherPurposeDetails(embeddedDraft.otherPurposeDetails || '');
+        setTransportBudget(embeddedDraft.transportBudget || '');
+        setMealBudget(embeddedDraft.mealBudget || '');
+        setEmergencyBudget(embeddedDraft.emergencyBudget || '');
+        setCostCenterCode(embeddedDraft.costCenterCode || '');
+        setSelectedChargeStores(embeddedDraft.selectedChargeStores || []);
+        return;
+      }
+      setSavedDraftId(null);
       fetchTravelOrderDetails(editingRequest, profile)
         .then((d) => {
           if (d.destinationStores?.length) setSelectedStores(d.destinationStores);
@@ -888,7 +922,7 @@ export function FileOfficialTravelOrderScreen({
         workflowSteps: workflowSteps.length > 0 ? workflowSteps : null,
       };
 
-      if (editingRequest) {
+      if (editingRequest && !isDraftEditing) {
         console.log('[FileOfficialTravelOrderScreen] Updating Travel Order:', editingRequest.request_id, payload);
         await updateOfficialTravelOrder(editingRequest.request_id, payload);
 
@@ -903,6 +937,10 @@ export function FileOfficialTravelOrderScreen({
       } else {
         console.log('[FileOfficialTravelOrderScreen] Submitting Travel Order:', payload);
         await submitOfficialTravelOrder(payload);
+
+        if (savedDraftId) {
+          await deleteTravelOrderDraft(draftUserKey, savedDraftId).catch(() => {});
+        }
 
         // Brief delay for user feedback
         await new Promise((resolve) => setTimeout(resolve, 600));
@@ -925,6 +963,56 @@ export function FileOfficialTravelOrderScreen({
       );
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleSaveAsDraft = async () => {
+    if (isSubmitting || isSavingDraft) return;
+    setIsSavingDraft(true);
+    try {
+      const saved = await saveTravelOrderDraft(draftUserKey, {
+        id: savedDraftId || undefined,
+        selectedStores,
+        departureDate,
+        returnDate,
+        departureTime,
+        returnTime,
+        transportMode,
+        plateNo,
+        purposeOfTravel,
+        otherPurposeDetails,
+        transportBudget,
+        mealBudget,
+        emergencyBudget,
+        costCenterCode,
+        selectedChargeStores,
+      });
+      setSavedDraftId(saved.id);
+      platformAlert(
+        'Saved as Draft',
+        'Your Official Travel Order has been saved as a draft.\n\nWhere to find it:\nGo to the Requests tab → Drafts tab to continue editing, delete, or submit your request later.',
+        [
+          { text: 'Keep Editing', style: 'cancel' },
+          {
+            text: 'Go to Drafts',
+            onPress: () => {
+              if (onDraftSaved) {
+                void onDraftSaved();
+              } else {
+                void onSubmitted?.();
+              }
+            },
+          },
+        ],
+      );
+    } catch (err: any) {
+      onToast?.({
+        tone: 'error',
+        title: 'Draft Save Failed',
+        message: err?.message || 'Unable to save draft.',
+      });
+    } finally {
+      setIsSavingDraft(false);
     }
   };
 
@@ -1613,6 +1701,21 @@ export function FileOfficialTravelOrderScreen({
             </View>
           ) : null}
 
+          {(!editingRequest || isDraftEditing) ? (
+            <Pressable
+              style={[
+                styles.saveDraftButton,
+                (isSubmitting || isSavingDraft) ? styles.submitButtonDisabled : null,
+              ]}
+              onPress={() => void handleSaveAsDraft()}
+              disabled={isSubmitting || isSavingDraft}
+            >
+              <Text style={styles.saveDraftButtonText}>
+                {isSavingDraft ? 'Saving Draft...' : 'Save as Draft'}
+              </Text>
+            </Pressable>
+          ) : null}
+
           {/* ACTION BUTTONS: Cancel & Submit Request */}
           <View style={styles.actionButtonsRow}>
             <Pressable
@@ -1646,10 +1749,8 @@ export function FileOfficialTravelOrderScreen({
                     ]}
                   >
                     {!isOnline
-                      ? editingRequest
-                        ? 'Internet Required'
-                        : 'Internet Required'
-                      : editingRequest
+                      ? 'Internet Required'
+                      : editingRequest && !isDraftEditing
                         ? 'Save Changes'
                         : 'Submit Request'}
                   </Text>
@@ -2753,6 +2854,22 @@ const styles = StyleSheet.create({
   },
 
   // Bottom action buttons
+  saveDraftButton: {
+    height: 46,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: '#0066cc',
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+    marginBottom: 10,
+  },
+  saveDraftButtonText: {
+    color: '#0066cc',
+    fontSize: 14,
+    fontWeight: '700',
+  },
   actionButtonsRow: {
     flexDirection: 'row',
     gap: 12,

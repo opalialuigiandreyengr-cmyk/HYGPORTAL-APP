@@ -46,6 +46,12 @@ import { loadMyFlexibleSchedule } from '../services/team';
 import { platformAlert } from '../utils/platformAlert';
 import { withTimeout } from '../utils/withTimeout';
 import type { AssistantDraft } from '../services/assistant';
+import {
+  deleteLeaveDraft,
+  isLeaveDraftRequest,
+  saveLeaveDraft,
+  type LeaveDraft,
+} from '../services/requestDrafts';
 import { colors, fontWeights, radius, spacing } from '../theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getSafeBottomInset } from '../utils/safeArea';
@@ -211,6 +217,7 @@ type RequestLeaveProps = {
   onBack?: () => void;
   onToast?: (toast: AppToastMessage) => void;
   onSubmitted?: () => void | Promise<void>;
+  onDraftSaved?: () => void | Promise<void>;
   onRefresh?: () => void | Promise<void>;
 };
 
@@ -236,8 +243,15 @@ const RequestLeave = ({
   onBack,
   onToast,
   onSubmitted,
+  onDraftSaved,
   onRefresh,
 }: RequestLeaveProps) => {
+  const isDraftEditing = isLeaveDraftRequest(editingRequest);
+  const draftUserKey = employeeId || username || userEmail || 'local_user';
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
+  const [savedDraftId, setSavedDraftId] = useState<string | null>(
+    isDraftEditing && editingRequest?.request_id ? editingRequest.request_id : null,
+  );
   const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const [effectiveBirthDate, setEffectiveBirthDate] = useState<string | null>(birthDate || null);
 
@@ -648,6 +662,20 @@ const RequestLeave = ({
   const hasCompletedOneYear = hasCompletedOneYearOfService(effectiveDateHired);
 
   const [entries, setEntries] = useState<LeaveEntry[]>(() => {
+    const embeddedDraft = (editingRequest as any)?.__leaveDraft as LeaveDraft | undefined;
+    if (embeddedDraft && Array.isArray(embeddedDraft.entries) && embeddedDraft.entries.length > 0) {
+      return embeddedDraft.entries.map((d, idx) => ({
+        id: d.id || String(idx + 1),
+        leaveType: d.leaveType || (leaveCreditRemaining <= 0 ? 'Without Pay' : ''),
+        leaveCategory: d.leaveCategory || '',
+        dateFrom: d.dateFrom || '',
+        dateTo: d.dateTo || d.dateFrom || '',
+        paidDays: d.paidDays ?? '1',
+        unpaidDays: d.unpaidDays ?? '0',
+        reason: d.reason || '',
+        workflowSteps: Array.isArray(d.workflowSteps) ? d.workflowSteps : undefined,
+      }));
+    }
     if (editingRequest) {
       const eStartDate = editingRequest.start_date || editingRequest.date_from || '';
       const eEndDate = editingRequest.end_date || editingRequest.date_to || eStartDate;
@@ -705,6 +733,30 @@ const RequestLeave = ({
 
   useEffect(() => {
     if (editingRequest) {
+      const embeddedDraft = (editingRequest as any)?.__leaveDraft as LeaveDraft | undefined;
+      if (embeddedDraft && Array.isArray(embeddedDraft.entries) && embeddedDraft.entries.length > 0) {
+        setSavedDraftId(embeddedDraft.id);
+        setSchedule(embeddedDraft.schedule || fixedSchedule);
+        setDayOffState(embeddedDraft.dayOff || fixedDayOff);
+        setPayrollClass(embeddedDraft.payrollClass || profilePayrollClass || 'Select payroll class');
+        setIsUserCustomSchedule(Boolean(embeddedDraft.isUserCustomSchedule));
+        setIsUserCustomDayOff(Boolean(embeddedDraft.isUserCustomDayOff));
+        setEntries(
+          embeddedDraft.entries.map((d, idx) => ({
+            id: d.id || String(idx + 1),
+            leaveType: d.leaveType || (leaveCreditRemaining <= 0 ? 'Without Pay' : ''),
+            leaveCategory: d.leaveCategory || '',
+            dateFrom: d.dateFrom || '',
+            dateTo: d.dateTo || d.dateFrom || '',
+            paidDays: d.paidDays ?? '1',
+            unpaidDays: d.unpaidDays ?? '0',
+            reason: d.reason || '',
+            workflowSteps: Array.isArray(d.workflowSteps) ? d.workflowSteps : undefined,
+          })),
+        );
+        return;
+      }
+      setSavedDraftId(null);
       const eStartDate = editingRequest.start_date || editingRequest.date_from || '';
       const eEndDate = editingRequest.end_date || editingRequest.date_to || eStartDate;
       const editingWorkflow: WorkflowStep[] = (editingRequest.approval_summary || []).map((s) => ({
@@ -1403,8 +1455,8 @@ const RequestLeave = ({
       setIsSubmitting(true);
       setSubmitStatus('Saving leave request offline on this device...');
 
-      const isEdit = Boolean(editingRequest);
-      const targetReqId = editingRequest?.request_id || (editingRequest as any)?.id;
+      const isEdit = Boolean(editingRequest) && !isDraftEditing;
+      const targetReqId = isEdit ? (editingRequest?.request_id || (editingRequest as any)?.id) : undefined;
 
       const payloadEntries: Array<{
         leaveType: string;
@@ -1549,6 +1601,9 @@ const RequestLeave = ({
         syncAttempts: 0,
       });
 
+      if (savedDraftId) {
+        await deleteLeaveDraft(draftUserKey, savedDraftId).catch(() => {});
+      }
       setSubmitStatus(isEdit ? 'Leave request update saved locally on device.' : 'Leave request saved locally on device.');
       onToast?.({
         tone: 'success',
@@ -1585,7 +1640,7 @@ const RequestLeave = ({
     }, 12000);
 
     try {
-      if (editingRequest) {
+      if (editingRequest && !isDraftEditing) {
         const targetReqId = editingRequest.request_id || (editingRequest as any).id;
         if (!targetReqId) {
           throw new Error('Request ID is missing.');
@@ -1912,6 +1967,9 @@ const RequestLeave = ({
         submittedIndices.current.add(i);
       }
 
+      if (savedDraftId) {
+        await deleteLeaveDraft(draftUserKey, savedDraftId).catch(() => {});
+      }
       setSubmitStatus(`Submitted ${entries.length} leave request(s).`);
 
       if (autoApprovedBirthdayCount > 0 && entries.length === 1) {
@@ -1961,6 +2019,56 @@ const RequestLeave = ({
     }
   }
 
+  async function handleSaveAsDraft() {
+    if (isSubmitting || isSavingDraft) return;
+    setIsSavingDraft(true);
+    try {
+      const saved = await saveLeaveDraft(draftUserKey, {
+        id: savedDraftId || undefined,
+        schedule,
+        dayOff: dayOffState,
+        payrollClass,
+        isUserCustomSchedule,
+        isUserCustomDayOff,
+        entries: entries.map((e) => ({
+          id: e.id,
+          leaveType: e.leaveType,
+          leaveCategory: e.leaveCategory,
+          dateFrom: e.dateFrom,
+          dateTo: e.dateTo,
+          paidDays: e.paidDays,
+          unpaidDays: e.unpaidDays,
+          reason: e.reason,
+          workflowSteps: e.workflowSteps,
+        })),
+      });
+      setSavedDraftId(saved.id);
+      setSubmitStatus('Saved as draft. Open Requests → Drafts to finish and submit later.');
+      platformAlert(
+        'Saved as Draft',
+        'Your leave request has been saved as a draft.\n\nWhere to find it:\nGo to the Requests tab → Drafts tab to continue editing, delete, or submit your request later.',
+        [
+          { text: 'Keep Editing', style: 'cancel' },
+          {
+            text: 'Go to Drafts',
+            onPress: () => {
+              if (onDraftSaved) {
+                void onDraftSaved();
+              } else {
+                void onSubmitted?.();
+              }
+            },
+          },
+        ],
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unable to save draft.';
+      onToast?.({ tone: 'error', title: 'Draft Save Failed', message: msg });
+    } finally {
+      setIsSavingDraft(false);
+    }
+  }
+
   function submit() {
     if (isSubmitting) {
       return;
@@ -1984,7 +2092,7 @@ const RequestLeave = ({
       return;
     }
 
-    const isEdit = Boolean(editingRequest);
+    const isEdit = Boolean(editingRequest) && !isDraftEditing;
     const isOffline = !isAppOnline();
     const actionText = isOffline ? 'Save Offline' : isEdit ? 'Update' : 'Submit';
     const confirmTitle = isOffline
@@ -2707,6 +2815,21 @@ const RequestLeave = ({
             </View>
           )}
 
+          {(!editingRequest || isDraftEditing) ? (
+            <Pressable
+              disabled={isSubmitting || isSavingDraft}
+              style={[
+                styles.saveDraftButton,
+                (isSubmitting || isSavingDraft) ? styles.submitButtonDisabled : null,
+              ]}
+              onPress={() => void handleSaveAsDraft()}
+            >
+              <Text style={styles.saveDraftText}>
+                {isSavingDraft ? 'Saving Draft...' : 'Save as Draft'}
+              </Text>
+            </Pressable>
+          ) : null}
+
           {/* Action Buttons */}
           <View style={styles.actions}>
             <Pressable style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
@@ -2726,7 +2849,7 @@ const RequestLeave = ({
                   ? 'Saving...'
                   : !isOnline
                     ? 'Save Offline (Auto-Sync)'
-                    : editingRequest
+                    : editingRequest && !isDraftEditing
                       ? 'Update Request'
                       : entries.length > 1
                         ? `Submit ${entries.length} Requests`
@@ -3877,6 +4000,21 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: fontWeights.bold,
     color: '#0f172a',
+  },
+  saveDraftButton: {
+    marginTop: spacing.sm,
+    minHeight: 46,
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  saveDraftText: {
+    color: colors.primary,
+    fontSize: 14,
+    fontWeight: fontWeights.heavy,
   },
   actions: {
     flexDirection: 'row',

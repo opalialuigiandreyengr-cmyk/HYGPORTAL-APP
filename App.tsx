@@ -1071,6 +1071,15 @@ export default function App() {
     } else if (isTravelOrderRequest(request)) {
       setActiveQuickRequestScreen('file_travel_order');
     } else {
+      const draftMeta = (request as any).__esarfDraft;
+      if (draftMeta?.mode === 'pre_approved_ot_offset') {
+        setActiveQuickRequestScreen('apply_pre_approved_ot_offset');
+        return;
+      }
+      if (draftMeta?.mode === 'esarf') {
+        setActiveQuickRequestScreen('apply_esarf');
+        return;
+      }
       const trans = (request.transaction_type || request.request_type_code || '').toLowerCase();
       const isOtOrOffset = trans.includes('ot') || trans.includes('offset') || request.request_type_code === 'overtime' || request.request_type_code === 'offset_earn';
       const today = formatDateInput(new Date());

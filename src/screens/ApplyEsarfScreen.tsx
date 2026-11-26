@@ -86,6 +86,12 @@ import { supabase } from '../lib/supabase';
 import type { AssistantDraft } from '../services/assistant';
 import { loadMyFlexibleSchedule } from '../services/team';
 import { updateMyPendingRequest, type MyRequest } from '../services/requests';
+import {
+  deleteEsarfDraft,
+  isEsarfDraftRequest,
+  saveEsarfDraft,
+  type EsarfDraft,
+} from '../services/esarfDrafts';
 import { removeCacheItem } from '../lib/localCache';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
 import { isAppOnline, useNetworkStatus } from '../services/network';
@@ -365,6 +371,7 @@ export function ApplyEsarfScreen({
   onAssistant,
   onBack,
   onSubmitted,
+  onDraftSaved,
   onToast,
   notificationCount,
   onNotifications,
@@ -391,6 +398,7 @@ export function ApplyEsarfScreen({
   onAssistant?: () => void;
   onBack: () => void;
   onSubmitted?: () => void | Promise<void>;
+  onDraftSaved?: () => void | Promise<void>;
   onToast?: (toast: { tone: 'success' | 'error' | 'warning'; title: string; message: string }) => void;
   notificationCount?: number;
   onNotifications?: () => void;
@@ -398,6 +406,12 @@ export function ApplyEsarfScreen({
   mode?: 'esarf' | 'pre_approved_ot_offset';
 }) {
   const isPreApprovedMode = mode === 'pre_approved_ot_offset';
+  const draftUserKey = employeeId || authUserId || username || 'local_user';
+  const isDraftEditing = isEsarfDraftRequest(editingRequest);
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
+  const [savedDraftId, setSavedDraftId] = useState<string | null>(
+    isDraftEditing && editingRequest?.request_id ? editingRequest.request_id : null,
+  );
   const [activeLockInfo, setActiveLockInfo] = useState<ActiveViewerInfo | null>(null);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const network = useNetworkStatus();
@@ -512,6 +526,24 @@ export function ApplyEsarfScreen({
   };
 
   const [entries, setEntries] = useState<EsarfEntry[]>(() => {
+    const embeddedDraft = (editingRequest as any)?.__esarfDraft as EsarfDraft | undefined;
+    if (embeddedDraft && Array.isArray(embeddedDraft.entries) && embeddedDraft.entries.length > 0) {
+      return embeddedDraft.entries.map((d, idx) => ({
+        id: d.id || String(idx + 1),
+        transaction: d.transaction || (isPreApprovedMode ? 'ot' : ''),
+        dateFrom: d.dateFrom || '',
+        dateTo: d.dateTo || d.dateFrom || '',
+        timeFrom: d.timeFrom || '',
+        timeTo: d.timeTo || '',
+        breakFrom: d.breakFrom || '',
+        breakTo: d.breakTo || '',
+        reason: d.reason || '',
+        eventName: d.eventName,
+        proof: d.proof ?? null,
+        proofs: Array.isArray(d.proofs) ? d.proofs : [],
+        workflowSteps: Array.isArray(d.workflowSteps) ? d.workflowSteps : undefined,
+      }));
+    }
     if (editingRequest) {
       const parsed = parseEsarfEntries(editingRequest);
       if (parsed.length > 0) {
@@ -1218,6 +1250,34 @@ export function ApplyEsarfScreen({
 
   useEffect(() => {
     if (editingRequest) {
+      const embeddedDraft = (editingRequest as any)?.__esarfDraft as EsarfDraft | undefined;
+      if (embeddedDraft && Array.isArray(embeddedDraft.entries) && embeddedDraft.entries.length > 0) {
+        setSavedDraftId(embeddedDraft.id);
+        setSchedule(embeddedDraft.schedule || fixedSchedule);
+        setDayOff(embeddedDraft.dayOff || fixedDayOff);
+        setPayrollClass(embeddedDraft.payrollClass || profilePayrollClass || 'Select payroll class');
+        setIsUserCustomSchedule(Boolean(embeddedDraft.isUserCustomSchedule));
+        setIsUserCustomDayOff(Boolean(embeddedDraft.isUserCustomDayOff));
+        setEntries(
+          embeddedDraft.entries.map((d, idx) => ({
+            id: d.id || String(idx + 1),
+            transaction: d.transaction || (isPreApprovedMode ? 'ot' : ''),
+            dateFrom: d.dateFrom || '',
+            dateTo: d.dateTo || d.dateFrom || '',
+            timeFrom: d.timeFrom || '',
+            timeTo: d.timeTo || '',
+            breakFrom: d.breakFrom || '',
+            breakTo: d.breakTo || '',
+            reason: d.reason || '',
+            eventName: d.eventName,
+            proof: d.proof ?? null,
+            proofs: Array.isArray(d.proofs) ? d.proofs : [],
+            workflowSteps: Array.isArray(d.workflowSteps) ? d.workflowSteps : undefined,
+          })),
+        );
+        return;
+      }
+      setSavedDraftId(null);
       setSchedule(editingRequest.time_schedule ? normalizeSchedule(editingRequest.time_schedule) : fixedSchedule);
       setDayOff(editingRequest.day_off ? normalizeDayOff(editingRequest.day_off) : fixedDayOff);
       setPayrollClass(editingRequest.payroll_class ?? profilePayrollClass ?? 'Select payroll class');
@@ -2034,8 +2094,8 @@ export function ApplyEsarfScreen({
         e.proofs = entryProofs;
       }
 
-      const isEdit = Boolean(editingRequest);
-      const targetReqId = editingRequest?.request_id || (editingRequest as any)?.id;
+      const isEdit = Boolean(editingRequest) && !isDraftEditing;
+      const targetReqId = isEdit ? (editingRequest?.request_id || (editingRequest as any)?.id) : undefined;
 
       const regularEntries = entries.filter(
         (e) => !parseEntryTransactions(e.transaction).includes('use_offset'),
@@ -2354,6 +2414,9 @@ export function ApplyEsarfScreen({
         });
       }
 
+      if (savedDraftId) {
+        await deleteEsarfDraft(draftUserKey, savedDraftId).catch(() => {});
+      }
       setSubmitStatus(isEdit ? 'ESARF update saved locally on this device.' : 'ESARF saved locally on this device.');
       onToast?.({
         tone: 'success',
@@ -2451,7 +2514,7 @@ export function ApplyEsarfScreen({
         e.proofs = entryProofs;
       }
 
-      if (editingRequest) {
+      if (editingRequest && !isDraftEditing) {
         const targetReqId = editingRequest.request_id || (editingRequest as any).id;
         if (!targetReqId) {
           throw new Error('Request ID is missing.');
@@ -2681,7 +2744,10 @@ export function ApplyEsarfScreen({
               : 'ESARF updated',
             message: successStatus,
           });
-          invalidateRequestsCache();
+          if (savedDraftId) {
+        await deleteEsarfDraft(draftUserKey, savedDraftId).catch(() => {});
+      }
+      invalidateRequestsCache();
           const reqCacheKey = await getMyRequestsCacheKey();
           await removeCacheItem(reqCacheKey).catch(() => { });
           await removeCacheItem('my_requests_v1').catch(() => { });
@@ -3040,6 +3106,9 @@ export function ApplyEsarfScreen({
           ? successMessage
           : `${successMessage} Sent for approval.`,
       });
+      if (savedDraftId) {
+        await deleteEsarfDraft(draftUserKey, savedDraftId).catch(() => {});
+      }
       invalidateRequestsCache();
       const reqCacheKey = await getMyRequestsCacheKey();
       await removeCacheItem(reqCacheKey).catch(() => { });
@@ -3067,6 +3136,61 @@ export function ApplyEsarfScreen({
     } finally {
       clearTimeout(warningTimer);
       setIsSubmitting(false);
+    }
+  }
+
+  async function handleSaveAsDraft() {
+    if (isSubmitting || isSavingDraft) return;
+    setIsSavingDraft(true);
+    try {
+      const saved = await saveEsarfDraft(draftUserKey, {
+        id: savedDraftId || undefined,
+        mode,
+        schedule,
+        dayOff,
+        payrollClass,
+        isUserCustomSchedule,
+        isUserCustomDayOff,
+        entries: entries.map((e) => ({
+          id: e.id,
+          transaction: e.transaction,
+          dateFrom: e.dateFrom,
+          dateTo: e.dateTo,
+          timeFrom: e.timeFrom,
+          timeTo: e.timeTo,
+          breakFrom: e.breakFrom,
+          breakTo: e.breakTo,
+          reason: e.reason,
+          eventName: e.eventName,
+          proof: e.proof,
+          proofs: e.proofs,
+          workflowSteps: e.workflowSteps,
+        })),
+      });
+      setSavedDraftId(saved.id);
+      setSubmitStatus('Saved as draft. Open Requests → Drafts to finish and submit later.');
+      platformAlert(
+        'Saved as Draft',
+        'Your request has been saved as a draft.\n\nWhere to find it:\nGo to the Requests tab → Drafts tab to continue editing, delete, or submit your request later.',
+        [
+          { text: 'Keep Editing', style: 'cancel' },
+          {
+            text: 'Go to Drafts',
+            onPress: () => {
+              if (onDraftSaved) {
+                void onDraftSaved();
+              } else {
+                void onSubmitted?.();
+              }
+            },
+          },
+        ],
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unable to save draft.';
+      onToast?.({ tone: 'error', title: 'Draft Save Failed', message: msg });
+    } finally {
+      setIsSavingDraft(false);
     }
   }
 
@@ -3101,7 +3225,7 @@ export function ApplyEsarfScreen({
       return;
     }
 
-    const isEdit = Boolean(editingRequest);
+    const isEdit = Boolean(editingRequest) && !isDraftEditing;
     const isOffline = !isAppOnline();
     const actionText = isOffline ? 'Save Offline' : isEdit ? 'Update' : 'Submit';
     const confirmTitle = isOffline
@@ -3169,7 +3293,7 @@ export function ApplyEsarfScreen({
         onBackHome={() => confirmDiscard(onBack)}
         backTitle={
           editingRequest
-            ? (isPreApprovedMode ? 'Edit Pre-approved OT' : 'Edit ESARF Request')
+            ? (isDraftEditing ? 'Edit ESARF Draft' : isPreApprovedMode ? 'Edit Pre-approved OT' : 'Edit ESARF Request')
             : (isPreApprovedMode ? 'Apply Pre-approved OT' : 'Apply ESARF')
         }
         backAccessory="info"
@@ -4351,6 +4475,21 @@ export function ApplyEsarfScreen({
             </View>
           )}
 
+          {(!editingRequest || isDraftEditing) ? (
+            <Pressable
+              disabled={isSubmitting || isSavingDraft}
+              style={[
+                styles.saveDraftButton,
+                (isSubmitting || isSavingDraft) ? styles.submitButtonDisabled : null,
+              ]}
+              onPress={() => void handleSaveAsDraft()}
+            >
+              <Text style={styles.saveDraftText}>
+                {isSavingDraft ? 'Saving Draft...' : 'Save as Draft'}
+              </Text>
+            </Pressable>
+          ) : null}
+
           <View style={styles.actions}>
             <Pressable style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
               <Text style={styles.cancelText}>Cancel</Text>
@@ -5261,7 +5400,7 @@ export function ApplyEsarfScreen({
             <View style={styles.notesBackdrop}>
               <View style={styles.notesPanel}>
                 <View style={styles.notesHeader}>
-                  <View>
+                  <View style={styles.notesHeaderText}>
                     <Text style={styles.notesTitle}>Submission Notes</Text>
                     <Text style={styles.notesSubtitle}>
                       {isPreApprovedMode ? 'Review before sending your Pre-approved OT request.' : 'Review before sending your ESARF.'}
@@ -5274,11 +5413,11 @@ export function ApplyEsarfScreen({
 
                 <ScrollView style={styles.notesListScroll} showsVerticalScrollIndicator={false}>
                   <View style={styles.notesList}>
-                    {submissionNotes.map((note, index) => (
+                    {(isPreApprovedMode ? preApprovedSubmissionNotes : submissionNotes).map((note, index, list) => (
                       <View key={note.title} style={styles.timelineNoteRow}>
                         <View style={styles.timelineMarkerColumn}>
                           <View style={styles.timelineDot} />
-                          {index < submissionNotes.length - 1 ? <View style={styles.timelineLine} /> : null}
+                          {index < list.length - 1 ? <View style={styles.timelineLine} /> : null}
                         </View>
                         <View style={styles.timelineNoteContent}>
                           <Text style={styles.timelineNoteTitle}>{note.title}</Text>
@@ -5289,8 +5428,18 @@ export function ApplyEsarfScreen({
                     <View style={styles.deadlineNote}>
                       <CalendarDays size={16} color="#b45309" strokeWidth={2.7} />
                       <Text style={styles.deadlineNoteText}>
-                        Submit approved ESARF forms on or before the <Text style={styles.deadlineStrong}>5th</Text> and{' '}
-                        <Text style={styles.deadlineStrong}>20th</Text> for payroll inclusion.
+                        {isPreApprovedMode ? (
+                          <>
+                            After approval, file your actual OT in Apply ESARF with the screenshot attached on or before the{' '}
+                            <Text style={styles.deadlineStrong}>5th</Text> and{' '}
+                            <Text style={styles.deadlineStrong}>20th</Text> for payroll inclusion.
+                          </>
+                        ) : (
+                          <>
+                            Submit approved ESARF forms on or before the <Text style={styles.deadlineStrong}>5th</Text> and{' '}
+                            <Text style={styles.deadlineStrong}>20th</Text> for payroll inclusion.
+                          </>
+                        )}
                       </Text>
                     </View>
                   </View>
@@ -5708,6 +5857,33 @@ export function ApplyEsarfScreen({
     </View>
   );
 }
+
+const preApprovedSubmissionNotes = [
+  {
+    title: 'Schedule Ahead of Time',
+    description: 'Pre-approved OT must be filed for today or a future date before rendering overtime. Past dates are not allowed on this screen.',
+  },
+  {
+    title: 'Overtime (OT) Only',
+    description: 'Only Overtime (OT) is available in Apply Pre-approved OT. Photo proof is not required when submitting a Pre-approved OT request.',
+  },
+  {
+    title: 'Approver Pre-Approval',
+    description: 'Your request is routed to your immediate approver/manager for pre-approval. Once an approver approves or is actively viewing it, editing is locked.',
+  },
+  {
+    title: 'Screenshot Once Approved',
+    description: 'After your Pre-approved OT request is approved, open it in the Requests tab and take a screenshot of the approved request.',
+  },
+  {
+    title: 'File Actual OT in Apply ESARF',
+    description: 'Once you have rendered the overtime, go to Apply ESARF, file Overtime (OT) with your actual worked hours, and attach the approved Pre-approved OT screenshot.',
+  },
+  {
+    title: 'Overnight & Lunch Break',
+    description: 'Overnight overtime crossing midnight must be recorded under its shift start date. 12:00 PM to 1:00 PM is designated lunch break time and is excluded from worked hours.',
+  },
+];
 
 const submissionNotes = [
   {
@@ -7007,6 +7183,21 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.medium,
     marginTop: 3,
   },
+  saveDraftButton: {
+    marginTop: spacing.md,
+    minHeight: 46,
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  saveDraftText: {
+    color: colors.primary,
+    fontSize: 14,
+    fontWeight: fontWeights.heavy,
+  },
   actions: {
     flexDirection: 'row',
     gap: spacing.sm,
@@ -7244,6 +7435,10 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     marginBottom: spacing.lg,
   },
+  notesHeaderText: {
+    flex: 1,
+    minWidth: 0,
+  },
   notesTitle: {
     color: colors.text,
     fontSize: 20,
@@ -7259,6 +7454,7 @@ const styles = StyleSheet.create({
   notesCloseButton: {
     width: 34,
     height: 34,
+    flexShrink: 0,
     borderRadius: 8,
     backgroundColor: '#f1f5f9',
     alignItems: 'center',

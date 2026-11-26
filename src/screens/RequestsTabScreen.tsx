@@ -18,6 +18,14 @@ import {
   type MyRequest,
 } from '../services/requests';
 import {
+  deleteUnifiedDraft,
+  getUnifiedDraftSummary,
+  loadAllRequestDrafts,
+  REQUEST_DRAFTS_UPDATED_EVENT,
+  unifiedDraftToMyRequest,
+  type UnifiedRequestDraft,
+} from '../services/requestDrafts';
+import {
   isScheduledOtRequest,
   isFirstApproverApproved,
   hasPhotoProofAttached,
@@ -49,11 +57,12 @@ import { shareRequestViaMessenger } from '../services/shareRequest';
 import { platformAlert } from '../utils/platformAlert';
 import type { EmployeeProfileSummary, ProfileLoadResult } from '../types/domain';
 
-type StatusFilter = 'all' | 'pending' | 'approved' | 'validated' | 'rejected';
+type StatusFilter = 'all' | 'pending' | 'approved' | 'validated' | 'rejected' | 'drafts';
 type CategoryFilter = 'all' | 'esarf' | 'leave' | 'travel_order' | 'perks';
 
 const statusTabs: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: 'All' },
+  { key: 'drafts', label: 'Drafts' },
   { key: 'pending', label: 'Pending' },
   { key: 'approved', label: 'Approved' },
   { key: 'validated', label: 'Validated' },
@@ -107,6 +116,7 @@ export function RequestsTabScreen({
   onClearTargetRequest,
 }: Props) {
   const [items, setItems] = useState<MyRequest[]>([]);
+  const [drafts, setDrafts] = useState<UnifiedRequestDraft[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
   const [activeStatus, setActiveStatus] = useState<StatusFilter>('all');
@@ -599,10 +609,70 @@ export function RequestsTabScreen({
     };
   }, [profileResult?.status, profileResult?.status === 'linked' ? profileResult.profile.employeeId : undefined, refreshTrigger]);
 
+  const draftUserKey =
+    profileResult?.status === 'linked'
+      ? (profileResult.profile.employeeId || profileResult.profile.username || 'local_user')
+      : null;
+
+  const refreshDrafts = useCallback(async () => {
+    let key = draftUserKey;
+    if (!key) {
+      const { data } = await supabase.auth.getSession();
+      key = data.session?.user?.id || 'local_user';
+    }
+    const loaded = await loadAllRequestDrafts(key);
+    setDrafts(loaded);
+  }, [draftUserKey]);
+
+  useEffect(() => {
+    void refreshDrafts();
+    const sub = DeviceEventEmitter.addListener(REQUEST_DRAFTS_UPDATED_EVENT, () => {
+      void refreshDrafts();
+    });
+    return () => sub.remove();
+  }, [refreshDrafts, refreshTrigger]);
+
+  const handleContinueDraft = useCallback((draft: UnifiedRequestDraft) => {
+    if (!onEditRequest) return;
+    onEditRequest(unifiedDraftToMyRequest(draft));
+  }, [onEditRequest]);
+
+  const handleDeleteDraft = useCallback((draft: UnifiedRequestDraft) => {
+    const performDelete = async () => {
+      let key = draftUserKey;
+      if (!key) {
+        const { data } = await supabase.auth.getSession();
+        key = data.session?.user?.id || 'local_user';
+      }
+      await deleteUnifiedDraft(key, draft);
+    };
+
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      if (window.confirm('Delete this saved draft?')) {
+        void performDelete();
+      }
+      return;
+    }
+
+    Alert.alert(
+      'Delete Draft',
+      'Are you sure you want to delete this saved draft?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => void performDelete() },
+      ],
+    );
+  }, [draftUserKey]);
+
   const counts = useMemo(() => {
     const categoryItems = activeCategory === 'all'
       ? items.filter(Boolean)
       : items.filter((item) => Boolean(item) && requestCategory(item) === activeCategory);
+
+    const draftCount = drafts.filter((d) => {
+      if (activeCategory === 'all') return true;
+      return getUnifiedDraftSummary(d).category === activeCategory;
+    }).length;
 
     return categoryItems.reduce(
       (totals, item) => {
@@ -615,9 +685,9 @@ export function RequestsTabScreen({
         else totals.pending += 1;
         return totals;
       },
-      { all: 0, pending: 0, approved: 0, validated: 0, rejected: 0 },
+      { all: 0, pending: 0, approved: 0, validated: 0, rejected: 0, drafts: draftCount },
     );
-  }, [activeCategory, items]);
+  }, [activeCategory, drafts, items]);
 
   const categoryCounts = useMemo(() => {
     return items.filter(Boolean).reduce(
@@ -634,7 +704,30 @@ export function RequestsTabScreen({
     );
   }, [items]);
 
+  const filteredDrafts = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    const fromTime = parseFilterDate(dateFrom);
+    const toTime = parseFilterDate(dateTo, true);
+
+    return drafts.filter((draft) => {
+      const summary = getUnifiedDraftSummary(draft);
+      if (activeCategory !== 'all' && summary.category !== activeCategory) return false;
+
+      const draftTime = parseFilterDate(summary.dateStr);
+      if (fromTime !== null && (draftTime === null || draftTime < fromTime)) return false;
+      if (toTime !== null && (draftTime === null || draftTime > toTime)) return false;
+
+      if (!normalizedQuery) return true;
+      const haystack = [draft.id, summary.title, summary.meta, summary.reason]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(normalizedQuery);
+    });
+  }, [activeCategory, dateFrom, dateTo, drafts, query]);
+
   const filteredItems = useMemo(() => {
+    if (activeStatus === 'drafts') return [];
     const normalizedQuery = query.trim().toLowerCase();
     const fromTime = parseFilterDate(dateFrom);
     const toTime = parseFilterDate(dateTo, true);
@@ -823,99 +916,153 @@ export function RequestsTabScreen({
         </View>
 
         <View style={styles.tabsCard}>
-          {statusTabs.map((tab) => {
-            const active = activeStatus === tab.key;
-            return (
-              <Pressable key={tab.key} style={styles.tabButton} onPress={() => setActiveStatus(tab.key)}>
-                <View style={styles.tabLabelRow}>
-                  <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>{tab.label}</Text>
-                  <View style={styles.tabCountBadge}>
-                    <Text style={styles.tabCountText}>{counts[tab.key]}</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.tabsCardContent}
+          >
+            {statusTabs.map((tab) => {
+              const active = activeStatus === tab.key;
+              return (
+                <Pressable key={tab.key} style={styles.tabButton} onPress={() => setActiveStatus(tab.key)}>
+                  <View style={styles.tabLabelRow}>
+                    <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>{tab.label}</Text>
+                    <View style={styles.tabCountBadge}>
+                      <Text style={styles.tabCountText}>{counts[tab.key]}</Text>
+                    </View>
                   </View>
-                </View>
-                {active ? <View style={styles.tabIndicator} /> : null}
-              </Pressable>
-            );
-          })}
+                  {active ? <View style={styles.tabIndicator} /> : null}
+                </Pressable>
+              );
+            })}
+          </ScrollView>
         </View>
 
         {status && status !== 'No requests yet.' ? <Text style={styles.status}>{status}</Text> : null}
 
-        {filteredItems.length === 0 && !isLoading ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyTitle}>
-              {activeCategory === 'travel_order'
-                ? 'No Travel Orders'
-                : activeCategory === 'leave'
-                  ? 'No Leave Requests'
-                  : activeCategory === 'esarf'
-                    ? 'No ESARF Requests'
-                    : activeCategory === 'perks'
-                      ? 'No Perk Requests'
-                      : 'No Requests Found'}
-            </Text>
-            <Text style={styles.emptySubtitle}>
-              {activeCategory === 'travel_order'
-                ? 'You have not submitted any official travel order requests yet.'
-                : query
-                  ? `No requests match "${query}".`
-                  : activeStatus !== 'all'
-                    ? `No ${activeStatus} requests found.`
-                    : 'You have no requests in this category.'}
-            </Text>
-            {activeCategory === 'travel_order' && onFileTravelOrder ? (
-              <Pressable style={styles.emptyActionBtn} onPress={onFileTravelOrder}>
-                <Plus size={16} color="#ffffff" strokeWidth={2.4} />
-                <Text style={styles.emptyActionBtnText}>File Travel Order</Text>
-              </Pressable>
-            ) : null}
-          </View>
-        ) : null}
-
-        {paginatedItems.map((item, index) => {
-          const sequence = (currentPage - 1) * pageSize + index + 1;
-          return (
-            <RequestCard
-              key={item.request_id || `req-${index}`}
-              item={item}
-              profile={profile}
-              sequence={sequence}
-              isDeleting={deletingId === item.request_id}
-              isOnline={isOnline}
-              onView={handleView}
-              onEdit={onEditRequest ? handleEdit : undefined}
-              onDelete={handleDelete}
-              onDownload={handleDownloadTravelOrder}
-              isDownloading={downloadingTravelOrderId === item.request_id}
-              onShare={handleShareRequest}
-            />
-          );
-        })}
-
-        {filteredItems.length > pageSize ? (
-          <View style={styles.paginationBar}>
-            <Pressable
-              disabled={currentPage <= 1}
-              style={[styles.paginationButton, currentPage <= 1 ? styles.paginationButtonDisabled : null]}
-              onPress={() => setPage((value) => Math.max(1, value - 1))}
-            >
-              <Text style={styles.paginationButtonText}>Previous</Text>
-            </Pressable>
-            <View style={styles.paginationCenter}>
-              <Text style={styles.paginationText}>Page {currentPage} of {pageCount}</Text>
-              <Text style={styles.paginationMeta}>
-                {((currentPage - 1) * pageSize) + 1}-{Math.min(currentPage * pageSize, filteredItems.length)} of {filteredItems.length}
+        {activeStatus === 'drafts' ? (
+          filteredDrafts.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyTitle}>No Saved Drafts</Text>
+              <Text style={styles.emptySubtitle}>
+                Requests you save as draft (ESARF, Pre-approved OT, Leave, or Travel Order) will appear here so you can finish and submit them later.
               </Text>
             </View>
-            <Pressable
-              disabled={currentPage >= pageCount}
-              style={[styles.paginationButton, currentPage >= pageCount ? styles.paginationButtonDisabled : null]}
-              onPress={() => setPage((value) => Math.max(pageCount, value + 1))}
-            >
-              <Text style={styles.paginationButtonText}>Next</Text>
-            </Pressable>
-          </View>
-        ) : null}
+          ) : (
+            filteredDrafts.map((draft) => {
+              const summary = getUnifiedDraftSummary(draft);
+
+              return (
+                <View key={draft.id} style={styles.draftCard}>
+                  <View style={styles.draftTopRow}>
+                    <View style={styles.draftTitleWrap}>
+                      <Text style={styles.draftTitle} numberOfLines={1}>{summary.title}</Text>
+                      <Text style={styles.draftMeta}>{summary.meta}</Text>
+                    </View>
+                    <View style={styles.draftStatusPill}>
+                      <Text style={styles.draftStatusText}>DRAFT</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.draftReason} numberOfLines={2}>{summary.reason}</Text>
+                  <View style={styles.draftActionsRow}>
+                    <Pressable
+                      style={styles.draftContinueBtn}
+                      onPress={() => handleContinueDraft(draft)}
+                    >
+                      <Pencil size={14} color="#ffffff" strokeWidth={2.3} />
+                      <Text style={styles.draftContinueText}>Continue Editing</Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.draftDeleteBtn}
+                      onPress={() => handleDeleteDraft(draft)}
+                    >
+                      <Trash2 size={14} color="#dc2626" strokeWidth={2.3} />
+                      <Text style={styles.draftDeleteText}>Delete</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              );
+            })
+          )
+        ) : (
+          <>
+            {filteredItems.length === 0 && !isLoading ? (
+              <View style={styles.emptyContainer}>
+                <Text style={styles.emptyTitle}>
+                  {activeCategory === 'travel_order'
+                    ? 'No Travel Orders'
+                    : activeCategory === 'leave'
+                      ? 'No Leave Requests'
+                      : activeCategory === 'esarf'
+                        ? 'No ESARF Requests'
+                        : activeCategory === 'perks'
+                          ? 'No Perk Requests'
+                          : 'No Requests Found'}
+                </Text>
+                <Text style={styles.emptySubtitle}>
+                  {activeCategory === 'travel_order'
+                    ? 'You have not submitted any official travel order requests yet.'
+                    : query
+                      ? `No requests match "${query}".`
+                      : activeStatus !== 'all'
+                        ? `No ${activeStatus} requests found.`
+                        : 'You have no requests in this category.'}
+                </Text>
+                {activeCategory === 'travel_order' && onFileTravelOrder ? (
+                  <Pressable style={styles.emptyActionBtn} onPress={onFileTravelOrder}>
+                    <Plus size={16} color="#ffffff" strokeWidth={2.4} />
+                    <Text style={styles.emptyActionBtnText}>File Travel Order</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
+
+            {paginatedItems.map((item, index) => {
+              const sequence = (currentPage - 1) * pageSize + index + 1;
+              return (
+                <RequestCard
+                  key={item.request_id || `req-${index}`}
+                  item={item}
+                  profile={profile}
+                  sequence={sequence}
+                  isDeleting={deletingId === item.request_id}
+                  isOnline={isOnline}
+                  onView={handleView}
+                  onEdit={onEditRequest ? handleEdit : undefined}
+                  onDelete={handleDelete}
+                  onDownload={handleDownloadTravelOrder}
+                  isDownloading={downloadingTravelOrderId === item.request_id}
+                  onShare={handleShareRequest}
+                />
+              );
+            })}
+
+            {filteredItems.length > pageSize ? (
+              <View style={styles.paginationBar}>
+                <Pressable
+                  disabled={currentPage <= 1}
+                  style={[styles.paginationButton, currentPage <= 1 ? styles.paginationButtonDisabled : null]}
+                  onPress={() => setPage((value) => Math.max(1, value - 1))}
+                >
+                  <Text style={styles.paginationButtonText}>Previous</Text>
+                </Pressable>
+                <View style={styles.paginationCenter}>
+                  <Text style={styles.paginationText}>Page {currentPage} of {pageCount}</Text>
+                  <Text style={styles.paginationMeta}>
+                    {((currentPage - 1) * pageSize) + 1}-{Math.min(currentPage * pageSize, filteredItems.length)} of {filteredItems.length}
+                  </Text>
+                </View>
+                <Pressable
+                  disabled={currentPage >= pageCount}
+                  style={[styles.paginationButton, currentPage >= pageCount ? styles.paginationButtonDisabled : null]}
+                  onPress={() => setPage((value) => Math.max(pageCount, value + 1))}
+                >
+                  <Text style={styles.paginationButtonText}>Next</Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </>
+        )}
       </ScrollView>
 
       {activeDatePicker ? (
@@ -1568,25 +1715,35 @@ function RequestDetailsSheet({
             )}
           </ScrollView>
           <View style={[styles.sheetFooter, { paddingBottom: footerBottomPadding }]}>
-            {isShareableRequest(item) && onShare ? (
-              <Pressable
-                style={styles.sheetShareButton}
-                onPress={() => {
-                  const itemToShare = item;
-                  const seqToShare = sequence;
-                  onClose();
-                  setTimeout(() => {
-                    onShare(itemToShare, seqToShare);
-                  }, 100);
-                }}
-              >
-                <Share2 size={15} color="#1d4ed8" strokeWidth={2.4} />
-                <Text style={styles.sheetShareText}>Share</Text>
-              </Pressable>
-            ) : null}
-            {itemStatusKey === 'pending' ? (
-              <>
-                {!isPerk && canEditRequest(item) && onEdit ? (
+            {(isShareableRequest(item) && onShare) ||
+              (itemStatusKey === 'pending' &&
+                ((!isPerk && canEditRequest(item) && onEdit) ||
+                  (canDeleteRequest(item, isOnline) && onDelete))) ? (
+              <View style={styles.sheetActionRow}>
+                {isShareableRequest(item) && onShare ? (
+                  <Pressable
+                    style={styles.sheetShareButton}
+                    onPress={() => {
+                      const itemToShare = item;
+                      const seqToShare = sequence;
+                      onClose();
+                      setTimeout(() => {
+                        onShare(itemToShare, seqToShare);
+                      }, 100);
+                    }}
+                  >
+                    <Share2 size={14} color="#1d4ed8" strokeWidth={2.4} />
+                    <Text
+                      style={styles.sheetShareText}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.8}
+                    >
+                      Share
+                    </Text>
+                  </Pressable>
+                ) : null}
+                {itemStatusKey === 'pending' && !isPerk && canEditRequest(item) && onEdit ? (
                   <Pressable
                     style={styles.sheetEditButton}
                     onPress={() => {
@@ -1599,11 +1756,18 @@ function RequestDetailsSheet({
                       }
                     }}
                   >
-                    <Pencil size={15} color="#92400e" strokeWidth={2.4} />
-                    <Text style={styles.sheetEditText}>Edit Request</Text>
+                    <Pencil size={14} color="#92400e" strokeWidth={2.4} />
+                    <Text
+                      style={styles.sheetEditText}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.8}
+                    >
+                      Edit
+                    </Text>
                   </Pressable>
                 ) : null}
-                {canDeleteRequest(item, isOnline) && onDelete ? (
+                {itemStatusKey === 'pending' && canDeleteRequest(item, isOnline) && onDelete ? (
                   <Pressable
                     style={styles.sheetDeleteButton}
                     onPress={() => {
@@ -1614,11 +1778,18 @@ function RequestDetailsSheet({
                       }, 100);
                     }}
                   >
-                    <Trash2 size={15} color={colors.semantic.danger} strokeWidth={2.4} />
-                    <Text style={styles.sheetDeleteText}>Delete Request</Text>
+                    <Trash2 size={14} color={colors.semantic.danger} strokeWidth={2.4} />
+                    <Text
+                      style={styles.sheetDeleteText}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.8}
+                    >
+                      Delete
+                    </Text>
                   </Pressable>
                 ) : null}
-              </>
+              </View>
             ) : null}
             <Pressable style={styles.sheetCloseButton} onPress={onClose}>
               <Text style={styles.sheetCloseText}>Close</Text>
@@ -3138,21 +3309,26 @@ const styles = StyleSheet.create({
   tabsCard: {
     backgroundColor: colors.surface,
     borderRadius: radius.md,
-    flexDirection: 'row',
     marginBottom: spacing.sm,
     shadowColor: colors.muted,
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.07,
     shadowRadius: 14,
     elevation: 2,
+    overflow: 'hidden',
+  },
+  tabsCardContent: {
+    flexGrow: 1,
+    flexDirection: 'row',
   },
   tabButton: {
     flex: 1,
+    minWidth: 74,
     minHeight: 48,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
-    paddingHorizontal: 2,
+    paddingHorizontal: 8,
   },
   tabLabelRow: {
     flexDirection: 'row',
@@ -3189,6 +3365,91 @@ const styles = StyleSheet.create({
     height: 3,
     borderRadius: 999,
     backgroundColor: colors.primary,
+  },
+  draftCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+    gap: 10,
+  },
+  draftTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  draftTitleWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  draftTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: fontWeights.heavy,
+  },
+  draftMeta: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: fontWeights.semibold,
+    marginTop: 2,
+  },
+  draftStatusPill: {
+    backgroundColor: '#eef2ff',
+    borderWidth: 1,
+    borderColor: '#c7d2fe',
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+  },
+  draftStatusText: {
+    color: '#4338ca',
+    fontSize: 10.5,
+    fontWeight: fontWeights.heavy,
+  },
+  draftReason: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  draftActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  draftContinueBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: colors.primary,
+    borderRadius: 10,
+    paddingVertical: 10,
+  },
+  draftContinueText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: fontWeights.heavy,
+  },
+  draftDeleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  draftDeleteText: {
+    color: '#dc2626',
+    fontSize: 13,
+    fontWeight: fontWeights.heavy,
   },
   status: {
     fontSize: 13,
@@ -3532,54 +3793,62 @@ const styles = StyleSheet.create({
     marginVertical: 2,
     marginHorizontal: 8,
   },
+  sheetActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   sheetShareButton: {
     flex: 1,
-    minHeight: 44,
-    borderRadius: 22,
+    minHeight: 42,
+    borderRadius: 21,
+    paddingHorizontal: 8,
     backgroundColor: '#eff6ff',
     borderWidth: 1,
     borderColor: '#bfdbfe',
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
-    gap: 6,
+    gap: 5,
   },
   sheetShareText: {
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: fontWeights.bold,
     color: '#1d4ed8',
   },
   sheetEditButton: {
     flex: 1,
-    minHeight: 44,
-    borderRadius: 22,
+    minHeight: 42,
+    borderRadius: 21,
+    paddingHorizontal: 8,
     backgroundColor: '#fef3c7',
     borderWidth: 1,
     borderColor: '#fde68a',
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
-    gap: 6,
+    gap: 5,
   },
   sheetEditText: {
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: fontWeights.bold,
     color: '#92400e',
   },
   sheetDeleteButton: {
     flex: 1,
-    minHeight: 44,
-    borderRadius: 22,
+    minHeight: 42,
+    borderRadius: 21,
+    paddingHorizontal: 8,
     backgroundColor: '#fef2f2',
     borderWidth: 1,
     borderColor: '#fecaca',
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
-    gap: 6,
+    gap: 5,
   },
   sheetDeleteText: {
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: fontWeights.bold,
     color: colors.semantic.danger,
   },
