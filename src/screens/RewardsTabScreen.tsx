@@ -23,6 +23,7 @@ import {
   Heart,
   History,
   Lightbulb,
+  MapPin,
   Rocket,
   Star,
   Trophy,
@@ -42,8 +43,10 @@ import {
   type RewardsWalletHistoryItem,
 } from '../services/rewards';
 import { emptyEmployeeBadgesData, loadEmployeeBadges, type EarnedBadgeItem, type EmployeeBadgesData } from '../services/badges';
+import { confirmTrainingAttendance, loadMyTrainings, type TrainingItem } from '../services/trainings';
 import { BadgesScreen } from './BadgesScreen';
 import { RewardsCatalogScreen } from './RewardsCatalogScreen';
+import { TrainingsScreen } from './TrainingsScreen';
 import type { AppToastMessage } from '../components/AppToast';
 
 const hygCoinsImage = require('../../assets/hygcoins.png');
@@ -103,6 +106,7 @@ export function RewardsTabScreen({
   const [showWalletHistory, setShowWalletHistory] = useState(false);
   const [showBadges, setShowBadges] = useState(false);
   const [showRewardsCatalog, setShowRewardsCatalog] = useState(false);
+  const [showTrainings, setShowTrainings] = useState(false);
   const [wallet, setWallet] = useState<RewardsWallet>(() => ({
     balance: pointsBalance,
     totalEarned: pointsBalance,
@@ -111,6 +115,9 @@ export function RewardsTabScreen({
   }));
   const [badgesData, setBadgesData] = useState<EmployeeBadgesData>(() => emptyEmployeeBadgesData());
   const [redeemedRewards, setRedeemedRewards] = useState<RedeemedRewardItem[]>([]);
+  const [trainings, setTrainings] = useState<TrainingItem[]>([]);
+  const [isLoadingTrainings, setIsLoadingTrainings] = useState(false);
+  const [trainingsError, setTrainingsError] = useState('');
   const [isLoadingBadges, setIsLoadingBadges] = useState(false);
   const [badgesError, setBadgesError] = useState('');
   const [walletStatus, setWalletStatus] = useState('');
@@ -145,6 +152,24 @@ export function RewardsTabScreen({
     }
   }, [userId, employeeId, employeeCode]);
 
+  const refreshTrainings = useCallback(async (forceRefresh = false) => {
+    setIsLoadingTrainings(true);
+    try {
+      const nextTrainings = await loadMyTrainings(
+        userId ?? undefined,
+        employeeId ?? undefined,
+        employeeCode ?? undefined,
+        { forceRefresh },
+      );
+      setTrainings(nextTrainings);
+      setTrainingsError('');
+    } catch (error) {
+      setTrainingsError(error instanceof Error ? error.message : 'Unable to load trainings.');
+    } finally {
+      setIsLoadingTrainings(false);
+    }
+  }, [userId, employeeId, employeeCode]);
+
   const refreshWallet = useCallback(async (isPull = false) => {
     if (isPull) {
       setIsRefreshing(true);
@@ -163,6 +188,7 @@ export function RewardsTabScreen({
           () => [] as RedeemedRewardItem[],
         ),
         refreshBadges(isPull),
+        refreshTrainings(isPull),
       ]);
       setWallet(nextWallet);
       setRedeemedRewards(nextRedeemed);
@@ -173,7 +199,7 @@ export function RewardsTabScreen({
     } finally {
       setIsRefreshing(false);
     }
-  }, [userId, employeeId, refreshBadges]);
+  }, [userId, employeeId, refreshBadges, refreshTrainings]);
 
   useEffect(() => {
     void refreshWallet();
@@ -191,6 +217,61 @@ export function RewardsTabScreen({
       return current;
     });
   }, [pointsBalance]);
+
+  const concludedTrainingsCount = useMemo(
+    () => trainings.filter((t) => t.status.toLowerCase() === 'concluded').length,
+    [trainings],
+  );
+
+  const handleConfirmTraining = useCallback(async (training: TrainingItem) => {
+    try {
+      await confirmTrainingAttendance(
+        training.id,
+        userId ?? undefined,
+        employeeId ?? undefined,
+        employeeCode ?? undefined,
+      );
+      setTrainings((prev) =>
+        prev.map((t) => (t.id === training.id ? { ...t, isConfirmed: true } : t)),
+      );
+      onToast?.({
+        tone: 'success',
+        title: 'Attendance Confirmed',
+        message: `Your attendance for "${training.title}" has been confirmed.`,
+      });
+    } catch (error) {
+      onToast?.({
+        tone: 'error',
+        title: 'Confirmation Failed',
+        message: error instanceof Error ? error.message : 'Unable to confirm training attendance.',
+      });
+    }
+  }, [userId, employeeId, employeeCode, onToast]);
+
+  if (showTrainings) {
+    return (
+      <TrainingsScreen
+        trainings={trainings}
+        isLoading={isLoadingTrainings}
+        isRefreshing={isRefreshing}
+        errorMessage={trainingsError}
+        onRefresh={() => void refreshWallet(true)}
+        onConfirmTraining={handleConfirmTraining}
+        onBack={() => setShowTrainings(false)}
+        profileName={profileName}
+        username={username}
+        profilePhotoUrl={profilePhotoUrl}
+        pointsBalance={effectivePointsBalance}
+        notificationCount={notificationCount}
+        onAssistant={onAssistant}
+        onNotifications={onNotifications}
+        onOpenProfile={onOpenProfile}
+        onOpenSettings={onOpenSettings}
+        onOpenMyTeam={onOpenMyTeam}
+        onSignOut={onSignOut}
+      />
+    );
+  }
 
   if (showRewardsCatalog) {
     return (
@@ -403,7 +484,7 @@ export function RewardsTabScreen({
             <RewardsStatCard
               gradientId="rewards-stat-grad-trainings"
               width={rewardsCardWidth}
-              value="0"
+              value={String(concludedTrainingsCount)}
               title="Trainings Attended"
               subtitle="completed learning activities"
               icon={<GraduationCap size={22} color="#ffffff" strokeWidth={2.2} />}
@@ -432,7 +513,7 @@ export function RewardsTabScreen({
           <RewardsActionButton
             label="Trainings"
             icon={<CalendarDays size={16} color="#dc2626" strokeWidth={2.4} />}
-            onPress={() => handleComingSoon('Trainings')}
+            onPress={() => setShowTrainings(true)}
           />
           <RewardsActionButton
             label="History"
@@ -444,6 +525,8 @@ export function RewardsTabScreen({
         <RecentBadgesCard earnedBadges={badgesData.earned} />
 
         <RedeemedRewardsCard redeemedRewards={redeemedRewards} />
+
+        <AttendedTrainingsCard trainings={trainings} />
       </ScrollView>
 
       <Modal
@@ -948,6 +1031,79 @@ function RedeemedRewardsCard({
       ) : (
         <View style={styles.recentBadgesEmpty}>
           <Text style={styles.recentBadgesEmptyText}>No redeemed rewards yet.</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+function AttendedTrainingsCard({
+  trainings,
+}: {
+  trainings: TrainingItem[];
+}) {
+  const attended = useMemo(() => {
+    return trainings
+      .filter((t) => t.status.toLowerCase() === 'concluded')
+      .sort((a, b) => b.trainingDate.localeCompare(a.trainingDate))
+      .slice(0, 3);
+  }, [trainings]);
+
+  return (
+    <View style={styles.recentBadgesCard}>
+      <View style={styles.recentBadgesHeader}>
+        <View style={styles.recentBadgesHeaderText}>
+          <Text style={styles.recentBadgesTitle}>Attended Trainings</Text>
+          <Text style={styles.recentBadgesSubtitle}>Completed learning activities and sessions</Text>
+        </View>
+        <GraduationCap size={24} color="#dc2626" strokeWidth={2.2} />
+      </View>
+
+      {attended.length > 0 ? (
+        <View style={styles.recentBadgesList}>
+          {attended.map((item) => {
+            const { dateText } = formatRecentBadgeDateTime(
+              item.trainingDate ? `${item.trainingDate}T00:00:00` : '',
+            );
+
+            return (
+              <View key={item.id} style={styles.recentBadgeRow}>
+                <View style={styles.recentBadgeLeft}>
+                  <View style={styles.recentBadgeInfo}>
+                    <Text style={styles.recentBadgeTitle} numberOfLines={1}>
+                      {item.title}
+                    </Text>
+                    {dateText ? (
+                      <View style={styles.recentBadgeMetaRow}>
+                        <CalendarDays size={12} color={colors.muted} strokeWidth={2} />
+                        <Text style={styles.recentBadgeMetaText}>{dateText}</Text>
+                      </View>
+                    ) : null}
+                    {item.location ? (
+                      <View style={styles.recentBadgeMetaRow}>
+                        <MapPin size={12} color={colors.muted} strokeWidth={2} />
+                        <Text style={styles.recentBadgeMetaText} numberOfLines={1}>
+                          {item.location}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                </View>
+
+                {item.badgePoints > 0 ? (
+                  <Text style={styles.recentBadgePoints}>+{item.badgePoints} Points</Text>
+                ) : (
+                  <View style={styles.attendedStatusPill}>
+                    <Text style={styles.attendedStatusText}>Completed</Text>
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </View>
+      ) : (
+        <View style={styles.recentBadgesEmpty}>
+          <Text style={styles.recentBadgesEmptyText}>No attended trainings yet.</Text>
         </View>
       )}
     </View>
@@ -1788,5 +1944,16 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     fontWeight: '800',
     marginTop: 3,
+  },
+  attendedStatusPill: {
+    backgroundColor: '#dcfce7',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  attendedStatusText: {
+    color: '#15803d',
+    fontSize: 11,
+    fontWeight: '800',
   },
 });
