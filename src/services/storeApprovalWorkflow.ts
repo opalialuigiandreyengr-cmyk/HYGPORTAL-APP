@@ -166,8 +166,8 @@ async function fetchWithSWR<T>(
 // Cache keys
 const SWR_KEY_STORES = 'swr_portal_active_stores_v2';
 const SWR_KEY_CANDIDATES = 'swr_portal_candidates_master_v3';
-const SWR_PREFIX_WORKFLOW = 'swr_portal_store_workflow_v4_';
-const AUTH_WORKFLOW_STORAGE_PREFIX = 'auth_portal_workflow_v1_';
+const SWR_PREFIX_WORKFLOW = 'swr_portal_store_workflow_v5_';
+const AUTH_WORKFLOW_STORAGE_PREFIX = 'auth_portal_workflow_v2_';
 
 /**
  * Loads the persisted authoritative workflow for an employee and store.

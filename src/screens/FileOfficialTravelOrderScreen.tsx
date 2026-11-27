@@ -18,7 +18,6 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  ArrowRightLeft,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -27,6 +26,7 @@ import {
   Compass,
   Search,
   ShieldAlert,
+  Store,
   User,
   Users,
   WifiOff,
@@ -55,13 +55,12 @@ import {
 import { fetchTravelOrderDetails } from '../services/travelOrder';
 import {
   loadStoreApprovalWorkflow,
-  loadApproverCandidates,
   formatApproverDisplayName,
   loadPortalStores,
   type PortalStore,
   type WorkflowStep,
-  type ApproverCandidate,
 } from '../services/storeApprovalWorkflow';
+import { StoreDutyModal } from '../components/StoreDutyModal';
 import { resolveApproverLevel, loadPositionAuthorities } from '../services/positions';
 import { useNetworkStatus, isAppOnline } from '../services/network';
 
@@ -481,16 +480,13 @@ export function FileOfficialTravelOrderScreen({
         setGoldilocksStores(filtered);
       } catch (_) { }
       try {
-        await Promise.all([
-          loadApproverCandidates(),
-          loadStoreApprovalWorkflow(
-            null,
-            profile?.employeeId?.trim() || employeeId?.trim() || null,
-            profile?.storeName?.trim() || storeName?.trim() || null,
-            (profile?.departmentName || departmentName || '').toLowerCase().includes('operation'),
-            profile?.departmentName?.trim() || departmentName?.trim() || null,
-          ),
-        ]);
+        await loadStoreApprovalWorkflow(
+          null,
+          profile?.employeeId?.trim() || employeeId?.trim() || null,
+          profile?.storeName?.trim() || storeName?.trim() || null,
+          (profile?.departmentName || departmentName || '').toLowerCase().includes('operation'),
+          profile?.departmentName?.trim() || departmentName?.trim() || null,
+        );
       } catch (_) { }
     } finally {
       setRefreshing(false);
@@ -562,19 +558,58 @@ export function FileOfficialTravelOrderScreen({
     },
   ]);
   const [isLoadingWorkflow, setIsLoadingWorkflow] = useState(false);
-  const defaultWorkflowStepsRef = useRef<WorkflowStep[]>([]);
+  const [defaultWorkflowSteps, setDefaultWorkflowSteps] = useState<WorkflowStep[]>([]);
+  const [dutyStoreId, setDutyStoreId] = useState<string | null>(null);
+  const [dutyStoreName, setDutyStoreName] = useState<string | null>(null);
+  const [isStoreDutyModalOpen, setIsStoreDutyModalOpen] = useState(false);
 
-  // Reassign Modal State
-  const [isReassignModalOpen, setIsReassignModalOpen] = useState(false);
-  const [reassigningStep, setReassigningStep] = useState<WorkflowStep | null>(null);
-  const [candidateSearchQuery, setCandidateSearchQuery] = useState('');
-  const [approverCandidates, setApproverCandidates] = useState<ApproverCandidate[]>([]);
-  const [selectedCandidate, setSelectedCandidate] = useState<ApproverCandidate | null>(null);
-  const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
+  const isOperationsDepartment = (profile?.departmentName || departmentName || '')
+    .toLowerCase()
+    .includes('operation');
 
-  // Pre-cache candidates and position authorities
+  async function handleSelectStoreDuty(store: PortalStore) {
+    setIsStoreDutyModalOpen(false);
+    setDutyStoreId(store.id);
+    setDutyStoreName(store.name);
+    setIsLoadingWorkflow(true);
+    try {
+      const empQueryId = resolvedEmployeeUuid || (resolvedEmployeeId !== 'N/A' ? resolvedEmployeeId : null);
+      const resolvedDept = profile?.departmentName?.trim() || departmentName?.trim() || null;
+      const steps = await loadStoreApprovalWorkflow(
+        store.id,
+        empQueryId,
+        store.name,
+        isOperationsDepartment,
+        resolvedDept,
+      );
+      if (steps.length > 0) {
+        setWorkflowSteps(
+          steps.map((st, idx) => ({
+            ...st,
+            step_order: st.step_order || idx + 1,
+            status: idx === 0 ? 'pending' : 'waiting',
+            is_reassigned: false,
+          })),
+        );
+      }
+    } catch (err) {
+      console.warn('[FileOfficialTravelOrderScreen] Error loading store duty workflow:', err);
+    } finally {
+      setIsLoadingWorkflow(false);
+    }
+  }
+
+  function handleClearStoreDuty() {
+    setIsStoreDutyModalOpen(false);
+    setDutyStoreId(null);
+    setDutyStoreName(null);
+    if (defaultWorkflowSteps.length > 0) {
+      setWorkflowSteps(defaultWorkflowSteps);
+    }
+  }
+
+  // Pre-cache position authorities
   useEffect(() => {
-    loadApproverCandidates().catch(() => { });
     loadPositionAuthorities().catch(() => { });
   }, []);
 
@@ -604,7 +639,7 @@ export function FileOfficialTravelOrderScreen({
             ...st,
             step_order: st.step_order || idx + 1,
             status: idx === 0 ? 'pending' : 'waiting',
-            is_reassigned: Boolean(st.is_reassigned),
+            is_reassigned: false,
           }));
         } else {
           resolvedSteps = [
@@ -637,18 +672,8 @@ export function FileOfficialTravelOrderScreen({
           ];
         }
 
-        defaultWorkflowStepsRef.current = resolvedSteps;
-
-        setWorkflowSteps((prev) => {
-          // If already customized by user, preserve custom reassignments
-          if (prev && prev.length > 0 && prev.some((s) => s.is_reassigned)) {
-            return prev.map((currStep, idx) => {
-              if (currStep.is_reassigned) return currStep;
-              return resolvedSteps[idx] || currStep;
-            });
-          }
-          return resolvedSteps;
-        });
+        setDefaultWorkflowSteps(resolvedSteps);
+        setWorkflowSteps((prev) => (dutyStoreId ? prev : resolvedSteps));
       } catch (err) {
         console.warn('[FileOfficialTravelOrderScreen] Error initializing approval workflow:', err);
       } finally {
@@ -661,105 +686,6 @@ export function FileOfficialTravelOrderScreen({
       isMounted = false;
     };
   }, [resolvedEmployeeUuid, resolvedEmployeeId, profile?.storeName, storeName, profile?.departmentName, departmentName]);
-
-  // Load approver candidates when reassign modal opens
-  useEffect(() => {
-    if (!isReassignModalOpen) return;
-    let isMounted = true;
-    async function fetchCandidates() {
-      setIsLoadingCandidates(true);
-      try {
-        const candidates = await loadApproverCandidates();
-        if (!isMounted) return;
-        setApproverCandidates(candidates);
-      } catch {
-        // non-fatal
-      } finally {
-        if (isMounted) setIsLoadingCandidates(false);
-      }
-    }
-    fetchCandidates();
-    return () => {
-      isMounted = false;
-    };
-  }, [isReassignModalOpen]);
-
-  // Filtered approver candidates (Strictly excludes level 1 rank-and-file employees)
-  const filteredApproverCandidates = useMemo(() => {
-    const approversOnly = approverCandidates.filter((c) => (c.authority_level ?? 0) > 1);
-    if (!candidateSearchQuery.trim()) return approversOnly;
-    const q = candidateSearchQuery.toLowerCase().trim();
-    return approversOnly.filter(
-      (c) =>
-        c.full_name.toLowerCase().includes(q) ||
-        (c.employee_no && c.employee_no.toLowerCase().includes(q)) ||
-        (c.position_name && c.position_name.toLowerCase().includes(q)) ||
-        (c.department_name && c.department_name.toLowerCase().includes(q)) ||
-        (c.store_name && c.store_name.toLowerCase().includes(q)) ||
-        (c.company_name && c.company_name.toLowerCase().includes(q))
-    );
-  }, [approverCandidates, candidateSearchQuery]);
-
-  const handleOpenReassignModal = (step: WorkflowStep) => {
-    setReassigningStep(step);
-    setSelectedCandidate(null);
-    setCandidateSearchQuery('');
-    setIsReassignModalOpen(true);
-  };
-
-  const handleConfirmReassign = () => {
-    if (!reassigningStep || !selectedCandidate) return;
-    const targetStepOrder = reassigningStep.step_order;
-    const candLevel = selectedCandidate.authority_level ?? (reassigningStep.required_level || (targetStepOrder === 1 ? 2 : 5));
-
-    setWorkflowSteps((prev) =>
-      prev.map((s) => {
-        if (s.step_order === targetStepOrder) {
-          return {
-            ...s,
-            approver_employee_id: selectedCandidate.employee_id,
-            approver_name: selectedCandidate.full_name,
-            approver_position_name: selectedCandidate.position_name || s.approver_position_name,
-            approver_employee_no: selectedCandidate.employee_no || s.approver_employee_no,
-            approver_level: candLevel,
-            position_level: candLevel,
-            required_level: candLevel,
-            is_reassigned: true,
-          };
-        }
-        return s;
-      })
-    );
-
-    onToast?.({
-      tone: 'success',
-      title: 'Approver Reassigned',
-      message: `Step ${targetStepOrder} approver set to ${selectedCandidate.full_name}`,
-    });
-
-    setIsReassignModalOpen(false);
-    setReassigningStep(null);
-    setSelectedCandidate(null);
-  };
-
-  const handleResetStepApprover = () => {
-    if (!reassigningStep) return;
-    const targetStepOrder = reassigningStep.step_order;
-    const def = defaultWorkflowStepsRef.current.find((s) => s.step_order === targetStepOrder);
-    if (def) {
-      setWorkflowSteps((prev) =>
-        prev.map((s) => (s.step_order === targetStepOrder ? { ...def, is_reassigned: false } : s))
-      );
-    }
-    onToast?.({
-      tone: 'success',
-      title: 'Approver Reset',
-      message: `Step ${targetStepOrder} approver reset to default.`,
-    });
-    setIsReassignModalOpen(false);
-    setReassigningStep(null);
-    setSelectedCandidate(null);
-  };
 
   // Multi-select store toggling
   const toggleDestinationStore = (storeNameStr: string) => {
@@ -892,12 +818,14 @@ export function FileOfficialTravelOrderScreen({
 
     setIsSubmitting(true);
     try {
-      const customApprovers = workflowSteps
-        .filter((s) => s.is_reassigned && s.approver_employee_id)
-        .map((s) => ({
-          step_order: s.step_order,
-          approver_employee_id: s.approver_employee_id!,
-        }));
+      const customApprovers = dutyStoreId
+        ? workflowSteps
+          .filter((s) => Boolean(s.approver_employee_id))
+          .map((s) => ({
+            step_order: s.step_order,
+            approver_employee_id: s.approver_employee_id!,
+          }))
+        : [];
 
       // Simulate/prepare payload
       const payload = {
@@ -917,6 +845,8 @@ export function FileOfficialTravelOrderScreen({
         emergencyBudget: emergencyBudget ? parseFloat(emergencyBudget) : 0,
         costCenterCode: costCenterCode.trim() || null,
         chargeToStore: chargeToStore || null,
+        storeId: dutyStoreId || null,
+        storeName: dutyStoreName || null,
         submittedAt: new Date().toISOString(),
         customApprovers: customApprovers.length > 0 ? customApprovers : null,
         workflowSteps: workflowSteps.length > 0 ? workflowSteps : null,
@@ -939,7 +869,7 @@ export function FileOfficialTravelOrderScreen({
         await submitOfficialTravelOrder(payload);
 
         if (savedDraftId) {
-          await deleteTravelOrderDraft(draftUserKey, savedDraftId).catch(() => {});
+          await deleteTravelOrderDraft(draftUserKey, savedDraftId).catch(() => { });
         }
 
         // Brief delay for user feedback
@@ -1624,15 +1554,45 @@ export function FileOfficialTravelOrderScreen({
                 {isLoadingWorkflow ? (
                   <ActivityIndicator size="small" color="#1e40af" />
                 ) : null}
+                {isOperationsDepartment && !dutyStoreId ? (
+                  <Pressable
+                    style={styles.storeDutyBtn}
+                    onPress={() => setIsStoreDutyModalOpen(true)}
+                    hitSlop={6}
+                  >
+                    <Store size={11} color="#475569" strokeWidth={2.3} />
+                    <Text style={styles.storeDutyBtnText} numberOfLines={1}>
+                      Select Store Duty
+                    </Text>
+                  </Pressable>
+                ) : null}
               </View>
             </View>
+
+            {isOperationsDepartment && dutyStoreName ? (
+              <View style={styles.storeDutyRow}>
+                <View style={styles.selectedStoreDutyPill}>
+                  <Store size={12} color="#1d4ed8" strokeWidth={2.3} />
+                  <Text style={styles.selectedStoreDutyText} numberOfLines={1}>
+                    {`Store Duty: ${dutyStoreName}`}
+                  </Text>
+                </View>
+                <Pressable
+                  style={styles.storeDutyClearBtn}
+                  onPress={handleClearStoreDuty}
+                  hitSlop={6}
+                  accessibilityLabel="Reset to default approvers"
+                >
+                  <X size={12} color="#64748b" strokeWidth={2.5} />
+                </Pressable>
+              </View>
+            ) : null}
 
             <View style={styles.entryStepperContainer}>
               {workflowSteps.length > 1 ? <View style={styles.entryStepperLineTrack} /> : null}
 
               <View style={styles.entryStepperColumnsRow}>
                 {workflowSteps.map((step, sIdx) => {
-                  const isReassigned = Boolean(step.is_reassigned);
                   const isPending = sIdx === 0;
                   const dotColor = isPending ? '#eab308' : '#cbd5e1';
                   const effectiveLevel = resolveApproverLevel(step);
@@ -1653,32 +1613,6 @@ export function FileOfficialTravelOrderScreen({
                       <Text style={styles.entryStepSubtitleText} numberOfLines={1}>
                         {`${levelLabel} • ${statusLabel}`}
                       </Text>
-
-                      {/* Reassign action button */}
-                      <Pressable
-                        style={({ pressed }) => [
-                          styles.entryStepReassignBtn,
-                          isReassigned ? styles.entryStepReassignBtnActive : null,
-                          pressed ? { opacity: 0.7 } : null,
-                        ]}
-                        onPress={() => handleOpenReassignModal(step)}
-                        hitSlop={6}
-                        accessibilityLabel={`Reassign step ${step.step_order} approver`}
-                      >
-                        <ArrowRightLeft
-                          size={10}
-                          color={isReassigned ? '#1d4ed8' : '#64748b'}
-                          strokeWidth={2.2}
-                        />
-                        <Text
-                          style={[
-                            styles.entryStepReassignText,
-                            isReassigned ? styles.entryStepReassignedText : null,
-                          ]}
-                        >
-                          {isReassigned ? 'Reassigned' : 'Reassign'}
-                        </Text>
-                      </Pressable>
                     </View>
                   );
                 })}
@@ -2406,184 +2340,16 @@ export function FileOfficialTravelOrderScreen({
         </View>
       </Modal>
 
-      {/* MODAL 5: Reassign Approver Modal */}
-      <Modal
-        visible={isReassignModalOpen}
-        animationType="slide"
-        transparent
-        onRequestClose={() => {
-          setIsReassignModalOpen(false);
-          setReassigningStep(null);
-          setSelectedCandidate(null);
-        }}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.reassignModalBackdrop}
-        >
-          <View style={[styles.reassignModalCard, { paddingBottom: safeModalBottomPadding }]}>
-            {/* Header */}
-            <View style={styles.reassignModalHeader}>
-              <View style={styles.reassignModalHeaderLeft}>
-                <View style={styles.reassignModalIconBox}>
-                  <ArrowRightLeft size={20} color="#2563eb" strokeWidth={2.4} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.reassignModalTitle}>Reassign Approver</Text>
-                  <Text style={styles.reassignModalSub} numberOfLines={1}>
-                    Step {reassigningStep?.step_order}: {reassigningStep?.role_name}
-                    {reassigningStep?.approver_position_name ? ` • ${reassigningStep.approver_position_name}` : ''}
-                  </Text>
-                  {!isOnline ? (
-                    <View style={styles.reassignModalOfflineBadge}>
-                      <WifiOff size={10} color="#b45309" strokeWidth={2.4} />
-                      <Text style={styles.reassignModalOfflineText}>Offline Mode • Using cached approvers</Text>
-                    </View>
-                  ) : null}
-                </View>
-              </View>
-              <Pressable
-                style={styles.sheetCloseButton}
-                onPress={() => {
-                  setIsReassignModalOpen(false);
-                  setReassigningStep(null);
-                  setSelectedCandidate(null);
-                }}
-                hitSlop={8}
-              >
-                <X size={18} color="#64748b" strokeWidth={2.4} />
-              </Pressable>
-            </View>
-
-            {/* Search Bar */}
-            <View style={styles.candidateSearchBox}>
-              <Search size={16} color="#94a3b8" strokeWidth={2.2} />
-              <TextInput
-                style={styles.candidateSearchInput}
-                placeholder="Search employee by name, ID, position, store..."
-                placeholderTextColor="#94a3b8"
-                value={candidateSearchQuery}
-                onChangeText={setCandidateSearchQuery}
-              />
-              {candidateSearchQuery ? (
-                <Pressable onPress={() => setCandidateSearchQuery('')} hitSlop={6}>
-                  <X size={15} color="#94a3b8" />
-                </Pressable>
-              ) : null}
-            </View>
-
-            {/* Candidate List */}
-            <ScrollView
-              style={styles.candidateListScroll}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              {isLoadingCandidates ? (
-                <View style={styles.candidateEmptyWrap}>
-                  <ActivityIndicator size="small" color="#2563eb" />
-                  <Text style={styles.candidateEmptyTitle}>Loading employees...</Text>
-                </View>
-              ) : filteredApproverCandidates.length === 0 ? (
-                <View style={styles.candidateEmptyWrap}>
-                  <Users size={32} color="#cbd5e1" strokeWidth={1.8} />
-                  <Text style={styles.candidateEmptyTitle}>No matching employees found</Text>
-                  <Text style={styles.candidateEmptySub}>
-                    Try searching with a different name or employee number.
-                  </Text>
-                </View>
-              ) : (
-                filteredApproverCandidates.map((candidate) => {
-                  const isSelected = selectedCandidate?.employee_id === candidate.employee_id;
-                  const initials =
-                    candidate.full_name
-                      .split(' ')
-                      .map((part) => part[0])
-                      .filter(Boolean)
-                      .slice(0, 2)
-                      .join('')
-                      .toUpperCase() || 'EMP';
-
-                  return (
-                    <Pressable
-                      key={candidate.employee_id}
-                      style={[styles.candidateRow, isSelected ? styles.candidateRowSelected : null]}
-                      onPress={() => setSelectedCandidate(candidate)}
-                    >
-                      <View style={[styles.candidateAvatar, isSelected ? styles.candidateAvatarSelected : null]}>
-                        <Text style={[styles.candidateAvatarText, isSelected ? styles.candidateAvatarTextSelected : null]}>
-                          {initials}
-                        </Text>
-                      </View>
-
-                      <View style={styles.candidateInfoCol}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                          <Text style={[styles.candidateName, isSelected ? styles.candidateNameSelected : null]}>
-                            {candidate.full_name}
-                          </Text>
-                          {candidate.authority_level ? (
-                            <View style={styles.candidateLevelBadge}>
-                              <Text style={styles.candidateLevelBadgeText}>L{candidate.authority_level}</Text>
-                            </View>
-                          ) : null}
-                        </View>
-                        <Text style={styles.candidateRole} numberOfLines={1}>
-                          {[candidate.position_name, candidate.department_name].filter(Boolean).join(' • ')}
-                          {candidate.employee_no ? ` (${candidate.employee_no})` : ''}
-                        </Text>
-                        {candidate.store_name || candidate.company_name ? (
-                          <Text style={styles.candidateStore} numberOfLines={1}>
-                            {[candidate.store_name, candidate.company_name].filter(Boolean).join(' • ')}
-                          </Text>
-                        ) : null}
-                      </View>
-
-                      {isSelected ? (
-                        <CheckCircle2 size={20} color="#2563eb" strokeWidth={2.4} />
-                      ) : (
-                        <View style={{ width: 20, height: 20, borderRadius: 10, borderWidth: 1.5, borderColor: '#cbd5e1' }} />
-                      )}
-                    </Pressable>
-                  );
-                })
-              )}
-            </ScrollView>
-
-            {/* Footer Actions */}
-            <View style={styles.reassignModalActions}>
-              {reassigningStep?.is_reassigned ? (
-                <Pressable
-                  style={styles.reassignResetBtn}
-                  onPress={handleResetStepApprover}
-                >
-                  <Text style={styles.reassignResetText}>Reset Default</Text>
-                </Pressable>
-              ) : null}
-
-              <Pressable
-                style={styles.reassignCancelBtn}
-                onPress={() => {
-                  setIsReassignModalOpen(false);
-                  setReassigningStep(null);
-                  setSelectedCandidate(null);
-                }}
-              >
-                <Text style={styles.reassignCancelText}>Cancel</Text>
-              </Pressable>
-
-              <Pressable
-                disabled={!selectedCandidate}
-                style={[
-                  styles.reassignConfirmBtn,
-                  !selectedCandidate ? styles.reassignConfirmBtnDisabled : null,
-                ]}
-                onPress={handleConfirmReassign}
-              >
-                <Text style={styles.reassignConfirmText}>Confirm Reassign</Text>
-              </Pressable>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      <StoreDutyModal
+        visible={isStoreDutyModalOpen}
+        selectedStoreId={dutyStoreId}
+        userCompanyName={profile?.companyName || companyName}
+        userStoreName={profile?.storeName || storeName}
+        isOnline={isOnline}
+        onSelectStore={handleSelectStoreDuty}
+        onClearStore={handleClearStoreDuty}
+        onClose={() => setIsStoreDutyModalOpen(false)}
+      />
     </View>
   );
 }
@@ -3396,6 +3162,62 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: fontWeights.heavy,
     color: '#334155',
+  },
+  storeDutyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: -4,
+    marginBottom: 12,
+  },
+  selectedStoreDutyPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#93c5fd',
+    backgroundColor: '#eff6ff',
+    flexShrink: 1,
+  },
+  selectedStoreDutyText: {
+    fontSize: 11,
+    fontWeight: fontWeights.semibold,
+    color: '#1d4ed8',
+    flexShrink: 1,
+  },
+  storeDutyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#f8fafc',
+  },
+  storeDutyBtnActive: {
+    borderColor: '#93c5fd',
+    backgroundColor: '#eff6ff',
+  },
+  storeDutyBtnText: {
+    fontSize: 11,
+    fontWeight: fontWeights.semibold,
+    color: '#475569',
+  },
+  storeDutyBtnTextActive: {
+    color: '#1d4ed8',
+  },
+  storeDutyClearBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   entryStepperContainer: {
     marginTop: 4,

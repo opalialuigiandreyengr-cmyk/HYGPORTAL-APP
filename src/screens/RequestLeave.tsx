@@ -16,7 +16,6 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import {
   AlertTriangle,
-  ArrowRightLeft,
   Cake,
   CalendarDays,
   Check,
@@ -59,10 +58,8 @@ import { calculateLeaveDays, dateStringToDate, formatDateInput, hasCompletedOneY
 import { updateMyPendingRequest, type MyRequest } from '../services/requests';
 import {
   loadStoreApprovalWorkflow,
-  loadApproverCandidates,
   formatApproverDisplayName,
   type WorkflowStep,
-  type ApproverCandidate,
 } from '../services/storeApprovalWorkflow';
 import { resolveApproverLevel, loadPositionAuthorities } from '../services/positions';
 import { checkApproverActiveViewing, type ActiveViewerInfo } from '../services/requestViewerLock';
@@ -207,6 +204,7 @@ type RequestLeaveProps = {
   profileSchedule?: string | null;
   profilePayrollClass?: string | null;
   profileDepartmentName?: string | null;
+  profileCompanyName?: string | null;
   profileStoreName?: string | null;
   leaveCreditRemaining?: number;
   initialDraft?: Extract<AssistantDraft, { intent: 'draft_leave_request' }> | null;
@@ -233,6 +231,7 @@ const RequestLeave = ({
   profileSchedule,
   profilePayrollClass,
   profileDepartmentName,
+  profileCompanyName,
   profileStoreName,
   leaveCreditRemaining = 0,
   initialDraft,
@@ -300,17 +299,8 @@ const RequestLeave = ({
   const [defaultWorkflowSteps, setDefaultWorkflowSteps] = useState<WorkflowStep[]>([]);
   const [isLoadingDefaultWorkflow, setIsLoadingDefaultWorkflow] = useState(false);
 
-  // Reassign Approver Modal State
-  const [isReassignModalOpen, setIsReassignModalOpen] = useState(false);
-  const [reassigningInfo, setReassigningInfo] = useState<{ entryIndex: number; step: WorkflowStep } | null>(null);
-  const [candidateSearchQuery, setCandidateSearchQuery] = useState('');
-  const [approverCandidates, setApproverCandidates] = useState<ApproverCandidate[]>([]);
-  const [selectedCandidate, setSelectedCandidate] = useState<ApproverCandidate | null>(null);
-  const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
-
-  // Pre-cache approver candidates and position authorities in background on mount
+  // Pre-cache position authorities in background on mount
   useEffect(() => {
-    loadApproverCandidates().catch(() => {});
     loadPositionAuthorities().catch(() => {});
   }, []);
 
@@ -349,122 +339,6 @@ const RequestLeave = ({
       isMounted = false;
     };
   }, [employeeId, profileStoreName, isOperationsDepartment, profileDepartmentName]);
-
-  // Load approver candidates when reassign modal opens
-  useEffect(() => {
-    if (!isReassignModalOpen) return;
-    let isMounted = true;
-    async function fetchCandidates() {
-      setIsLoadingCandidates(true);
-      try {
-        const candidates = await loadApproverCandidates();
-        if (!isMounted) return;
-        setApproverCandidates(candidates);
-      } catch {
-        // non-fatal
-      } finally {
-        if (isMounted) setIsLoadingCandidates(false);
-      }
-    }
-    fetchCandidates();
-    return () => {
-      isMounted = false;
-    };
-  }, [isReassignModalOpen]);
-
-  // Filtered approver candidates (Strictly excludes level 1 rank-and-file employees)
-  const filteredApproverCandidates = useMemo(() => {
-    const approversOnly = approverCandidates.filter((c) => (c.authority_level ?? 0) > 1);
-    if (!candidateSearchQuery.trim()) return approversOnly;
-    const q = candidateSearchQuery.toLowerCase().trim();
-    return approversOnly.filter(
-      (c) =>
-        c.full_name.toLowerCase().includes(q) ||
-        (c.employee_no && c.employee_no.toLowerCase().includes(q)) ||
-        (c.position_name && c.position_name.toLowerCase().includes(q)) ||
-        (c.department_name && c.department_name.toLowerCase().includes(q)) ||
-        (c.store_name && c.store_name.toLowerCase().includes(q)) ||
-        (c.company_name && c.company_name.toLowerCase().includes(q)),
-    );
-  }, [approverCandidates, candidateSearchQuery]);
-
-  function handleOpenReassignModal(entryIndex: number, step: WorkflowStep) {
-    setReassigningInfo({ entryIndex, step });
-    setSelectedCandidate(null);
-    setCandidateSearchQuery('');
-    setIsReassignModalOpen(true);
-  }
-
-  function handleConfirmReassign() {
-    if (!reassigningInfo || !selectedCandidate) return;
-    const { entryIndex, step } = reassigningInfo;
-    const targetStepOrder = step.step_order;
-    const candLevel = selectedCandidate.authority_level ?? 2;
-
-    setEntries((prev) =>
-      prev.map((e, idx) => {
-        if (idx !== entryIndex) return e;
-        const updated = (e.workflowSteps || []).map((s) => {
-          if (s.step_order === targetStepOrder) {
-            return {
-              ...s,
-              approver_employee_id: selectedCandidate.employee_id,
-              approver_name: selectedCandidate.full_name,
-              approver_position_name: selectedCandidate.position_name || s.approver_position_name,
-              approver_employee_no: selectedCandidate.employee_no || s.approver_employee_no,
-              approver_level: candLevel,
-              position_level: candLevel,
-              required_level: candLevel,
-              is_reassigned: true,
-            };
-          }
-          return s;
-        });
-        return { ...e, workflowSteps: updated };
-      }),
-    );
-
-    onToast?.({
-      tone: 'success',
-      title: 'Approver Reassigned',
-      message: `Step ${targetStepOrder} approver for Request #${entryIndex + 1} set to ${selectedCandidate.full_name}`,
-    });
-
-    setIsReassignModalOpen(false);
-    setReassigningInfo(null);
-    setSelectedCandidate(null);
-  }
-
-  async function handleResetStepApprover() {
-    if (!reassigningInfo) return;
-    const { entryIndex, step } = reassigningInfo;
-    const targetStepOrder = step.step_order;
-
-    try {
-      const baseSteps = defaultWorkflowSteps;
-      const def = baseSteps.find((s) => s.step_order === targetStepOrder);
-      if (def) {
-        setEntries((prev) =>
-          prev.map((e, idx) => {
-            if (idx !== entryIndex) return e;
-            const updated = (e.workflowSteps || []).map((s) =>
-              s.step_order === targetStepOrder ? { ...def, is_reassigned: false } : s,
-            );
-            return { ...e, workflowSteps: updated };
-          }),
-        );
-      }
-      onToast?.({
-        tone: 'success',
-        title: 'Approver Reset',
-        message: `Step ${targetStepOrder} approver reset to default.`,
-      });
-    } finally {
-      setIsReassignModalOpen(false);
-      setReassigningInfo(null);
-      setSelectedCandidate(null);
-    }
-  }
 
   useEffect(() => {
     const eff = dayOffState === NO_DAY_OFF_LABEL ? null : dayOffState;
@@ -1482,12 +1356,6 @@ const RequestLeave = ({
         const entryWorkflow = (ent.workflowSteps && ent.workflowSteps.length > 0)
           ? ent.workflowSteps
           : defaultWorkflowSteps;
-        const entryCustomApprovers = entryWorkflow
-          .filter((s) => s.is_reassigned && s.approver_employee_id)
-          .map((s) => ({
-            step_order: s.step_order,
-            approver_employee_id: s.approver_employee_id!,
-          }));
 
         payloadEntries.push({
           leaveType: ent.leaveType.trim(),
@@ -1497,7 +1365,7 @@ const RequestLeave = ({
           paidDays: bd.paidDays,
           unpaidDays: bd.unpaidDays,
           reason: ent.reason.trim(),
-          customApprovers: entryCustomApprovers.length > 0 ? entryCustomApprovers : undefined,
+          customApprovers: undefined,
         });
 
         const offlineSummary = entryWorkflow.length > 0
@@ -1511,15 +1379,13 @@ const RequestLeave = ({
                 level: effLevel,
                 status: ws.step_order === 1 ? 'Pending Sync (Offline)' : 'waiting',
                 acted_at: null,
-                remarks: ws.is_reassigned
-                  ? 'Reassigned approver (Pending Sync)'
-                  : 'Saved locally on device. Will auto-sync once online.',
+                remarks: 'Saved locally on device. Will auto-sync once online.',
                 skipped_reason: null,
                 approver_employee_id: ws.approver_employee_id || null,
                 approver_name: ws.approver_name,
                 approver_position_name: ws.approver_position_name || null,
                 approver_employee_no: ws.approver_employee_no || null,
-                is_reassigned: Boolean(ws.is_reassigned),
+                is_reassigned: false,
               };
             })
           : editingRequest?.approval_summary || [
@@ -1672,14 +1538,6 @@ const RequestLeave = ({
             firstEntry.unpaidDays,
           );
 
-          const firstWorkflow = entries[0]?.workflowSteps && entries[0].workflowSteps.length > 0 ? entries[0].workflowSteps : defaultWorkflowSteps;
-          const firstCustomApprovers = firstWorkflow
-            .filter((s) => s.is_reassigned && s.approver_employee_id)
-            .map((s) => ({
-              step_order: s.step_order,
-              approver_employee_id: s.approver_employee_id!,
-            }));
-
           await withTimeout(
             updateMyPendingRequest({
               requestId: targetReqId,
@@ -1694,7 +1552,7 @@ const RequestLeave = ({
               timeSchedule: schedule === NO_SCHEDULE_LABEL ? null : schedule,
               dayOff: dayOffState === NO_DAY_OFF_LABEL ? null : dayOffState,
               payrollClass: payrollClass === 'Select payroll class' ? null : payrollClass,
-              customApprovers: firstCustomApprovers.length > 0 ? firstCustomApprovers : null,
+              customApprovers: null,
             }),
             25000,
             'Updating leave request timed out. Please check your network connection.',
@@ -1710,14 +1568,6 @@ const RequestLeave = ({
               const tDays = calculateLeaveDays(ent.dateFrom, ent.dateTo, effectiveDayOff);
               const bd = getLeaveBreakdown(ent.leaveType, tDays, ent.paidDays, ent.unpaidDays);
 
-              const entWorkflow = ent.workflowSteps && ent.workflowSteps.length > 0 ? ent.workflowSteps : defaultWorkflowSteps;
-              const entCustomApprovers = entWorkflow
-                .filter((s) => s.is_reassigned && s.approver_employee_id)
-                .map((s) => ({
-                  step_order: s.step_order,
-                  approver_employee_id: s.approver_employee_id!,
-                }));
-
               let res = await withTimeout<{ data: any; error: any }>(
                 Promise.resolve(
                   supabase.rpc('submit_leave_request', {
@@ -1731,7 +1581,7 @@ const RequestLeave = ({
                     p_time_schedule: schedule === NO_SCHEDULE_LABEL ? null : schedule,
                     p_day_off: dayOffState === NO_DAY_OFF_LABEL ? null : dayOffState,
                     p_payroll_class: payrollClass === 'Select payroll class' ? null : payrollClass,
-                    p_custom_approvers: entCustomApprovers.length > 0 ? entCustomApprovers : null,
+                    p_custom_approvers: null,
                   }),
                 ),
                 25000,
@@ -1826,14 +1676,6 @@ const RequestLeave = ({
         const bd = getLeaveBreakdown(ent.leaveType, tDays, ent.paidDays, ent.unpaidDays);
         const isSingleDayBirthday = ent.leaveCategory === 'Birthday Leave' && tDays === 1 && hasCompletedOneYear;
 
-        const entWorkflow = ent.workflowSteps && ent.workflowSteps.length > 0 ? ent.workflowSteps : defaultWorkflowSteps;
-        const entCustomApprovers = entWorkflow
-          .filter((s) => s.is_reassigned && s.approver_employee_id)
-          .map((s) => ({
-            step_order: s.step_order,
-            approver_employee_id: s.approver_employee_id!,
-          }));
-
         let res = await withTimeout<{ data: any; error: any }>(
           Promise.resolve(
             supabase.rpc('submit_leave_request', {
@@ -1847,7 +1689,7 @@ const RequestLeave = ({
               p_time_schedule: schedule === NO_SCHEDULE_LABEL ? null : schedule,
               p_day_off: dayOffState === NO_DAY_OFF_LABEL ? null : dayOffState,
               p_payroll_class: payrollClass === 'Select payroll class' ? null : payrollClass,
-              p_custom_approvers: entCustomApprovers.length > 0 ? entCustomApprovers : null,
+              p_custom_approvers: null,
             }),
           ),
           25000,
@@ -2728,7 +2570,6 @@ const RequestLeave = ({
 
                         <View style={styles.entryStepperColumnsRow}>
                           {displaySteps.map((step, sIdx) => {
-                            const isReassigned = Boolean(step.is_reassigned);
                             const isPending = sIdx === 0;
                             const dotColor = isPending ? '#eab308' : '#cbd5e1';
                             const effectiveLevel = resolveApproverLevel(step);
@@ -2749,32 +2590,6 @@ const RequestLeave = ({
                                 <Text style={styles.entryStepSubtitleText} numberOfLines={1}>
                                   {`${levelLabel} • ${statusLabel}`}
                                 </Text>
-
-                                {/* Reassign action button */}
-                                <Pressable
-                                  style={({ pressed }) => [
-                                    styles.entryStepReassignBtn,
-                                    isReassigned ? styles.entryStepReassignBtnActive : null,
-                                    pressed ? { opacity: 0.7 } : null,
-                                  ]}
-                                  onPress={() => handleOpenReassignModal(actualIndex, step)}
-                                  hitSlop={6}
-                                  accessibilityLabel={`Reassign step ${step.step_order} approver`}
-                                >
-                                  <ArrowRightLeft
-                                    size={10}
-                                    color={isReassigned ? '#1d4ed8' : '#64748b'}
-                                    strokeWidth={2.2}
-                                  />
-                                  <Text
-                                    style={[
-                                      styles.entryStepReassignText,
-                                      isReassigned ? styles.entryStepReassignedText : null,
-                                    ]}
-                                  >
-                                    {isReassigned ? 'Reassigned' : 'Reassign'}
-                                  </Text>
-                                </Pressable>
                               </View>
                             );
                           })}
@@ -3351,228 +3166,6 @@ const RequestLeave = ({
             </ScrollView>
           </View>
         </View>
-      </Modal>
-
-      {/* Reassign Approver Modal */}
-      <Modal
-        visible={isReassignModalOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => {
-          setIsReassignModalOpen(false);
-          setReassigningInfo(null);
-          setSelectedCandidate(null);
-        }}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.reassignModalBackdrop}
-        >
-          <View
-            style={[
-              styles.reassignModalCard,
-              { paddingBottom: Math.max(getSafeBottomInset(insets.bottom, 0), 16) },
-            ]}
-          >
-            {/* Header */}
-            <View style={styles.reassignModalHeader}>
-              <View style={styles.reassignModalHeaderLeft}>
-                <View style={styles.reassignModalIconBox}>
-                  <ArrowRightLeft size={20} color="#2563eb" strokeWidth={2.4} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.reassignModalTitle}>Reassign Approver</Text>
-                  <Text style={styles.reassignModalSub} numberOfLines={1}>
-                    Request #{reassigningInfo ? reassigningInfo.entryIndex + 1 : 1} • Step{' '}
-                    {reassigningInfo?.step?.step_order}: {reassigningInfo?.step?.role_name}
-                    {reassigningInfo?.step?.approver_position_name
-                      ? ` • ${reassigningInfo.step.approver_position_name}`
-                      : ''}
-                  </Text>
-                  {!isOnline ? (
-                    <View style={styles.reassignModalOfflineBadge}>
-                      <WifiOff size={10} color="#b45309" strokeWidth={2.4} />
-                      <Text style={styles.reassignModalOfflineText}>
-                        Offline Mode • Using cached approvers
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
-              </View>
-              <Pressable
-                style={styles.reassignModalClose}
-                onPress={() => {
-                  setIsReassignModalOpen(false);
-                  setReassigningInfo(null);
-                  setSelectedCandidate(null);
-                }}
-                hitSlop={8}
-              >
-                <X size={20} color="#64748b" strokeWidth={2.4} />
-              </Pressable>
-            </View>
-
-            {/* Search Bar */}
-            <View style={styles.candidateSearchBox}>
-              <Search size={16} color="#94a3b8" strokeWidth={2.2} />
-              <TextInput
-                style={styles.candidateSearchInput}
-                placeholder="Search employee by name, ID, position, store..."
-                placeholderTextColor="#94a3b8"
-                value={candidateSearchQuery}
-                onChangeText={setCandidateSearchQuery}
-              />
-              {candidateSearchQuery ? (
-                <Pressable onPress={() => setCandidateSearchQuery('')} hitSlop={6}>
-                  <X size={15} color="#94a3b8" />
-                </Pressable>
-              ) : null}
-            </View>
-
-            {/* Candidate List */}
-            <ScrollView
-              style={styles.candidateListScroll}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              {isLoadingCandidates ? (
-                <View style={styles.candidateEmptyWrap}>
-                  <ActivityIndicator size="small" color="#2563eb" />
-                  <Text style={styles.candidateEmptyTitle}>Loading employees...</Text>
-                </View>
-              ) : filteredApproverCandidates.length === 0 ? (
-                <View style={styles.candidateEmptyWrap}>
-                  <Users size={32} color="#cbd5e1" strokeWidth={1.8} />
-                  <Text style={styles.candidateEmptyTitle}>No matching employees found</Text>
-                  <Text style={styles.candidateEmptySub}>
-                    Try searching with a different name or employee number.
-                  </Text>
-                </View>
-              ) : (
-                filteredApproverCandidates.map((candidate) => {
-                  const isSelected = selectedCandidate?.employee_id === candidate.employee_id;
-                  const initials =
-                    candidate.full_name
-                      .split(' ')
-                      .map((part) => part[0])
-                      .filter(Boolean)
-                      .slice(0, 2)
-                      .join('')
-                      .toUpperCase() || 'EMP';
-
-                  return (
-                    <Pressable
-                      key={candidate.employee_id}
-                      style={[styles.candidateRow, isSelected ? styles.candidateRowSelected : null]}
-                      onPress={() => setSelectedCandidate(candidate)}
-                    >
-                      <View
-                        style={[
-                          styles.candidateAvatar,
-                          isSelected ? styles.candidateAvatarSelected : null,
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.candidateAvatarText,
-                            isSelected ? styles.candidateAvatarTextSelected : null,
-                          ]}
-                        >
-                          {initials}
-                        </Text>
-                      </View>
-
-                      <View style={styles.candidateInfoCol}>
-                        <View
-                          style={{
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            gap: 6,
-                            flexWrap: 'wrap',
-                          }}
-                        >
-                          <Text
-                            style={[
-                              styles.candidateName,
-                              isSelected ? styles.candidateNameSelected : null,
-                            ]}
-                          >
-                            {candidate.full_name}
-                          </Text>
-                          {candidate.authority_level ? (
-                            <View style={styles.candidateLevelBadge}>
-                              <Text style={styles.candidateLevelBadgeText}>
-                                L{candidate.authority_level}
-                              </Text>
-                            </View>
-                          ) : null}
-                        </View>
-                        <Text style={styles.candidateRole} numberOfLines={1}>
-                          {[candidate.position_name, candidate.department_name]
-                            .filter(Boolean)
-                            .join(' • ')}
-                          {candidate.employee_no ? ` (${candidate.employee_no})` : ''}
-                        </Text>
-                        {candidate.store_name || candidate.company_name ? (
-                          <Text style={styles.candidateStore} numberOfLines={1}>
-                            {[candidate.store_name, candidate.company_name]
-                              .filter(Boolean)
-                              .join(' • ')}
-                          </Text>
-                        ) : null}
-                      </View>
-
-                      {isSelected ? (
-                        <CheckCircle2 size={20} color="#2563eb" strokeWidth={2.4} />
-                      ) : (
-                        <View
-                          style={{
-                            width: 20,
-                            height: 20,
-                            borderRadius: 10,
-                            borderWidth: 1.5,
-                            borderColor: '#cbd5e1',
-                          }}
-                        />
-                      )}
-                    </Pressable>
-                  );
-                })
-              )}
-            </ScrollView>
-
-            {/* Footer Actions */}
-            <View style={styles.reassignModalActions}>
-              {reassigningInfo?.step?.is_reassigned ? (
-                <Pressable style={styles.reassignResetBtn} onPress={handleResetStepApprover}>
-                  <Text style={styles.reassignResetText}>Reset Default</Text>
-                </Pressable>
-              ) : null}
-
-              <Pressable
-                style={styles.reassignCancelBtn}
-                onPress={() => {
-                  setIsReassignModalOpen(false);
-                  setReassigningInfo(null);
-                  setSelectedCandidate(null);
-                }}
-              >
-                <Text style={styles.reassignCancelText}>Cancel</Text>
-              </Pressable>
-
-              <Pressable
-                disabled={!selectedCandidate}
-                style={[
-                  styles.reassignConfirmBtn,
-                  !selectedCandidate ? styles.reassignConfirmBtnDisabled : null,
-                ]}
-                onPress={handleConfirmReassign}
-              >
-                <Text style={styles.reassignConfirmText}>Confirm Reassign</Text>
-              </Pressable>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
       </Modal>
 
       <ActiveReviewLockModal

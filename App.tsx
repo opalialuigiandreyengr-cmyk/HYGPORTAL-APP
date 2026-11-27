@@ -2002,6 +2002,7 @@ export default function App() {
             profileSchedule={profileResult?.status === 'linked' ? profileResult.profile.timeSchedule : null}
             profileDayOff={profileResult?.status === 'linked' ? profileResult.profile.dayOff : null}
             profileDepartmentName={profileResult?.status === 'linked' ? profileResult.profile.departmentName : null}
+            profileCompanyName={profileResult?.status === 'linked' ? profileResult.profile.companyName : null}
             profileStoreName={profileResult?.status === 'linked' ? profileResult.profile.storeName : null}
             initialDraft={assistantDraft?.intent === 'draft_esarf_request' ? assistantDraft : null}
             editingRequest={editingRequest}
@@ -2037,6 +2038,7 @@ export default function App() {
             profileSchedule={profileResult?.status === 'linked' ? profileResult.profile.timeSchedule : null}
             profileDayOff={profileResult?.status === 'linked' ? profileResult.profile.dayOff : null}
             profileDepartmentName={profileResult?.status === 'linked' ? profileResult.profile.departmentName : null}
+            profileCompanyName={profileResult?.status === 'linked' ? profileResult.profile.companyName : null}
             profileStoreName={profileResult?.status === 'linked' ? profileResult.profile.storeName : null}
             initialDraft={null}
             editingRequest={editingRequest}
@@ -2068,6 +2070,7 @@ export default function App() {
             profileSchedule={profileResult?.status === 'linked' ? profileResult.profile.timeSchedule : null}
             profilePayrollClass={profileResult?.status === 'linked' ? profileResult.profile.payrollClass : null}
             profileDepartmentName={profileResult?.status === 'linked' ? profileResult.profile.departmentName : null}
+            profileCompanyName={profileResult?.status === 'linked' ? profileResult.profile.companyName : null}
             profileStoreName={profileResult?.status === 'linked' ? profileResult.profile.storeName : null}
             leaveCreditRemaining={dashboardSummary.leave_credit_remaining}
             initialDraft={assistantDraft?.intent === 'draft_leave_request' ? assistantDraft : null}

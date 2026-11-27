@@ -33,12 +33,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
 
 import { colors, spacing } from '../theme';
+import { getCacheJSON, setCacheJSON } from '../lib/localCache';
 import { getScreenBottomPadding } from '../utils/safeArea';
 import { TopBar } from '../components/TopBar';
 import {
   loadRedeemedRewards,
+  loadRewardsCatalog,
   loadRewardsWallet,
   type RedeemedRewardItem,
+  type RewardCatalogItem,
   type RewardsWallet,
   type RewardsWalletHistoryItem,
 } from '../services/rewards';
@@ -115,7 +118,25 @@ export function RewardsTabScreen({
   }));
   const [badgesData, setBadgesData] = useState<EmployeeBadgesData>(() => emptyEmployeeBadgesData());
   const [redeemedRewards, setRedeemedRewards] = useState<RedeemedRewardItem[]>([]);
+  const [catalogRewards, setCatalogRewards] = useState<RewardCatalogItem[]>([]);
   const [trainings, setTrainings] = useState<TrainingItem[]>([]);
+  const [seenIdsState, setSeenIdsState] = useState<{
+    loaded: boolean;
+    badges: string[];
+    rewards: string[];
+    trainings: string[];
+    history: string[];
+  }>({
+    loaded: false,
+    badges: [],
+    rewards: [],
+    trainings: [],
+    history: [],
+  });
+  const seenStorageKey = useMemo(
+    () => `rewards_seen_dots_v1_${userId || employeeId || employeeCode || username || 'me'}`,
+    [userId, employeeId, employeeCode, username],
+  );
   const [isLoadingTrainings, setIsLoadingTrainings] = useState(false);
   const [trainingsError, setTrainingsError] = useState('');
   const [isLoadingBadges, setIsLoadingBadges] = useState(false);
@@ -182,16 +203,18 @@ export function RewardsTabScreen({
       });
     }
     try {
-      const [nextWallet, nextRedeemed] = await Promise.all([
+      const [nextWallet, nextRedeemed, nextCatalog] = await Promise.all([
         loadRewardsWallet(userId ?? undefined, employeeId ?? undefined, { forceRefresh: isPull }),
         loadRedeemedRewards(userId ?? undefined, employeeId ?? undefined, { forceRefresh: isPull }).catch(
           () => [] as RedeemedRewardItem[],
         ),
+        loadRewardsCatalog({ forceRefresh: isPull }).catch(() => [] as RewardCatalogItem[]),
         refreshBadges(isPull),
         refreshTrainings(isPull),
       ]);
       setWallet(nextWallet);
       setRedeemedRewards(nextRedeemed);
+      setCatalogRewards(nextCatalog);
       onPointsUpdatedRef.current?.(nextWallet.balance);
       setWalletStatus('');
     } catch (error) {
@@ -204,6 +227,82 @@ export function RewardsTabScreen({
   useEffect(() => {
     void refreshWallet();
   }, [refreshWallet]);
+
+  useEffect(() => {
+    let isMounted = true;
+    getCacheJSON<{
+      badges?: string[];
+      rewards?: string[];
+      trainings?: string[];
+      history?: string[];
+    }>(seenStorageKey)
+      .then((cached) => {
+        if (!isMounted) return;
+        setSeenIdsState({
+          loaded: true,
+          badges: Array.isArray(cached?.badges) ? cached.badges : [],
+          rewards: Array.isArray(cached?.rewards) ? cached.rewards : [],
+          trainings: Array.isArray(cached?.trainings) ? cached.trainings : [],
+          history: Array.isArray(cached?.history) ? cached.history : [],
+        });
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setSeenIdsState((prev) => ({ ...prev, loaded: true }));
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [seenStorageKey]);
+
+  const availableRewardIds = useMemo(
+    () =>
+      catalogRewards
+        .filter((r) => r.stocks > 0 && (r.status || 'active').toLowerCase() !== 'inactive')
+        .map((r) => r.id),
+    [catalogRewards],
+  );
+
+  const hasNewBadges = useMemo(() => {
+    if (!seenIdsState.loaded || badgesData.earned.length === 0) return false;
+    const seen = new Set(seenIdsState.badges);
+    return badgesData.earned.some((b) => !seen.has(b.id));
+  }, [seenIdsState.loaded, seenIdsState.badges, badgesData.earned]);
+
+  const hasNewRewards = useMemo(() => {
+    if (!seenIdsState.loaded || availableRewardIds.length === 0) return false;
+    const seen = new Set(seenIdsState.rewards);
+    return availableRewardIds.some((id) => !seen.has(id));
+  }, [seenIdsState.loaded, seenIdsState.rewards, availableRewardIds]);
+
+  const hasNewTrainings = useMemo(() => {
+    if (!seenIdsState.loaded || trainings.length === 0) return false;
+    const seen = new Set(seenIdsState.trainings);
+    return trainings.some((t) => !seen.has(t.id));
+  }, [seenIdsState.loaded, seenIdsState.trainings, trainings]);
+
+  const hasNewHistory = useMemo(() => {
+    if (!seenIdsState.loaded || wallet.history.length === 0) return false;
+    const seen = new Set(seenIdsState.history);
+    return wallet.history.some((h) => !seen.has(h.id));
+  }, [seenIdsState.loaded, seenIdsState.history, wallet.history]);
+
+  const markSectionSeen = useCallback(
+    (section: 'badges' | 'rewards' | 'trainings' | 'history', ids: string[]) => {
+      setSeenIdsState((prev) => {
+        const merged = Array.from(new Set([...prev[section], ...ids]));
+        const next = { ...prev, [section]: merged };
+        void setCacheJSON(seenStorageKey, {
+          badges: next.badges,
+          rewards: next.rewards,
+          trainings: next.trainings,
+          history: next.history,
+        }).catch(() => {});
+        return next;
+      });
+    },
+    [seenStorageKey],
+  );
 
   useEffect(() => {
     setWallet((current) => {
@@ -503,22 +602,38 @@ export function RewardsTabScreen({
           <RewardsActionButton
             label="Badges"
             icon={<BadgeCheck size={16} color="#2563eb" strokeWidth={2.4} />}
-            onPress={() => setShowBadges(true)}
+            showDot={hasNewBadges}
+            onPress={() => {
+              markSectionSeen('badges', badgesData.earned.map((b) => b.id));
+              setShowBadges(true);
+            }}
           />
           <RewardsActionButton
             label="Rewards"
             icon={<Gift size={16} color="#16a34a" strokeWidth={2.4} />}
-            onPress={() => setShowRewardsCatalog(true)}
+            showDot={hasNewRewards}
+            onPress={() => {
+              markSectionSeen('rewards', availableRewardIds);
+              setShowRewardsCatalog(true);
+            }}
           />
           <RewardsActionButton
             label="Trainings"
             icon={<CalendarDays size={16} color="#dc2626" strokeWidth={2.4} />}
-            onPress={() => setShowTrainings(true)}
+            showDot={hasNewTrainings}
+            onPress={() => {
+              markSectionSeen('trainings', trainings.map((t) => t.id));
+              setShowTrainings(true);
+            }}
           />
           <RewardsActionButton
             label="History"
             icon={<History size={16} color="#f59e0b" strokeWidth={2.4} />}
-            onPress={() => setShowWalletHistory(true)}
+            showDot={hasNewHistory}
+            onPress={() => {
+              markSectionSeen('history', wallet.history.map((h) => h.id));
+              setShowWalletHistory(true);
+            }}
           />
         </View>
 
@@ -643,10 +758,12 @@ function RewardsStatCard({
 function RewardsActionButton({
   label,
   icon,
+  showDot = false,
   onPress,
 }: {
   label: string;
   icon: React.ReactNode;
+  showDot?: boolean;
   onPress?: () => void;
 }) {
   return (
@@ -661,6 +778,7 @@ function RewardsActionButton({
       <Text style={styles.rewardsActionBtnText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
         {label}
       </Text>
+      {showDot ? <View style={styles.rewardsActionDot} /> : null}
     </Pressable>
   );
 }
@@ -1199,6 +1317,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   rewardsActionBtn: {
+    position: 'relative',
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
@@ -1213,6 +1332,17 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 3,
     elevation: 2,
+  },
+  rewardsActionDot: {
+    position: 'absolute',
+    top: 2,
+    right: 4,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#ef4444',
+    borderWidth: 1.5,
+    borderColor: '#ffffff',
   },
   rewardsActionBtnPressed: {
     opacity: 0.78,
@@ -1489,7 +1619,9 @@ const styles = StyleSheet.create({
   },
   rewardsHistoryHeader: {
     borderRadius: 8,
-    backgroundColor: colors.brand.ink,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
@@ -1501,13 +1633,13 @@ const styles = StyleSheet.create({
     height: 50,
   },
   rewardsHistoryTitle: {
-    color: colors.surface,
+    color: colors.text,
     fontSize: 20,
     lineHeight: 26,
     fontWeight: '800',
   },
   rewardsHistorySub: {
-    color: '#cbd5e1',
+    color: colors.muted,
     fontSize: 12,
     lineHeight: 17,
     fontWeight: '700',

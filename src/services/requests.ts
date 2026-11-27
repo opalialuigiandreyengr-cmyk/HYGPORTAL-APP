@@ -357,6 +357,8 @@ export type SubmitLocalTravelOrderPayload = {
   emergencyBudget?: number;
   costCenterCode?: string | null;
   chargeToStore?: string | null;
+  storeId?: string | null;
+  storeName?: string | null;
   submittedAt?: string;
   customApprovers?: { step_order: number; approver_employee_id: string }[] | null;
   workflowSteps?: {
@@ -408,6 +410,18 @@ export async function submitOfficialTravelOrder(payload: SubmitLocalTravelOrderP
   }
 
   const reqId = rpcData ? String(rpcData) : `travel_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+  // If duty store was selected, persist store_id on requests so admin details & timeline show the selected store duty
+  if (rpcData && payload.storeId) {
+    try {
+      await supabase
+        .from('requests')
+        .update({ store_id: payload.storeId })
+        .eq('id', reqId);
+    } catch (err) {
+      console.warn('[submitOfficialTravelOrder] Failed to update store_id:', err);
+    }
+  }
 
   // If custom approvers were specified, persist reassignments to request_approval_steps
   if (rpcData && payload.customApprovers && payload.customApprovers.length > 0) {
@@ -601,6 +615,16 @@ export async function updateOfficialTravelOrder(
     });
     if (!rpcErr) {
       rpcSucceeded = true;
+      if (payload.storeId) {
+        try {
+          await supabase
+            .from('requests')
+            .update({ store_id: payload.storeId })
+            .eq('id', requestId);
+        } catch (err) {
+          console.warn('[updateOfficialTravelOrder] Failed to update store_id:', err);
+        }
+      }
     } else {
       console.warn('[updateOfficialTravelOrder] RPC returned error, attempting direct table update:', rpcErr);
     }
@@ -615,6 +639,7 @@ export async function updateOfficialTravelOrder(
       await supabase
         .from('requests')
         .update({
+          ...(payload.storeId ? { store_id: payload.storeId } : {}),
           updated_at: new Date().toISOString(),
         })
         .eq('id', requestId);

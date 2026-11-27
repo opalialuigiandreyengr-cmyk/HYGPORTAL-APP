@@ -23,7 +23,6 @@ import { DateRangePickerModal } from '../components/DateRangePickerModal';
 import { ScrollableTimePickerModal } from '../components/ScrollableTimePickerModal';
 import {
   AlertTriangle,
-  ArrowRightLeft,
   CalendarDays,
   Camera,
   Check,
@@ -45,6 +44,7 @@ import {
   RotateCcw,
   Search,
   Sparkles,
+  Store,
   Trash2,
   Upload,
   UserCheck,
@@ -55,11 +55,11 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import {
   loadStoreApprovalWorkflow,
-  loadApproverCandidates,
   formatApproverDisplayName,
+  type PortalStore,
   type WorkflowStep,
-  type ApproverCandidate,
 } from '../services/storeApprovalWorkflow';
+import { StoreDutyModal } from '../components/StoreDutyModal';
 import { resolveApproverLevel, loadPositionAuthorities } from '../services/positions';
 import {
   loadPhotoProofs,
@@ -165,6 +165,8 @@ export type EsarfEntry = {
   proofs?: EsarfAttachment[];
   eventId?: string;
   eventName?: string;
+  dutyStoreId?: string | null;
+  dutyStoreName?: string | null;
   workflowSteps?: WorkflowStep[];
   isLoadingWorkflow?: boolean;
 };
@@ -365,6 +367,7 @@ export function ApplyEsarfScreen({
   profileSchedule,
   profileDayOff,
   profileDepartmentName,
+  profileCompanyName,
   profileStoreName,
   initialDraft,
   editingRequest,
@@ -392,6 +395,7 @@ export function ApplyEsarfScreen({
   profileSchedule?: string | null;
   profileDayOff?: string | null;
   profileDepartmentName?: string | null;
+  profileCompanyName?: string | null;
   profileStoreName?: string | null;
   initialDraft?: Extract<AssistantDraft, { intent: 'draft_esarf_request' }> | null;
   editingRequest?: MyRequest | null;
@@ -650,18 +654,73 @@ export function ApplyEsarfScreen({
   // Default Approval Workflow State (Employee's original route approvers)
   const [defaultWorkflowSteps, setDefaultWorkflowSteps] = useState<WorkflowStep[]>([]);
   const [isLoadingDefaultWorkflow, setIsLoadingDefaultWorkflow] = useState(false);
+  const [storeDutyEntryIndex, setStoreDutyEntryIndex] = useState<number | null>(null);
 
-  // Reassign Approver Modal State
-  const [isReassignModalOpen, setIsReassignModalOpen] = useState(false);
-  const [reassigningInfo, setReassigningInfo] = useState<{ entryIndex: number; step: WorkflowStep } | null>(null);
-  const [candidateSearchQuery, setCandidateSearchQuery] = useState('');
-  const [approverCandidates, setApproverCandidates] = useState<ApproverCandidate[]>([]);
-  const [selectedCandidate, setSelectedCandidate] = useState<ApproverCandidate | null>(null);
-  const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
+  async function handleSelectStoreDuty(store: PortalStore) {
+    const entryIndex = storeDutyEntryIndex;
+    setStoreDutyEntryIndex(null);
+    if (entryIndex === null) return;
 
-  // Pre-cache approver candidates and position authorities in background on mount
+    setEntries((prev) =>
+      prev.map((e, idx) =>
+        idx === entryIndex
+          ? { ...e, dutyStoreId: store.id, dutyStoreName: store.name, isLoadingWorkflow: true }
+          : e,
+      ),
+    );
+
+    try {
+      const steps = await loadStoreApprovalWorkflow(
+        store.id,
+        employeeId,
+        store.name,
+        isOperationsDepartment,
+        profileDepartmentName,
+      );
+      setEntries((prev) =>
+        prev.map((e, idx) =>
+          idx === entryIndex
+            ? {
+              ...e,
+              dutyStoreId: store.id,
+              dutyStoreName: store.name,
+              workflowSteps: steps.length > 0 ? steps : defaultWorkflowSteps,
+              isLoadingWorkflow: false,
+            }
+            : e,
+        ),
+      );
+    } catch (err) {
+      console.warn('[ApplyEsarf] Error loading store duty approval workflow:', err);
+      setEntries((prev) =>
+        prev.map((e, idx) => (idx === entryIndex ? { ...e, isLoadingWorkflow: false } : e)),
+      );
+    }
+  }
+
+  function handleClearStoreDuty(entryIndex?: number | null) {
+    const targetIdx = entryIndex ?? storeDutyEntryIndex;
+    if (entryIndex === undefined) {
+      setStoreDutyEntryIndex(null);
+    }
+    if (targetIdx === null || targetIdx === undefined) return;
+    setEntries((prev) =>
+      prev.map((e, idx) =>
+        idx === targetIdx
+          ? {
+            ...e,
+            dutyStoreId: null,
+            dutyStoreName: null,
+            workflowSteps: defaultWorkflowSteps,
+            isLoadingWorkflow: false,
+          }
+          : e,
+      ),
+    );
+  }
+
+  // Pre-cache position authorities in background on mount
   useEffect(() => {
-    loadApproverCandidates().catch(() => { });
     loadPositionAuthorities().catch(() => { });
   }, []);
 
@@ -700,124 +759,6 @@ export function ApplyEsarfScreen({
       isMounted = false;
     };
   }, [employeeId, profileStoreName, isOperationsDepartment, profileDepartmentName]);
-
-  // Load approver candidates when reassign modal opens
-  useEffect(() => {
-    if (!isReassignModalOpen) return;
-    let isMounted = true;
-    async function fetchCandidates() {
-      setIsLoadingCandidates(true);
-      try {
-        const candidates = await loadApproverCandidates();
-        if (!isMounted) return;
-        setApproverCandidates(candidates);
-      } catch {
-        // non-fatal
-      } finally {
-        if (isMounted) setIsLoadingCandidates(false);
-      }
-    }
-    fetchCandidates();
-    return () => {
-      isMounted = false;
-    };
-  }, [isReassignModalOpen]);
-
-  // Filtered approver candidates (Strictly excludes level 1 rank-and-file employees)
-  const filteredApproverCandidates = useMemo(() => {
-    const approversOnly = approverCandidates.filter((c) => (c.authority_level ?? 0) > 1);
-    if (!candidateSearchQuery.trim()) return approversOnly;
-    const q = candidateSearchQuery.toLowerCase().trim();
-    return approversOnly.filter(
-      (c) =>
-        c.full_name.toLowerCase().includes(q) ||
-        (c.employee_no && c.employee_no.toLowerCase().includes(q)) ||
-        (c.position_name && c.position_name.toLowerCase().includes(q)) ||
-        (c.department_name && c.department_name.toLowerCase().includes(q)) ||
-        (c.store_name && c.store_name.toLowerCase().includes(q)) ||
-        (c.company_name && c.company_name.toLowerCase().includes(q)),
-    );
-  }, [approverCandidates, candidateSearchQuery]);
-
-  function handleOpenReassignModal(entryIndex: number, step: WorkflowStep) {
-    setReassigningInfo({ entryIndex, step });
-    setSelectedCandidate(null);
-    setCandidateSearchQuery('');
-    setIsReassignModalOpen(true);
-  }
-
-  function handleConfirmReassign() {
-    if (!reassigningInfo || !selectedCandidate) return;
-    const { entryIndex, step } = reassigningInfo;
-    const targetStepOrder = step.step_order;
-
-    const candLevel = selectedCandidate.authority_level ?? 2;
-
-    setEntries((prev) =>
-      prev.map((e, idx) => {
-        if (idx !== entryIndex) return e;
-        const updated = (e.workflowSteps || []).map((s) => {
-          if (s.step_order === targetStepOrder) {
-            return {
-              ...s,
-              approver_employee_id: selectedCandidate.employee_id,
-              approver_name: selectedCandidate.full_name,
-              approver_position_name: selectedCandidate.position_name || s.approver_position_name,
-              approver_employee_no: selectedCandidate.employee_no || s.approver_employee_no,
-              approver_level: candLevel,
-              position_level: candLevel,
-              required_level: candLevel,
-              is_reassigned: true,
-            };
-          }
-          return s;
-        });
-        return { ...e, workflowSteps: updated };
-      }),
-    );
-
-    onToast?.({
-      tone: 'success',
-      title: 'Approver Reassigned',
-      message: `Step ${targetStepOrder} approver for Request #${entryIndex + 1} set to ${selectedCandidate.full_name}`,
-    });
-
-    setIsReassignModalOpen(false);
-    setReassigningInfo(null);
-    setSelectedCandidate(null);
-  }
-
-  async function handleResetStepApprover() {
-    if (!reassigningInfo) return;
-    const { entryIndex, step } = reassigningInfo;
-    const targetStepOrder = step.step_order;
-    const entry = entries[entryIndex];
-
-    try {
-      const baseSteps = defaultWorkflowSteps;
-      const def = baseSteps.find((s) => s.step_order === targetStepOrder);
-      if (def) {
-        setEntries((prev) =>
-          prev.map((e, idx) => {
-            if (idx !== entryIndex) return e;
-            const updated = (e.workflowSteps || []).map((s) =>
-              s.step_order === targetStepOrder ? { ...def, is_reassigned: false } : s,
-            );
-            return { ...e, workflowSteps: updated };
-          }),
-        );
-      }
-      onToast?.({
-        tone: 'success',
-        title: 'Approver Reset',
-        message: `Step ${targetStepOrder} approver reset to default.`,
-      });
-    } finally {
-      setIsReassignModalOpen(false);
-      setReassigningInfo(null);
-      setSelectedCandidate(null);
-    }
-  }
 
   useEffect(() => {
     let isMounted = true;
@@ -2309,13 +2250,13 @@ export function ApplyEsarfScreen({
                   level: effLevel,
                   status: ws.step_order === 1 ? 'Pending Sync (Offline)' : 'waiting',
                   acted_at: null,
-                  remarks: ws.is_reassigned ? 'Reassigned approver (Pending Sync)' : 'Saved locally on device. Will auto-sync once online.',
+                  remarks: 'Saved locally on device. Will auto-sync once online.',
                   skipped_reason: null,
                   approver_employee_id: ws.approver_employee_id || null,
                   approver_name: ws.approver_name,
                   approver_position_name: ws.approver_position_name || null,
                   approver_employee_no: ws.approver_employee_no || null,
-                  is_reassigned: Boolean(ws.is_reassigned),
+                  is_reassigned: false,
                 };
               })
               : editingRequest?.approval_summary || (isPreApprovedMode ? [
@@ -2354,19 +2295,19 @@ export function ApplyEsarfScreen({
           })(),
         };
 
+        const dutyEntry = groupEntries.find((e) => Boolean(e.dutyStoreId)) || groupEntries[0];
+        const groupDutyStoreId = dutyEntry?.dutyStoreId || null;
+        const groupDutyStoreName = dutyEntry?.dutyStoreName || null;
         const customApproversPayload: { step_order: number; approver_employee_id: string }[] = [];
-        for (const entry of groupEntries) {
-          if (entry.workflowSteps) {
-            for (const s of entry.workflowSteps) {
-              if (isPreApprovedMode && s.step_order > 1) continue;
-              if (s.is_reassigned && s.approver_employee_id) {
-                if (!customApproversPayload.some((c) => c.step_order === s.step_order)) {
-                  customApproversPayload.push({
-                    step_order: s.step_order,
-                    approver_employee_id: s.approver_employee_id,
-                  });
-                }
-              }
+        if (groupDutyStoreId) {
+          const dutySteps = dutyEntry?.workflowSteps || [];
+          for (const s of dutySteps) {
+            if (isPreApprovedMode && s.step_order > 1) continue;
+            if (s.approver_employee_id && !customApproversPayload.some((c) => c.step_order === s.step_order)) {
+              customApproversPayload.push({
+                step_order: s.step_order,
+                approver_employee_id: s.approver_employee_id,
+              });
             }
           }
         }
@@ -2391,8 +2332,8 @@ export function ApplyEsarfScreen({
             dayOff,
             payrollClass,
             combinedTransactionType,
-            storeId: null,
-            storeName: null,
+            storeId: groupDutyStoreId,
+            storeName: groupDutyStoreName,
             customApprovers: customApproversPayload.length > 0 ? customApproversPayload : null,
             attachedProofs: groupEntries.flatMap((e) => getEntryProofs(e)).map((p) => {
               const isGallery = p.source === 'gallery' || (!p.timestamp && !p.locationText);
@@ -2415,7 +2356,7 @@ export function ApplyEsarfScreen({
       }
 
       if (savedDraftId) {
-        await deleteEsarfDraft(draftUserKey, savedDraftId).catch(() => {});
+        await deleteEsarfDraft(draftUserKey, savedDraftId).catch(() => { });
       }
       setSubmitStatus(isEdit ? 'ESARF update saved locally on this device.' : 'ESARF saved locally on this device.');
       onToast?.({
@@ -2689,23 +2630,17 @@ export function ApplyEsarfScreen({
               .join('\n');
           }
 
-          const customApproversPayload: { step_order: number; approver_employee_id: string }[] = [];
-          for (const entry of entries) {
-            if (entry.workflowSteps) {
-              for (const s of entry.workflowSteps) {
-                if (s.is_reassigned && s.approver_employee_id) {
-                  if (!customApproversPayload.some((c) => c.step_order === s.step_order)) {
-                    customApproversPayload.push({
-                      step_order: s.step_order,
-                      approver_employee_id: s.approver_employee_id,
-                    });
-                  }
-                }
-              }
-            }
-          }
-
           const entryWithBreak = entries.find((e) => e.breakFrom && e.breakTo);
+          const dutyEntry = entries.find((e) => Boolean(e.dutyStoreId)) || firstEntry;
+          const editDutyStoreId = dutyEntry?.dutyStoreId || null;
+          const editCustomApprovers = editDutyStoreId
+            ? (dutyEntry?.workflowSteps || [])
+              .filter((s) => !(isPreApprovedMode && s.step_order > 1) && Boolean(s.approver_employee_id))
+              .map((s) => ({
+                step_order: s.step_order,
+                approver_employee_id: s.approver_employee_id!,
+              }))
+            : [];
 
           await withTimeout(
             updateMyPendingRequest({
@@ -2725,8 +2660,8 @@ export function ApplyEsarfScreen({
               reason: isPreApprovedMode && !combinedReason.includes('[PreApproved]')
                 ? `${combinedReason} [PreApproved]`.trim()
                 : combinedReason,
-              storeId: null,
-              customApprovers: customApproversPayload.length > 0 ? customApproversPayload : null,
+              storeId: editDutyStoreId,
+              customApprovers: editCustomApprovers.length > 0 ? editCustomApprovers : null,
             }),
             25000,
             'Updating ESARF request timed out. Please check your network connection.',
@@ -2745,9 +2680,9 @@ export function ApplyEsarfScreen({
             message: successStatus,
           });
           if (savedDraftId) {
-        await deleteEsarfDraft(draftUserKey, savedDraftId).catch(() => {});
-      }
-      invalidateRequestsCache();
+            await deleteEsarfDraft(draftUserKey, savedDraftId).catch(() => { });
+          }
+          invalidateRequestsCache();
           const reqCacheKey = await getMyRequestsCacheKey();
           await removeCacheItem(reqCacheKey).catch(() => { });
           await removeCacheItem('my_requests_v1').catch(() => { });
@@ -2949,23 +2884,6 @@ export function ApplyEsarfScreen({
               await new Promise((r) => setTimeout(r, 1000 * attempt));
             }
 
-            const customApproversPayload: { step_order: number; approver_employee_id: string }[] = [];
-            for (const entry of groupEntries) {
-              if (entry.workflowSteps) {
-                for (const s of entry.workflowSteps) {
-                  if (isPreApprovedMode && s.step_order > 1) continue;
-                  if (s.is_reassigned && s.approver_employee_id) {
-                    if (!customApproversPayload.some((c) => c.step_order === s.step_order)) {
-                      customApproversPayload.push({
-                        step_order: s.step_order,
-                        approver_employee_id: s.approver_employee_id,
-                      });
-                    }
-                  }
-                }
-              }
-            }
-
             const finalReason = isPreApprovedMode ? `${combinedReason} [PreApproved]`.trim() : combinedReason;
             const finalTransactionType = combinedTransactionType || (isPreApprovedMode ? 'OT' : '');
             const firstEntryHasOtOrOffset = groupEntries[0] && (
@@ -2974,6 +2892,17 @@ export function ApplyEsarfScreen({
               isOvertimeTransaction(groupEntries[0].transaction) ||
               isOffsetTransaction(groupEntries[0].transaction)
             );
+
+            const dutyEntry = groupEntries.find((e) => Boolean(e.dutyStoreId)) || groupEntries[0];
+            const groupDutyStoreId = dutyEntry?.dutyStoreId || null;
+            const groupCustomApprovers = groupDutyStoreId
+              ? (dutyEntry?.workflowSteps || [])
+                .filter((s) => !(isPreApprovedMode && s.step_order > 1) && Boolean(s.approver_employee_id))
+                .map((s) => ({
+                  step_order: s.step_order,
+                  approver_employee_id: s.approver_employee_id!,
+                }))
+              : [];
 
             const rpcPayload: Record<string, any> = {
               p_request_type_code: primaryRequestType,
@@ -2987,8 +2916,8 @@ export function ApplyEsarfScreen({
               p_day_off: dayOff,
               p_payroll_class: payrollClass,
               p_transaction_type: finalTransactionType,
-              p_store_id: null,
-              p_custom_approvers: customApproversPayload.length > 0 ? customApproversPayload : null,
+              p_store_id: groupDutyStoreId,
+              p_custom_approvers: groupCustomApprovers.length > 0 ? groupCustomApprovers : null,
               p_is_pre_approved: isPreApprovedMode,
               p_break_from: firstEntryHasOtOrOffset ? groupEntries[0]?.breakFrom || null : null,
               p_break_to: firstEntryHasOtOrOffset ? groupEntries[0]?.breakTo || null : null,
@@ -3028,21 +2957,6 @@ export function ApplyEsarfScreen({
 
             if (res?.error) {
               throw new Error(res.error.message);
-            }
-
-            // If custom approvers were assigned and we got back the new request ID, ensure reassignments are stored
-            if (res?.data && customApproversPayload.length > 0) {
-              const createdReqId = String(res.data);
-              for (const ca of customApproversPayload) {
-                try {
-                  await supabase.rpc('admin_reassign_request_approver', {
-                    p_request_id: createdReqId,
-                    p_new_approver_employee_id: ca.approver_employee_id,
-                  });
-                } catch {
-                  // non-fatal
-                }
-              }
             }
 
             lastErr = null;
@@ -3107,7 +3021,7 @@ export function ApplyEsarfScreen({
           : `${successMessage} Sent for approval.`,
       });
       if (savedDraftId) {
-        await deleteEsarfDraft(draftUserKey, savedDraftId).catch(() => {});
+        await deleteEsarfDraft(draftUserKey, savedDraftId).catch(() => { });
       }
       invalidateRequestsCache();
       const reqCacheKey = await getMyRequestsCacheKey();
@@ -4197,15 +4111,45 @@ export function ApplyEsarfScreen({
                             {(entry.isLoadingWorkflow || isLoadingDefaultWorkflow) ? (
                               <ActivityIndicator size="small" color="#1e40af" />
                             ) : null}
+                            {isOperationsDepartment && !entry.dutyStoreId ? (
+                              <Pressable
+                                style={styles.storeDutyBtn}
+                                onPress={() => setStoreDutyEntryIndex(actualIndex)}
+                                hitSlop={6}
+                              >
+                                <Store size={11} color="#475569" strokeWidth={2.3} />
+                                <Text style={styles.storeDutyBtnText} numberOfLines={1}>
+                                  Select Store Duty
+                                </Text>
+                              </Pressable>
+                            ) : null}
                           </View>
                         </View>
+
+                        {isOperationsDepartment && entry.dutyStoreName ? (
+                          <View style={styles.storeDutyRow}>
+                            <View style={styles.selectedStoreDutyPill}>
+                              <Store size={12} color="#1d4ed8" strokeWidth={2.3} />
+                              <Text style={styles.selectedStoreDutyText} numberOfLines={1}>
+                                {`Store Duty: ${entry.dutyStoreName}`}
+                              </Text>
+                            </View>
+                            <Pressable
+                              style={styles.storeDutyClearBtn}
+                              onPress={() => handleClearStoreDuty(actualIndex)}
+                              hitSlop={6}
+                              accessibilityLabel="Reset to default approvers"
+                            >
+                              <X size={12} color="#64748b" strokeWidth={2.5} />
+                            </Pressable>
+                          </View>
+                        ) : null}
 
                         <View style={styles.entryStepperContainer}>
                           {displaySteps.length > 1 ? <View style={styles.entryStepperLineTrack} /> : null}
 
                           <View style={styles.entryStepperColumnsRow}>
                             {displaySteps.map((step, sIdx) => {
-                              const isReassigned = Boolean(step.is_reassigned);
                               const isPending = sIdx === 0;
                               const dotColor = isPending ? '#eab308' : '#cbd5e1';
                               const effectiveLevel = resolveApproverLevel(step);
@@ -4226,32 +4170,6 @@ export function ApplyEsarfScreen({
                                   <Text style={styles.entryStepSubtitleText} numberOfLines={1}>
                                     {`${levelLabel} • ${statusLabel}`}
                                   </Text>
-
-                                  {/* Reassign action button */}
-                                  <Pressable
-                                    style={({ pressed }) => [
-                                      styles.entryStepReassignBtn,
-                                      isReassigned ? styles.entryStepReassignBtnActive : null,
-                                      pressed ? { opacity: 0.7 } : null,
-                                    ]}
-                                    onPress={() => handleOpenReassignModal(actualIndex, step)}
-                                    hitSlop={6}
-                                    accessibilityLabel={`Reassign step ${step.step_order} approver`}
-                                  >
-                                    <ArrowRightLeft
-                                      size={10}
-                                      color={isReassigned ? '#1d4ed8' : '#64748b'}
-                                      strokeWidth={2.2}
-                                    />
-                                    <Text
-                                      style={[
-                                        styles.entryStepReassignText,
-                                        isReassigned ? styles.entryStepReassignedText : null,
-                                      ]}
-                                    >
-                                      {isReassigned ? 'Reassigned' : 'Reassign'}
-                                    </Text>
-                                  </Pressable>
                                 </View>
                               );
                             })}
@@ -4463,32 +4381,36 @@ export function ApplyEsarfScreen({
             </Pressable>
           </View>
 
-          {!isOnline && (
-            <View style={styles.offlineNoticeCard}>
-              <WifiOff size={15} color="#b91c1c" strokeWidth={2.4} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.offlineNoticeTitle}>Ready to Save Offline</Text>
-                <Text style={styles.offlineNoticeDesc}>
-                  Your request and photo proofs will be safely saved on this device. Once internet or mobile data is detected, they will automatically sync to the database.
-                </Text>
+          {
+            !isOnline && (
+              <View style={styles.offlineNoticeCard}>
+                <WifiOff size={15} color="#b91c1c" strokeWidth={2.4} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.offlineNoticeTitle}>Ready to Save Offline</Text>
+                  <Text style={styles.offlineNoticeDesc}>
+                    Your request and photo proofs will be safely saved on this device. Once internet or mobile data is detected, they will automatically sync to the database.
+                  </Text>
+                </View>
               </View>
-            </View>
-          )}
+            )
+          }
 
-          {(!editingRequest || isDraftEditing) ? (
-            <Pressable
-              disabled={isSubmitting || isSavingDraft}
-              style={[
-                styles.saveDraftButton,
-                (isSubmitting || isSavingDraft) ? styles.submitButtonDisabled : null,
-              ]}
-              onPress={() => void handleSaveAsDraft()}
-            >
-              <Text style={styles.saveDraftText}>
-                {isSavingDraft ? 'Saving Draft...' : 'Save as Draft'}
-              </Text>
-            </Pressable>
-          ) : null}
+          {
+            (!editingRequest || isDraftEditing) ? (
+              <Pressable
+                disabled={isSubmitting || isSavingDraft}
+                style={[
+                  styles.saveDraftButton,
+                  (isSubmitting || isSavingDraft) ? styles.submitButtonDisabled : null,
+                ]}
+                onPress={() => void handleSaveAsDraft()}
+              >
+                <Text style={styles.saveDraftText}>
+                  {isSavingDraft ? 'Saving Draft...' : 'Save as Draft'}
+                </Text>
+              </Pressable>
+            ) : null
+          }
 
           <View style={styles.actions}>
             <Pressable style={styles.cancelButton} onPress={() => confirmDiscard(onBack)}>
@@ -4512,884 +4434,902 @@ export function ApplyEsarfScreen({
               </Text>
             </Pressable>
           </View>
-          {submissionErrorModal ? (() => {
-            const errorInfo = getFriendlyErrorMessage(submissionErrorModal);
-            return (
+          {
+            submissionErrorModal ? (() => {
+              const errorInfo = getFriendlyErrorMessage(submissionErrorModal);
+              return (
+                <Modal
+                  transparent
+                  animationType="fade"
+                  visible={Boolean(submissionErrorModal)}
+                  onRequestClose={() => setSubmissionErrorModal(null)}
+                >
+                  <View style={styles.errorModalBackdrop}>
+                    <View style={styles.errorModalCard}>
+                      <View style={styles.errorModalIconContainer}>
+                        <AlertTriangle size={32} color="#ef4444" strokeWidth={2.4} />
+                      </View>
+
+                      <Text style={styles.errorModalTitle}>{errorInfo.title}</Text>
+
+                      <Text style={styles.errorModalMessage}>{errorInfo.message}</Text>
+
+                      <View style={styles.errorModalActions}>
+                        <Pressable
+                          style={styles.errorModalDismissBtn}
+                          onPress={() => {
+                            setSubmissionErrorModal(null);
+                          }}
+                        >
+                          <Text style={styles.errorModalDismissText}>Close</Text>
+                        </Pressable>
+
+                        {errorInfo.isRetryable ? (
+                          <Pressable
+                            style={styles.errorModalReloadBtn}
+                            onPress={() => {
+                              setSubmissionErrorModal(null);
+                              executeSubmit();
+                            }}
+                          >
+                            <RotateCcw size={15} color="#0f172a" />
+                            <Text style={styles.errorModalReloadText}>Retry</Text>
+                          </Pressable>
+                        ) : (
+                          <Pressable
+                            style={styles.errorModalReloadBtn}
+                            onPress={() => {
+                              setSubmissionErrorModal(null);
+                              setIsSubmitting(false);
+                              setSubmitStatus('');
+                              if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                                window.location.reload();
+                              }
+                            }}
+                          >
+                            <RotateCcw size={15} color="#0f172a" />
+                            <Text style={styles.errorModalReloadText}>Reset / Reload</Text>
+                          </Pressable>
+                        )}
+                      </View>
+                    </View>
+                  </View>
+                </Modal>
+              );
+            })() : null
+          }
+
+          {/* Photo Proof Selection Modal */}
+          {
+            activeProofPickerIndex !== null ? (() => {
+              const currentEntry = entries[activeProofPickerIndex];
+              const requiresProof = isProofRequiredForTransactions(currentEntry?.transaction);
+              const attachedProofs = getEntryProofs(currentEntry);
+              const attachedCount = attachedProofs.length;
+              const remainingSlots = Math.max(0, 5 - attachedCount);
+
+              return (
+                <Modal
+                  visible={activeProofPickerIndex !== null}
+                  transparent
+                  animationType="slide"
+                  onRequestClose={() => setActiveProofPickerIndex(null)}
+                >
+                  <View style={styles.proofPickerModalBackdrop}>
+                    <View style={styles.proofPickerModalCard}>
+                      <View style={styles.proofPickerModalHeader}>
+                        <View>
+                          <Text style={styles.proofPickerModalTitle}>
+                            Attach up to 5 Photo Proofs
+                          </Text>
+                          <Text style={styles.proofPickerModalSubtitle}>
+                            Request #{activeProofPickerIndex + 1}
+                            {currentEntry?.transaction
+                              ? ` • ${transactionOptions
+                                .filter((t) => parseEntryTransactions(currentEntry?.transaction).includes(t.key))
+                                .map((t) => t.shortLabel || t.label)
+                                .join(', ')}`
+                              : ''}
+                            {requiresProof ? ' • 1 required, 4 optional' : ' • Optional'}
+                            {attachedCount > 0 ? ` (${attachedCount}/5 attached)` : ''}
+                          </Text>
+                        </View>
+                        <Pressable
+                          style={styles.proofPickerCloseBtn}
+                          onPress={() => setActiveProofPickerIndex(null)}
+                          hitSlop={8}
+                        >
+                          <X size={20} color="#0f172a" strokeWidth={2.4} />
+                        </Pressable>
+                      </View>
+
+                      {isUploadingGalleryProof ? (
+                        <View style={styles.galleryUploadLoadingContainer}>
+                          <ActivityIndicator size="large" color="#7e22ce" />
+                          <Text style={styles.galleryUploadLoadingTitle}>Uploading Photo Proof</Text>
+                          <Text style={styles.galleryUploadLoadingDesc}>
+                            {galleryUploadStatus || 'Uploading to Google Drive & saving to database...'}
+                          </Text>
+                        </View>
+                      ) : (
+                        <>
+                          <ScrollView style={styles.proofPickerScroll} contentContainerStyle={styles.proofPickerScrollContent}>
+                            {/* Quick action: Gallery */}
+                            <Text style={styles.proofPickerSectionHeading}>Upload Pictures From Gallery</Text>
+                            <View style={styles.proofPickerQuickRow}>
+                              <Pressable
+                                style={({ pressed }) => [
+                                  styles.proofPickerQuickCard,
+                                  pressed ? styles.proofPickerQuickCardPressed : null,
+                                  remainingSlots === 0 ? { opacity: 0.5 } : null,
+                                ]}
+                                onPress={() => {
+                                  if (remainingSlots === 0) {
+                                    platformAlert('Limit Reached', 'You have already attached 5 photos. Remove one to upload another.');
+                                    return;
+                                  }
+                                  pickFromGallery(activeProofPickerIndex);
+                                }}
+                              >
+                                <View style={[styles.proofPickerQuickIconWrap, { backgroundColor: '#f3e8ff' }]}>
+                                  <ImageIcon size={22} color="#7e22ce" strokeWidth={2.2} />
+                                </View>
+                                <View style={{ flex: 1 }}>
+                                  <Text style={styles.proofPickerQuickTitle}>
+                                    Upload from Gallery {remainingSlots > 0 ? `(${remainingSlots} remaining)` : '(Max 5 reached)'}
+                                  </Text>
+                                  <Text style={styles.proofPickerQuickDesc}>
+                                    {remainingSlots > 0 ? `Select up to ${remainingSlots} photo(s) from device gallery` : '5 of 5 photos selected'}
+                                  </Text>
+                                </View>
+                              </Pressable>
+                            </View>
+
+                            {/* Photo Proof Log */}
+                            <View style={styles.proofPickerDividerRow}>
+                              <View style={styles.proofPickerDividerLine} />
+                              <Text style={styles.proofPickerDividerText}>OR CHOOSE FROM PHOTO PROOFS LOG</Text>
+                              <View style={styles.proofPickerDividerLine} />
+                            </View>
+
+                            {isLoadingPhotoProofs ? (
+                              <View style={styles.proofPickerLoadingWrap}>
+                                <Text style={styles.proofPickerLoadingText}>Loading your photo proofs...</Text>
+                              </View>
+                            ) : photoProofsList.length === 0 ? (
+                              <View style={styles.proofPickerEmptyWrap}>
+                                <Images size={38} color="#94a3b8" strokeWidth={1.6} />
+                                <Text style={styles.proofPickerEmptyTitle}>No Photo Proofs Found</Text>
+                                <Text style={styles.proofPickerEmptyText}>
+                                  You haven't captured any photo proofs in your Photo Log yet. Use the Gallery option above.
+                                </Text>
+                              </View>
+                            ) : (
+                              <View style={styles.proofPickerList}>
+                                {photoProofsList.map((item) => {
+                                  const isSelected = attachedProofs.some(
+                                    (p) => (p.photoProofId && p.photoProofId === item.id) || p.uri === item.photoUri,
+                                  );
+                                  return (
+                                    <Pressable
+                                      key={item.id}
+                                      style={({ pressed }) => [
+                                        styles.proofPickerItemCard,
+                                        isSelected ? styles.proofPickerItemCardSelected : null,
+                                        pressed ? styles.proofPickerItemCardPressed : null,
+                                      ]}
+                                      onPress={() => selectPhotoProofForEntry(item)}
+                                    >
+                                      {Platform.OS === 'web' ? (
+                                        React.createElement('img', {
+                                          src: getDirectProofImageUrl(item.photoUri),
+                                          referrerPolicy: 'no-referrer',
+                                          style: { width: 48, height: 48, borderRadius: 8, objectFit: 'cover' },
+                                        })
+                                      ) : (
+                                        <Image
+                                          source={{ uri: getDirectProofImageUrl(item.photoUri) }}
+                                          style={styles.proofPickerItemThumb}
+                                          resizeMode="cover"
+                                        />
+                                      )}
+                                      <View style={styles.proofPickerItemInfo}>
+                                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                          <Text style={styles.proofPickerItemTime}>
+                                            {item.source === 'gallery' || (!item.timeDigits && !item.locationText)
+                                              ? (item.dateFormatted ? `Gallery Photo • ${item.dateFormatted}` : 'Gallery Photo')
+                                              : `${item.dateFormatted} • ${item.timeDigits} ${item.timePeriod}`}
+                                          </Text>
+                                          {!item.syncedToCloud && !item.driveFileId ? (
+                                            <View style={styles.proofPickerOfflineBadge}>
+                                              <WifiOff size={9} color="#92400e" strokeWidth={2.4} />
+                                              <Text style={styles.proofPickerOfflineBadgeText}>OFFLINE</Text>
+                                            </View>
+                                          ) : null}
+                                        </View>
+                                        {item.source !== 'gallery' && item.locationText ? (
+                                          <Text style={styles.proofPickerItemLocation} numberOfLines={2}>
+                                            {item.locationText}
+                                          </Text>
+                                        ) : null}
+                                      </View>
+                                      <View style={[styles.proofPickerItemSelectBtn, isSelected ? styles.proofPickerItemSelectBtnSelected : null]}>
+                                        <Check size={16} color={isSelected ? '#ffffff' : '#2563eb'} strokeWidth={isSelected ? 3 : 2.4} />
+                                      </View>
+                                    </Pressable>
+                                  );
+                                })}
+                              </View>
+                            )}
+                          </ScrollView>
+
+                          {/* Bottom action bar */}
+                          <View style={[styles.proofPickerBottomBar, { paddingBottom: Math.max(16, getSafeBottomInset(insets.bottom, 0) + 10) }]}>
+                            <Pressable
+                              style={styles.proofPickerDoneBtn}
+                              onPress={() => setActiveProofPickerIndex(null)}
+                            >
+                              <Check size={16} color="#ffffff" strokeWidth={2.4} />
+                              <Text style={styles.proofPickerDoneBtnText}>
+                                {attachedCount > 0 ? `Done (${attachedCount}/5 Photos Selected)` : 'Done'}
+                              </Text>
+                            </Pressable>
+                          </View>
+                        </>
+                      )}
+                    </View>
+                  </View>
+                </Modal>
+              );
+            })() : null
+          }
+
+          {/* Fullscreen Proof Preview Modal */}
+          {
+            previewProof ? (
               <Modal
+                visible={Boolean(previewProof)}
                 transparent
                 animationType="fade"
-                visible={Boolean(submissionErrorModal)}
-                onRequestClose={() => setSubmissionErrorModal(null)}
+                onRequestClose={() => setPreviewProof(null)}
               >
-                <View style={styles.errorModalBackdrop}>
-                  <View style={styles.errorModalCard}>
-                    <View style={styles.errorModalIconContainer}>
-                      <AlertTriangle size={32} color="#ef4444" strokeWidth={2.4} />
+                <View style={styles.proofPreviewBackdrop}>
+                  <View style={styles.proofPreviewCard}>
+                    <View style={styles.proofPreviewHeader}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.proofPreviewTitle} numberOfLines={1}>
+                          {previewProof.source === 'gallery' ? (previewProof.name || 'Gallery Photo') : (previewProof.name || 'Photo Proof Preview')}
+                        </Text>
+                        {previewProof.source !== 'gallery' && previewProof.locationText ? (
+                          <Text style={styles.proofPreviewSubtitle} numberOfLines={1}>
+                            {previewProof.locationText}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Pressable
+                        style={styles.proofPreviewCloseBtn}
+                        onPress={() => setPreviewProof(null)}
+                        hitSlop={8}
+                      >
+                        <X size={20} color="#64748b" strokeWidth={2.4} />
+                      </Pressable>
                     </View>
 
-                    <Text style={styles.errorModalTitle}>{errorInfo.title}</Text>
-
-                    <Text style={styles.errorModalMessage}>{errorInfo.message}</Text>
-
-                    <View style={styles.errorModalActions}>
-                      <Pressable
-                        style={styles.errorModalDismissBtn}
-                        onPress={() => {
-                          setSubmissionErrorModal(null);
-                        }}
-                      >
-                        <Text style={styles.errorModalDismissText}>Close</Text>
-                      </Pressable>
-
-                      {errorInfo.isRetryable ? (
-                        <Pressable
-                          style={styles.errorModalReloadBtn}
-                          onPress={() => {
-                            setSubmissionErrorModal(null);
-                            executeSubmit();
-                          }}
-                        >
-                          <RotateCcw size={15} color="#0f172a" />
-                          <Text style={styles.errorModalReloadText}>Retry</Text>
-                        </Pressable>
+                    <View style={{ position: 'relative', width: '100%', height: 380, backgroundColor: '#020617', overflow: 'hidden' }}>
+                      {Platform.OS === 'web' ? (
+                        React.createElement('img', {
+                          src: getDirectProofImageUrl(previewProof.uri),
+                          referrerPolicy: 'no-referrer',
+                          style: { width: '100%', height: 380, objectFit: 'contain' },
+                        })
                       ) : (
-                        <Pressable
-                          style={styles.errorModalReloadBtn}
-                          onPress={() => {
-                            setSubmissionErrorModal(null);
-                            setIsSubmitting(false);
-                            setSubmitStatus('');
-                            if (Platform.OS === 'web' && typeof window !== 'undefined') {
-                              window.location.reload();
-                            }
-                          }}
-                        >
-                          <RotateCcw size={15} color="#0f172a" />
-                          <Text style={styles.errorModalReloadText}>Reset / Reload</Text>
-                        </Pressable>
+                        <Image source={{ uri: getDirectProofImageUrl(previewProof.uri) }} style={styles.proofPreviewImage} resizeMode="contain" />
                       )}
+
+                      {previewProof.source !== 'gallery' && (previewProof.timestamp || previewProof.locationText) ? (() => {
+                        const ts = previewProof.timestamp
+                          ? formatProofTimestamp(new Date(previewProof.timestamp))
+                          : null;
+                        return (
+                          <>
+                            <View style={styles.proofPreviewWatermarkGradient} pointerEvents="none" />
+                            <View style={styles.proofPreviewWatermarkContainer} pointerEvents="none">
+                              {ts ? (
+                                <View style={styles.proofPreviewWatermarkTimeRow}>
+                                  <Text style={styles.proofPreviewWatermarkTime}>
+                                    {ts.timeDigits}
+                                    <Text style={styles.proofPreviewWatermarkPeriod}> {ts.timePeriod}</Text>
+                                  </Text>
+                                  <View style={styles.proofPreviewWatermarkDivider} />
+                                  <View style={styles.proofPreviewWatermarkDateCol}>
+                                    <Text style={styles.proofPreviewWatermarkDate}>{ts.dateFormatted}</Text>
+                                    <Text style={styles.proofPreviewWatermarkDay}>{ts.dayFormatted}</Text>
+                                  </View>
+                                </View>
+                              ) : null}
+                              {previewProof.locationText ? (
+                                <View style={styles.proofPreviewWatermarkLocationRow}>
+                                  <Text style={styles.proofPreviewWatermarkLocation} numberOfLines={3}>
+                                    {previewProof.locationText}
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
+                          </>
+                        );
+                      })() : null}
+                    </View>
+
+                    <View style={styles.proofPreviewFooter}>
+                      {previewProof.driveWebViewLink || previewProof.uri.startsWith('http') ? (
+                        <Pressable
+                          style={styles.proofPreviewExternalBtn}
+                          onPress={() => Linking.openURL(previewProof.driveWebViewLink || previewProof.uri)}
+                        >
+                          <ExternalLink size={14} color="#ffffff" strokeWidth={2.2} />
+                          <Text style={styles.proofPreviewExternalBtnText}>Open External Link</Text>
+                        </Pressable>
+                      ) : null}
+                      <Pressable
+                        style={styles.proofPreviewDismissBtn}
+                        onPress={() => setPreviewProof(null)}
+                      >
+                        <Text style={styles.proofPreviewDismissBtnText}>Close</Text>
+                      </Pressable>
                     </View>
                   </View>
                 </View>
               </Modal>
-            );
-          })() : null}
+            ) : null
+          }
 
-          {/* Photo Proof Selection Modal */}
-          {activeProofPickerIndex !== null ? (() => {
-            const currentEntry = entries[activeProofPickerIndex];
-            const requiresProof = isProofRequiredForTransactions(currentEntry?.transaction);
-            const attachedProofs = getEntryProofs(currentEntry);
-            const attachedCount = attachedProofs.length;
-            const remainingSlots = Math.max(0, 5 - attachedCount);
+          {
+            activeEntryPicker ? (
+              <UniversalDateTimePicker
+                value={pickerValue()}
+                mode={activeEntryPicker.kind.startsWith('date') ? 'date' : 'time'}
+                display="default"
+                is24Hour={false}
+                onChange={handlePickerChange}
+                onClose={() => setActiveEntryPicker(null)}
+              />
+            ) : null
+          }
 
-            return (
-              <Modal
-                visible={activeProofPickerIndex !== null}
-                transparent
-                animationType="slide"
-                onRequestClose={() => setActiveProofPickerIndex(null)}
-              >
-                <View style={styles.proofPickerModalBackdrop}>
-                  <View style={styles.proofPickerModalCard}>
-                    <View style={styles.proofPickerModalHeader}>
-                      <View>
-                        <Text style={styles.proofPickerModalTitle}>
-                          Attach up to 5 Photo Proofs
-                        </Text>
-                        <Text style={styles.proofPickerModalSubtitle}>
-                          Request #{activeProofPickerIndex + 1}
-                          {currentEntry?.transaction
-                            ? ` • ${transactionOptions
-                              .filter((t) => parseEntryTransactions(currentEntry?.transaction).includes(t.key))
-                              .map((t) => t.shortLabel || t.label)
-                              .join(', ')}`
-                            : ''}
-                          {requiresProof ? ' • 1 required, 4 optional' : ' • Optional'}
-                          {attachedCount > 0 ? ` (${attachedCount}/5 attached)` : ''}
-                        </Text>
-                      </View>
-                      <Pressable
-                        style={styles.proofPickerCloseBtn}
-                        onPress={() => setActiveProofPickerIndex(null)}
-                        hitSlop={8}
-                      >
-                        <X size={20} color="#0f172a" strokeWidth={2.4} />
-                      </Pressable>
-                    </View>
-
-                    {isUploadingGalleryProof ? (
-                      <View style={styles.galleryUploadLoadingContainer}>
-                        <ActivityIndicator size="large" color="#7e22ce" />
-                        <Text style={styles.galleryUploadLoadingTitle}>Uploading Photo Proof</Text>
-                        <Text style={styles.galleryUploadLoadingDesc}>
-                          {galleryUploadStatus || 'Uploading to Google Drive & saving to database...'}
-                        </Text>
-                      </View>
-                    ) : (
+          {
+            selectSheet ? (
+              <Modal transparent animationType="fade" visible onRequestClose={() => setActiveSelect(null)}>
+                <View style={styles.modalBackdrop}>
+                  <Pressable style={styles.modalDismissArea} onPress={() => setActiveSelect(null)} />
+                  <View style={styles.optionSheet}>
+                    <View style={styles.sheetHandle} />
+                    <Text style={styles.sheetTitle}>{selectSheet.title}</Text>
+                    {activeSelect === 'day_off' ? (
                       <>
-                        <ScrollView style={styles.proofPickerScroll} contentContainerStyle={styles.proofPickerScrollContent}>
-                          {/* Quick action: Gallery */}
-                          <Text style={styles.proofPickerSectionHeading}>Upload Pictures From Gallery</Text>
-                          <View style={styles.proofPickerQuickRow}>
+                        <View style={styles.dayOffHeaderRow}>
+                          <Text style={styles.sheetSubtitle}>Choose one or more day-off days.</Text>
+                          {parseDayOffList(dayOff).length > 0 ? (
                             <Pressable
-                              style={({ pressed }) => [
-                                styles.proofPickerQuickCard,
-                                pressed ? styles.proofPickerQuickCardPressed : null,
-                                remainingSlots === 0 ? { opacity: 0.5 } : null,
-                              ]}
+                              hitSlop={8}
                               onPress={() => {
-                                if (remainingSlots === 0) {
-                                  platformAlert('Limit Reached', 'You have already attached 5 photos. Remove one to upload another.');
-                                  return;
-                                }
-                                pickFromGallery(activeProofPickerIndex);
+                                setDayOff(NO_DAY_OFF_LABEL);
+                                setIsUserCustomDayOff(true);
+                                setValidationErrors((current) => ({ ...current, dayOff: undefined }));
                               }}
                             >
-                              <View style={[styles.proofPickerQuickIconWrap, { backgroundColor: '#f3e8ff' }]}>
-                                <ImageIcon size={22} color="#7e22ce" strokeWidth={2.2} />
-                              </View>
-                              <View style={{ flex: 1 }}>
-                                <Text style={styles.proofPickerQuickTitle}>
-                                  Upload from Gallery {remainingSlots > 0 ? `(${remainingSlots} remaining)` : '(Max 5 reached)'}
-                                </Text>
-                                <Text style={styles.proofPickerQuickDesc}>
-                                  {remainingSlots > 0 ? `Select up to ${remainingSlots} photo(s) from device gallery` : '5 of 5 photos selected'}
-                                </Text>
-                              </View>
+                              <Text style={styles.clearDayOffText}>Clear all</Text>
                             </Pressable>
-                          </View>
-
-                          {/* Photo Proof Log */}
-                          <View style={styles.proofPickerDividerRow}>
-                            <View style={styles.proofPickerDividerLine} />
-                            <Text style={styles.proofPickerDividerText}>OR CHOOSE FROM PHOTO PROOFS LOG</Text>
-                            <View style={styles.proofPickerDividerLine} />
-                          </View>
-
-                          {isLoadingPhotoProofs ? (
-                            <View style={styles.proofPickerLoadingWrap}>
-                              <Text style={styles.proofPickerLoadingText}>Loading your photo proofs...</Text>
-                            </View>
-                          ) : photoProofsList.length === 0 ? (
-                            <View style={styles.proofPickerEmptyWrap}>
-                              <Images size={38} color="#94a3b8" strokeWidth={1.6} />
-                              <Text style={styles.proofPickerEmptyTitle}>No Photo Proofs Found</Text>
-                              <Text style={styles.proofPickerEmptyText}>
-                                You haven't captured any photo proofs in your Photo Log yet. Use the Gallery option above.
-                              </Text>
-                            </View>
-                          ) : (
-                            <View style={styles.proofPickerList}>
-                              {photoProofsList.map((item) => {
-                                const isSelected = attachedProofs.some(
-                                  (p) => (p.photoProofId && p.photoProofId === item.id) || p.uri === item.photoUri,
-                                );
-                                return (
-                                  <Pressable
-                                    key={item.id}
-                                    style={({ pressed }) => [
-                                      styles.proofPickerItemCard,
-                                      isSelected ? styles.proofPickerItemCardSelected : null,
-                                      pressed ? styles.proofPickerItemCardPressed : null,
-                                    ]}
-                                    onPress={() => selectPhotoProofForEntry(item)}
-                                  >
-                                    {Platform.OS === 'web' ? (
-                                      React.createElement('img', {
-                                        src: getDirectProofImageUrl(item.photoUri),
-                                        referrerPolicy: 'no-referrer',
-                                        style: { width: 48, height: 48, borderRadius: 8, objectFit: 'cover' },
-                                      })
-                                    ) : (
-                                      <Image
-                                        source={{ uri: getDirectProofImageUrl(item.photoUri) }}
-                                        style={styles.proofPickerItemThumb}
-                                        resizeMode="cover"
-                                      />
-                                    )}
-                                    <View style={styles.proofPickerItemInfo}>
-                                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                                        <Text style={styles.proofPickerItemTime}>
-                                          {item.source === 'gallery' || (!item.timeDigits && !item.locationText)
-                                            ? (item.dateFormatted ? `Gallery Photo • ${item.dateFormatted}` : 'Gallery Photo')
-                                            : `${item.dateFormatted} • ${item.timeDigits} ${item.timePeriod}`}
-                                        </Text>
-                                        {!item.syncedToCloud && !item.driveFileId ? (
-                                          <View style={styles.proofPickerOfflineBadge}>
-                                            <WifiOff size={9} color="#92400e" strokeWidth={2.4} />
-                                            <Text style={styles.proofPickerOfflineBadgeText}>OFFLINE</Text>
-                                          </View>
-                                        ) : null}
-                                      </View>
-                                      {item.source !== 'gallery' && item.locationText ? (
-                                        <Text style={styles.proofPickerItemLocation} numberOfLines={2}>
-                                          {item.locationText}
-                                        </Text>
-                                      ) : null}
-                                    </View>
-                                    <View style={[styles.proofPickerItemSelectBtn, isSelected ? styles.proofPickerItemSelectBtnSelected : null]}>
-                                      <Check size={16} color={isSelected ? '#ffffff' : '#2563eb'} strokeWidth={isSelected ? 3 : 2.4} />
-                                    </View>
-                                  </Pressable>
-                                );
-                              })}
-                            </View>
-                          )}
-                        </ScrollView>
-
-                        {/* Bottom action bar */}
-                        <View style={[styles.proofPickerBottomBar, { paddingBottom: Math.max(16, getSafeBottomInset(insets.bottom, 0) + 10) }]}>
-                          <Pressable
-                            style={styles.proofPickerDoneBtn}
-                            onPress={() => setActiveProofPickerIndex(null)}
-                          >
-                            <Check size={16} color="#ffffff" strokeWidth={2.4} />
-                            <Text style={styles.proofPickerDoneBtnText}>
-                              {attachedCount > 0 ? `Done (${attachedCount}/5 Photos Selected)` : 'Done'}
-                            </Text>
-                          </Pressable>
+                          ) : null}
                         </View>
+                        {selectSheet.options.map((option) => {
+                          const selectedDays = parseDayOffList(dayOff);
+                          const isSelected = selectedDays.includes(option);
+                          return (
+                            <Pressable
+                              key={option}
+                              style={[
+                                styles.dayOffOptionRow,
+                                isSelected ? styles.dayOffOptionRowActive : null,
+                              ]}
+                              onPress={() => toggleDayOff(option)}
+                              accessibilityRole="checkbox"
+                              accessibilityState={{ checked: isSelected }}
+                            >
+                              <View style={[styles.checkbox, isSelected ? styles.checkboxActive : null]}>
+                                {isSelected ? <Check size={14} color="#0f172a" strokeWidth={3} /> : null}
+                              </View>
+                              <Text style={[styles.optionText, isSelected ? styles.optionTextActive : null]}>
+                                {option} • {DAY_FULL_NAMES[option] || option}
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                        <Pressable style={styles.dayOffDoneButton} onPress={() => setActiveSelect(null)}>
+                          <Text style={styles.submitText}>Done</Text>
+                        </Pressable>
+                      </>
+                    ) : (
+                      <>
+                        {selectSheet.options.map((option) => {
+                          const selected = option === selectSheet.value;
+                          const isCustom = option === 'Custom schedule...';
+                          return (
+                            <Pressable
+                              key={option}
+                              style={[
+                                styles.optionRow,
+                                selected ? styles.optionRowActive : null,
+                                isCustom ? styles.customOptionRow : null,
+                              ]}
+                              onPress={() => chooseSelectOption(option)}
+                            >
+                              {isCustom ? (
+                                <View style={styles.customOptionWrap}>
+                                  <Clock3 size={16} color={colors.primary} strokeWidth={2.2} />
+                                  <Text style={[styles.optionText, styles.customOptionText]}>{option}</Text>
+                                </View>
+                              ) : (
+                                <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>{option}</Text>
+                              )}
+                              {selected ? <Check size={18} color={colors.brand.goldStrong} strokeWidth={3} /> : null}
+                            </Pressable>
+                          );
+                        })}
+                        <Pressable style={styles.sheetCancelButton} onPress={() => setActiveSelect(null)}>
+                          <Text style={styles.cancelText}>Cancel</Text>
+                        </Pressable>
                       </>
                     )}
                   </View>
                 </View>
               </Modal>
-            );
-          })() : null}
+            ) : null
+          }
 
-          {/* Fullscreen Proof Preview Modal */}
-          {previewProof ? (
-            <Modal
-              visible={Boolean(previewProof)}
-              transparent
-              animationType="fade"
-              onRequestClose={() => setPreviewProof(null)}
-            >
-              <View style={styles.proofPreviewBackdrop}>
-                <View style={styles.proofPreviewCard}>
-                  <View style={styles.proofPreviewHeader}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.proofPreviewTitle} numberOfLines={1}>
-                        {previewProof.source === 'gallery' ? (previewProof.name || 'Gallery Photo') : (previewProof.name || 'Photo Proof Preview')}
-                      </Text>
-                      {previewProof.source !== 'gallery' && previewProof.locationText ? (
-                        <Text style={styles.proofPreviewSubtitle} numberOfLines={1}>
-                          {previewProof.locationText}
+          {
+            isCustomScheduleOpen ? (
+              <Modal transparent animationType="fade" visible onRequestClose={() => setIsCustomScheduleOpen(false)}>
+                <View style={styles.modalBackdrop}>
+                  <Pressable style={styles.modalDismissArea} onPress={() => setIsCustomScheduleOpen(false)} />
+                  <View style={styles.customScheduleModalPanel}>
+                    <View style={styles.sheetHandle} />
+                    <View style={styles.customScheduleHeader}>
+                      <View style={styles.customScheduleIconBadge}>
+                        <Clock3 size={18} color="#0f172a" strokeWidth={2.5} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.customScheduleTitle}>Custom Base Schedule</Text>
+                        <Text style={styles.customScheduleSubtitle}>
+                          Tap Shift Start or Shift End to choose working hours.
                         </Text>
-                      ) : null}
+                      </View>
                     </View>
-                    <Pressable
-                      style={styles.proofPreviewCloseBtn}
-                      onPress={() => setPreviewProof(null)}
-                      hitSlop={8}
-                    >
-                      <X size={20} color="#64748b" strokeWidth={2.4} />
-                    </Pressable>
-                  </View>
 
-                  <View style={{ position: 'relative', width: '100%', height: 380, backgroundColor: '#020617', overflow: 'hidden' }}>
-                    {Platform.OS === 'web' ? (
-                      React.createElement('img', {
-                        src: getDirectProofImageUrl(previewProof.uri),
-                        referrerPolicy: 'no-referrer',
-                        style: { width: '100%', height: 380, objectFit: 'contain' },
-                      })
-                    ) : (
-                      <Image source={{ uri: getDirectProofImageUrl(previewProof.uri) }} style={styles.proofPreviewImage} resizeMode="contain" />
-                    )}
-
-                    {previewProof.source !== 'gallery' && (previewProof.timestamp || previewProof.locationText) ? (() => {
-                      const ts = previewProof.timestamp
-                        ? formatProofTimestamp(new Date(previewProof.timestamp))
-                        : null;
-                      return (
-                        <>
-                          <View style={styles.proofPreviewWatermarkGradient} pointerEvents="none" />
-                          <View style={styles.proofPreviewWatermarkContainer} pointerEvents="none">
-                            {ts ? (
-                              <View style={styles.proofPreviewWatermarkTimeRow}>
-                                <Text style={styles.proofPreviewWatermarkTime}>
-                                  {ts.timeDigits}
-                                  <Text style={styles.proofPreviewWatermarkPeriod}> {ts.timePeriod}</Text>
-                                </Text>
-                                <View style={styles.proofPreviewWatermarkDivider} />
-                                <View style={styles.proofPreviewWatermarkDateCol}>
-                                  <Text style={styles.proofPreviewWatermarkDate}>{ts.dateFormatted}</Text>
-                                  <Text style={styles.proofPreviewWatermarkDay}>{ts.dayFormatted}</Text>
-                                </View>
-                              </View>
-                            ) : null}
-                            {previewProof.locationText ? (
-                              <View style={styles.proofPreviewWatermarkLocationRow}>
-                                <Text style={styles.proofPreviewWatermarkLocation} numberOfLines={3}>
-                                  {previewProof.locationText}
-                                </Text>
-                              </View>
-                            ) : null}
-                          </View>
-                        </>
-                      );
-                    })() : null}
-                  </View>
-
-                  <View style={styles.proofPreviewFooter}>
-                    {previewProof.driveWebViewLink || previewProof.uri.startsWith('http') ? (
+                    <View style={styles.customTimeRow}>
                       <Pressable
-                        style={styles.proofPreviewExternalBtn}
-                        onPress={() => Linking.openURL(previewProof.driveWebViewLink || previewProof.uri)}
-                      >
-                        <ExternalLink size={14} color="#ffffff" strokeWidth={2.2} />
-                        <Text style={styles.proofPreviewExternalBtnText}>Open External Link</Text>
-                      </Pressable>
-                    ) : null}
-                    <Pressable
-                      style={styles.proofPreviewDismissBtn}
-                      onPress={() => setPreviewProof(null)}
-                    >
-                      <Text style={styles.proofPreviewDismissBtnText}>Close</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              </View>
-            </Modal>
-          ) : null}
-
-          {activeEntryPicker ? (
-            <UniversalDateTimePicker
-              value={pickerValue()}
-              mode={activeEntryPicker.kind.startsWith('date') ? 'date' : 'time'}
-              display="default"
-              is24Hour={false}
-              onChange={handlePickerChange}
-              onClose={() => setActiveEntryPicker(null)}
-            />
-          ) : null}
-
-          {selectSheet ? (
-            <Modal transparent animationType="fade" visible onRequestClose={() => setActiveSelect(null)}>
-              <View style={styles.modalBackdrop}>
-                <Pressable style={styles.modalDismissArea} onPress={() => setActiveSelect(null)} />
-                <View style={styles.optionSheet}>
-                  <View style={styles.sheetHandle} />
-                  <Text style={styles.sheetTitle}>{selectSheet.title}</Text>
-                  {activeSelect === 'day_off' ? (
-                    <>
-                      <View style={styles.dayOffHeaderRow}>
-                        <Text style={styles.sheetSubtitle}>Choose one or more day-off days.</Text>
-                        {parseDayOffList(dayOff).length > 0 ? (
-                          <Pressable
-                            hitSlop={8}
-                            onPress={() => {
-                              setDayOff(NO_DAY_OFF_LABEL);
-                              setIsUserCustomDayOff(true);
-                              setValidationErrors((current) => ({ ...current, dayOff: undefined }));
-                            }}
-                          >
-                            <Text style={styles.clearDayOffText}>Clear all</Text>
-                          </Pressable>
-                        ) : null}
-                      </View>
-                      {selectSheet.options.map((option) => {
-                        const selectedDays = parseDayOffList(dayOff);
-                        const isSelected = selectedDays.includes(option);
-                        return (
-                          <Pressable
-                            key={option}
-                            style={[
-                              styles.dayOffOptionRow,
-                              isSelected ? styles.dayOffOptionRowActive : null,
-                            ]}
-                            onPress={() => toggleDayOff(option)}
-                            accessibilityRole="checkbox"
-                            accessibilityState={{ checked: isSelected }}
-                          >
-                            <View style={[styles.checkbox, isSelected ? styles.checkboxActive : null]}>
-                              {isSelected ? <Check size={14} color="#0f172a" strokeWidth={3} /> : null}
-                            </View>
-                            <Text style={[styles.optionText, isSelected ? styles.optionTextActive : null]}>
-                              {option} • {DAY_FULL_NAMES[option] || option}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
-                      <Pressable style={styles.dayOffDoneButton} onPress={() => setActiveSelect(null)}>
-                        <Text style={styles.submitText}>Done</Text>
-                      </Pressable>
-                    </>
-                  ) : (
-                    <>
-                      {selectSheet.options.map((option) => {
-                        const selected = option === selectSheet.value;
-                        const isCustom = option === 'Custom schedule...';
-                        return (
-                          <Pressable
-                            key={option}
-                            style={[
-                              styles.optionRow,
-                              selected ? styles.optionRowActive : null,
-                              isCustom ? styles.customOptionRow : null,
-                            ]}
-                            onPress={() => chooseSelectOption(option)}
-                          >
-                            {isCustom ? (
-                              <View style={styles.customOptionWrap}>
-                                <Clock3 size={16} color={colors.primary} strokeWidth={2.2} />
-                                <Text style={[styles.optionText, styles.customOptionText]}>{option}</Text>
-                              </View>
-                            ) : (
-                              <Text style={[styles.optionText, selected ? styles.optionTextActive : null]}>{option}</Text>
-                            )}
-                            {selected ? <Check size={18} color={colors.brand.goldStrong} strokeWidth={3} /> : null}
-                          </Pressable>
-                        );
-                      })}
-                      <Pressable style={styles.sheetCancelButton} onPress={() => setActiveSelect(null)}>
-                        <Text style={styles.cancelText}>Cancel</Text>
-                      </Pressable>
-                    </>
-                  )}
-                </View>
-              </View>
-            </Modal>
-          ) : null}
-
-          {isCustomScheduleOpen ? (
-            <Modal transparent animationType="fade" visible onRequestClose={() => setIsCustomScheduleOpen(false)}>
-              <View style={styles.modalBackdrop}>
-                <Pressable style={styles.modalDismissArea} onPress={() => setIsCustomScheduleOpen(false)} />
-                <View style={styles.customScheduleModalPanel}>
-                  <View style={styles.sheetHandle} />
-                  <View style={styles.customScheduleHeader}>
-                    <View style={styles.customScheduleIconBadge}>
-                      <Clock3 size={18} color="#0f172a" strokeWidth={2.5} />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.customScheduleTitle}>Custom Base Schedule</Text>
-                      <Text style={styles.customScheduleSubtitle}>
-                        Tap Shift Start or Shift End to choose working hours.
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.customTimeRow}>
-                    <Pressable
-                      style={[
-                        styles.customTimeColCard,
-                        customTimePickerKind === 'start' ? styles.customTimeColCardActive : null,
-                      ]}
-                      onPress={() => openCustomTimePicker('start')}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Shift Start: ${formatTimeDisplay(customStartTime)}. Tap to set time.`}
-                    >
-                      <Text
                         style={[
-                          styles.customTimeLabel,
-                          customTimePickerKind === 'start' ? styles.customTimeLabelActive : null,
+                          styles.customTimeColCard,
+                          customTimePickerKind === 'start' ? styles.customTimeColCardActive : null,
                         ]}
+                        onPress={() => openCustomTimePicker('start')}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Shift Start: ${formatTimeDisplay(customStartTime)}. Tap to set time.`}
                       >
-                        Shift Start
-                      </Text>
-                      <View style={styles.customTimeBoxInner}>
-                        <Text style={styles.customTimeText}>
-                          {formatTimeDisplay(customStartTime)}
-                        </Text>
-                        <Clock3
-                          size={16}
-                          color={customTimePickerKind === 'start' ? colors.brand.goldStrong : colors.primary}
-                          strokeWidth={2.2}
-                        />
-                      </View>
-                    </Pressable>
-
-                    <Pressable
-                      style={[
-                        styles.customTimeColCard,
-                        customTimePickerKind === 'end' ? styles.customTimeColCardActive : null,
-                      ]}
-                      onPress={() => openCustomTimePicker('end')}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Shift End: ${formatTimeDisplay(customEndTime)}. Tap to set time.`}
-                    >
-                      <Text
-                        style={[
-                          styles.customTimeLabel,
-                          customTimePickerKind === 'end' ? styles.customTimeLabelActive : null,
-                        ]}
-                      >
-                        Shift End
-                      </Text>
-                      <View style={styles.customTimeBoxInner}>
-                        <Text style={styles.customTimeText}>
-                          {formatTimeDisplay(customEndTime)}
-                        </Text>
-                        <Clock3
-                          size={16}
-                          color={customTimePickerKind === 'end' ? colors.brand.goldStrong : colors.primary}
-                          strokeWidth={2.2}
-                        />
-                      </View>
-                    </Pressable>
-                  </View>
-
-                  {customTimePickerKind ? (
-                    <View style={styles.inlineTimePickerContainer}>
-                      <View style={styles.inlineTimePickerHeaderRow}>
-                        <Text style={styles.inlineTimePickerHeader}>
-                          Selecting {customTimePickerKind === 'start' ? 'Shift Start Time' : 'Shift End Time'}:
-                        </Text>
-                        <Pressable
-                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                          onPress={() => openCustomTimePicker(customTimePickerKind)}
-                          style={styles.openCustomTimePickerButton}
-                        >
-                          <Clock3 size={13} color={colors.primary} strokeWidth={2.2} />
-                          <Text style={styles.openCustomTimePickerText}>Custom time</Text>
-                        </Pressable>
-                      </View>
-
-                      <ScrollView
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        style={styles.timePresetsScrollView}
-                        contentContainerStyle={styles.timePresetsScroll}
-                      >
-                        <Pressable
+                        <Text
                           style={[
-                            styles.presetTimePill,
-                            !(customTimePickerKind === 'start'
-                              ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
-                              : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
-                            ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
-                              ? styles.presetTimePillActive
-                              : null,
+                            styles.customTimeLabel,
+                            customTimePickerKind === 'start' ? styles.customTimeLabelActive : null,
                           ]}
-                          onPress={() => openCustomTimePicker(customTimePickerKind)}
                         >
-                          <View style={styles.customPresetPillWrap}>
-                            <Clock3
-                              size={12}
-                              color={
-                                !(customTimePickerKind === 'start'
-                                  ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
-                                  : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
-                                ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
-                                  ? '#0f172a'
-                                  : colors.primary
-                              }
-                              strokeWidth={2.2}
-                            />
-                            <Text
-                              style={[
-                                styles.presetTimeText,
-                                !(customTimePickerKind === 'start'
-                                  ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
-                                  : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
-                                ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
-                                  ? styles.presetTimeTextActive
-                                  : null,
-                              ]}
-                            >
-                              {!(customTimePickerKind === 'start'
+                          Shift Start
+                        </Text>
+                        <View style={styles.customTimeBoxInner}>
+                          <Text style={styles.customTimeText}>
+                            {formatTimeDisplay(customStartTime)}
+                          </Text>
+                          <Clock3
+                            size={16}
+                            color={customTimePickerKind === 'start' ? colors.brand.goldStrong : colors.primary}
+                            strokeWidth={2.2}
+                          />
+                        </View>
+                      </Pressable>
+
+                      <Pressable
+                        style={[
+                          styles.customTimeColCard,
+                          customTimePickerKind === 'end' ? styles.customTimeColCardActive : null,
+                        ]}
+                        onPress={() => openCustomTimePicker('end')}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Shift End: ${formatTimeDisplay(customEndTime)}. Tap to set time.`}
+                      >
+                        <Text
+                          style={[
+                            styles.customTimeLabel,
+                            customTimePickerKind === 'end' ? styles.customTimeLabelActive : null,
+                          ]}
+                        >
+                          Shift End
+                        </Text>
+                        <View style={styles.customTimeBoxInner}>
+                          <Text style={styles.customTimeText}>
+                            {formatTimeDisplay(customEndTime)}
+                          </Text>
+                          <Clock3
+                            size={16}
+                            color={customTimePickerKind === 'end' ? colors.brand.goldStrong : colors.primary}
+                            strokeWidth={2.2}
+                          />
+                        </View>
+                      </Pressable>
+                    </View>
+
+                    {customTimePickerKind ? (
+                      <View style={styles.inlineTimePickerContainer}>
+                        <View style={styles.inlineTimePickerHeaderRow}>
+                          <Text style={styles.inlineTimePickerHeader}>
+                            Selecting {customTimePickerKind === 'start' ? 'Shift Start Time' : 'Shift End Time'}:
+                          </Text>
+                          <Pressable
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            onPress={() => openCustomTimePicker(customTimePickerKind)}
+                            style={styles.openCustomTimePickerButton}
+                          >
+                            <Clock3 size={13} color={colors.primary} strokeWidth={2.2} />
+                            <Text style={styles.openCustomTimePickerText}>Custom time</Text>
+                          </Pressable>
+                        </View>
+
+                        <ScrollView
+                          horizontal
+                          showsHorizontalScrollIndicator={false}
+                          style={styles.timePresetsScrollView}
+                          contentContainerStyle={styles.timePresetsScroll}
+                        >
+                          <Pressable
+                            style={[
+                              styles.presetTimePill,
+                              !(customTimePickerKind === 'start'
                                 ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
                                 : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
                               ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
-                                ? formatTimeDisplay(customTimePickerKind === 'start' ? customStartTime : customEndTime)
-                                : 'Custom...'}
-                            </Text>
-                          </View>
-                        </Pressable>
-
-                        {(customTimePickerKind === 'start'
-                          ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
-                          : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
-                        ).map((timeVal) => {
-                          const activeVal = customTimePickerKind === 'start' ? customStartTime : customEndTime;
-                          const isSelected = activeVal === timeVal;
-                          return (
-                            <Pressable
-                              key={timeVal}
-                              style={[styles.presetTimePill, isSelected ? styles.presetTimePillActive : null]}
-                              onPress={() => {
-                                if (customTimePickerKind === 'start') {
-                                  setCustomStartTime(timeVal);
-                                } else {
-                                  setCustomEndTime(timeVal);
+                                ? styles.presetTimePillActive
+                                : null,
+                            ]}
+                            onPress={() => openCustomTimePicker(customTimePickerKind)}
+                          >
+                            <View style={styles.customPresetPillWrap}>
+                              <Clock3
+                                size={12}
+                                color={
+                                  !(customTimePickerKind === 'start'
+                                    ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                                    : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                                  ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                                    ? '#0f172a'
+                                    : colors.primary
                                 }
-                              }}
-                            >
-                              <Text style={[styles.presetTimeText, isSelected ? styles.presetTimeTextActive : null]}>
-                                {formatTimeDisplay(timeVal)}
+                                strokeWidth={2.2}
+                              />
+                              <Text
+                                style={[
+                                  styles.presetTimeText,
+                                  !(customTimePickerKind === 'start'
+                                    ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                                    : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                                  ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                                    ? styles.presetTimeTextActive
+                                    : null,
+                                ]}
+                              >
+                                {!(customTimePickerKind === 'start'
+                                  ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                                  : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                                ).includes(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                                  ? formatTimeDisplay(customTimePickerKind === 'start' ? customStartTime : customEndTime)
+                                  : 'Custom...'}
                               </Text>
-                            </Pressable>
-                          );
-                        })}
-                      </ScrollView>
+                            </View>
+                          </Pressable>
+
+                          {(customTimePickerKind === 'start'
+                            ? ['06:00', '07:00', '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00']
+                            : ['15:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '20:00', '21:00']
+                          ).map((timeVal) => {
+                            const activeVal = customTimePickerKind === 'start' ? customStartTime : customEndTime;
+                            const isSelected = activeVal === timeVal;
+                            return (
+                              <Pressable
+                                key={timeVal}
+                                style={[styles.presetTimePill, isSelected ? styles.presetTimePillActive : null]}
+                                onPress={() => {
+                                  if (customTimePickerKind === 'start') {
+                                    setCustomStartTime(timeVal);
+                                  } else {
+                                    setCustomEndTime(timeVal);
+                                  }
+                                }}
+                              >
+                                <Text style={[styles.presetTimeText, isSelected ? styles.presetTimeTextActive : null]}>
+                                  {formatTimeDisplay(timeVal)}
+                                </Text>
+                              </Pressable>
+                            );
+                          })}
+                        </ScrollView>
+                      </View>
+                    ) : null}
+
+                    <View style={styles.customSchedulePreviewBox}>
+                      <Text style={styles.customSchedulePreviewLabel}>Preview Base Schedule</Text>
+                      <Text style={styles.customSchedulePreviewValue}>
+                        {getCustomSchedulePreview(customStartTime, customEndTime)}
+                      </Text>
                     </View>
-                  ) : null}
 
-                  <View style={styles.customSchedulePreviewBox}>
-                    <Text style={styles.customSchedulePreviewLabel}>Preview Base Schedule</Text>
-                    <Text style={styles.customSchedulePreviewValue}>
-                      {getCustomSchedulePreview(customStartTime, customEndTime)}
-                    </Text>
-                  </View>
-
-                  <View style={styles.customScheduleActions}>
-                    <Pressable
-                      style={styles.cancelButton}
-                      onPress={() => {
-                        setCustomScheduleTimePicker(null);
-                        setIsCustomScheduleOpen(false);
-                      }}
-                    >
-                      <Text style={styles.cancelText}>Cancel</Text>
-                    </Pressable>
-                    <Pressable style={styles.submitButton} onPress={confirmCustomSchedule}>
-                      <Text style={styles.submitText}>Apply Schedule</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              </View>
-
-              <ScrollableTimePickerModal
-                visible={customScheduleTimePicker !== null}
-                title={customScheduleTimePicker === 'start' ? 'Select Shift Start Time' : 'Select Shift End Time'}
-                initialTime={customScheduleTimePicker === 'start' ? customStartTime : customEndTime}
-                onConfirm={(time24) => {
-                  if (customScheduleTimePicker === 'start') {
-                    setCustomStartTime(time24);
-                  } else if (customScheduleTimePicker === 'end') {
-                    setCustomEndTime(time24);
-                  }
-                  setCustomScheduleTimePicker(null);
-                }}
-                onCancel={() => setCustomScheduleTimePicker(null)}
-              />
-            </Modal>
-          ) : null}
-
-          {activeTransactionSelectIndex !== null ? (
-            <Modal transparent animationType="fade" visible onRequestClose={() => setActiveTransactionSelectIndex(null)}>
-              <View style={styles.modalBackdrop}>
-                <Pressable style={styles.modalDismissArea} onPress={() => setActiveTransactionSelectIndex(null)} />
-                <View style={[styles.optionSheet, { paddingBottom: getSafeBottomInset(insets.bottom, spacing.md) }]}>
-                  <View style={styles.sheetHandle} />
-                  <Text style={styles.sheetTitle}>
-                    {isPreApprovedMode ? 'Select Transaction Type' : 'Select Transaction Type(s)'}
-                  </Text>
-                  <Text style={styles.transactionModalSubtitle}>
-                    {isPreApprovedMode
-                      ? 'Overtime (OT) is the transaction type for pre-approved OT requests.'
-                      : 'Choose one or more transaction types for this request entry.'}
-                  </Text>
-                  {(isPreApprovedMode
-                    ? transactionOptions.filter((option) => option.key === 'ot')
-                    : transactionOptions
-                  ).map((option) => {
-                    const currentTransStr = entries[activeTransactionSelectIndex]?.transaction || '';
-                    const currentSelectedKeys = parseEntryTransactions(currentTransStr);
-                    const selected = currentSelectedKeys.includes(option.key);
-                    const isOtDisabled = option.key === 'ot' && !isOtAllowed(payrollClass);
-                    const isOffsetDisabled = option.key === 'offset' && !isOffsetAllowed(payrollClass);
-                    const isConflictDisabled = !selected && isTransactionDisabled(option.key, currentSelectedKeys);
-                    const disabled = isOtDisabled || isOffsetDisabled || isConflictDisabled;
-                    const activeEntryHours = getEntryTotalHours(entries[activeTransactionSelectIndex]);
-                    const activeEntryOtHours = getEntryOffsetOvertimeHours(entries[activeTransactionSelectIndex]);
-                    const activeEntryCreditedHours = calculateCreditedOffsetHours(activeEntryOtHours);
-
-                    return (
+                    <View style={styles.customScheduleActions}>
                       <Pressable
-                        key={option.key}
-                        disabled={disabled}
-                        style={[
-                          styles.transactionOptionRow,
-                          selected ? styles.transactionOptionRowActive : null,
-                          disabled ? styles.transactionOptionDisabled : null,
-                        ]}
+                        style={styles.cancelButton}
                         onPress={() => {
-                          let newKeys: string[];
-                          if (isPreApprovedMode) {
-                            newKeys = selected ? [] : [option.key];
-                          } else if (selected) {
-                            newKeys = currentSelectedKeys.filter((k) => k !== option.key);
-                          } else {
-                            newKeys = [...currentSelectedKeys, option.key];
-                          }
-                          const newTransStr = newKeys.join(',');
-                          const proofAllowed = !isPreApprovedMode && isProofAllowedForTransactions(newTransStr);
-                          const proofRequired = !isPreApprovedMode && isProofRequiredForTransactions(newTransStr);
-                          const isNowUseOffset = newKeys.includes('use_offset');
-                          const isNowObAlone = isObAloneTransaction(newTransStr);
-                          const hasNowOtOrOffset =
-                            newKeys.includes('ot') ||
-                            newKeys.includes('offset') ||
-                            isOvertimeTransaction(newTransStr) ||
-                            isOffsetTransaction(newTransStr);
-                          const activeEntry = entries[activeTransactionSelectIndex];
-                          const todayStr = formatDateInput(new Date());
-                          const hasFutureDate = Boolean(
-                            activeEntry &&
-                            ((activeEntry.dateFrom && activeEntry.dateFrom > todayStr) ||
-                              (activeEntry.dateTo && activeEntry.dateTo > todayStr))
-                          );
-                          const futureNotAllowed = !isPreApprovedMode && hasFutureDate && !isNowUseOffset && !isNowObAlone;
-
-                          updateEntry(activeTransactionSelectIndex, {
-                            transaction: newTransStr,
-                            ...(!proofAllowed ? { proof: null } : {}),
-                            ...(isNowUseOffset && activeEntry?.dateFrom ? { dateTo: activeEntry.dateFrom } : {}),
-                            ...(!hasNowOtOrOffset ? { breakFrom: '', breakTo: '', showBreakTime: false } : {}),
-                          });
-                          setValidationErrors((current) => ({
-                            ...current,
-                            [`entry_${activeTransactionSelectIndex}_transaction`]: undefined,
-                            [`entry_${activeTransactionSelectIndex}_dateFrom`]: futureNotAllowed
-                              ? (newKeys.includes('ob')
-                                ? `Request #${activeTransactionSelectIndex + 1}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`
-                                : `Request #${activeTransactionSelectIndex + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT ahead of time, please use Apply Pre-approved OT.`)
-                              : undefined,
-                            [`entry_${activeTransactionSelectIndex}_offsetHours`]: undefined,
-                            [`entry_${activeTransactionSelectIndex}_offsetBalance`]: undefined,
-                            [`entry_${activeTransactionSelectIndex}_dateTo`]: undefined,
-                            ...(!proofRequired
-                              ? { [`entry_${activeTransactionSelectIndex}_proof`]: undefined }
-                              : {}),
-                          }));
+                          setCustomScheduleTimePicker(null);
+                          setIsCustomScheduleOpen(false);
                         }}
                       >
-                        <View style={[styles.checkbox, selected ? styles.checkboxActive : null]}>
-                          {selected ? <Check size={14} color="#0f172a" strokeWidth={3} /> : null}
-                        </View>
-                        <View style={styles.transactionOptionTextCol}>
-                          <Text
-                            style={[
-                              styles.transactionOptionLabel,
-                              selected ? styles.transactionOptionLabelActive : null,
-                              disabled ? styles.transactionOptionLabelDisabled : null,
-                            ]}
-                          >
-                            {option.label}
-                          </Text>
-                          {option.key === 'offset' && !disabled && activeEntryOtHours >= MIN_OFFSETABLE_HOURS && !selected ? (
-                            <Text style={styles.transactionOptionHintText}>
-                              Eligible ({activeEntryCreditedHours.toFixed(2)} hrs {activeEntryCreditedHours >= WHOLE_DAY_OFFSET_HOURS ? 'whole day' : 'half day'} credited) • Tap to credit to offset balance
-                            </Text>
-                          ) : option.key === 'offset' && !disabled && activeEntryOtHours > 0 && activeEntryOtHours < MIN_OFFSETABLE_HOURS && !selected ? (
-                            <Text style={styles.transactionOptionWarningText}>
-                              Minimum {MIN_OFFSETABLE_HOURS.toFixed(2)} hrs overtime required (current OT: {activeEntryOtHours.toFixed(2)} hrs)
-                            </Text>
-                          ) : option.key === 'offset' && !disabled && entries[activeTransactionSelectIndex]?.timeFrom && entries[activeTransactionSelectIndex]?.timeTo && activeEntryOtHours === 0 && !selected ? (
-                            <Text style={styles.transactionOptionWarningText}>
-                              No overtime outside schedule (minimum {MIN_OFFSETABLE_HOURS.toFixed(2)} hrs OT required)
-                            </Text>
-                          ) : null}
-                        </View>
+                        <Text style={styles.cancelText}>Cancel</Text>
                       </Pressable>
-                    );
-                  })}
-                  <Pressable
-                    style={styles.transactionDoneButton}
-                    onPress={() => setActiveTransactionSelectIndex(null)}
-                  >
-                    <Text style={styles.submitText}>Done</Text>
-                  </Pressable>
+                      <Pressable style={styles.submitButton} onPress={confirmCustomSchedule}>
+                        <Text style={styles.submitText}>Apply Schedule</Text>
+                      </Pressable>
+                    </View>
+                  </View>
                 </View>
-              </View>
-            </Modal>
-          ) : null}
 
-          {activeDateChoiceIndex !== null ? (
-            (() => {
-              const currentEntry = entries[activeDateChoiceIndex];
-              const entryTransKeys = parseEntryTransactions(currentEntry?.transaction);
-              const isEntryUseOffset = entryTransKeys.includes('use_offset');
-              const isEntryObAlone = isObAloneTransaction(currentEntry?.transaction);
-              const allowFutureDates = isPreApprovedMode || isEntryUseOffset || isEntryObAlone || entryTransKeys.length === 0;
-              const todayStr = formatDateInput(new Date());
-              const minDate = isPreApprovedMode ? todayStr : undefined;
-              return (
-                <DateRangePickerModal
-                  key={`esarf-date-range-${activeDateChoiceIndex}-${currentEntry?.id || activeDateChoiceIndex}`}
-                  visible
-                  allowFutureDates={allowFutureDates}
-                  minDate={minDate}
-                  initialStartDate={currentEntry?.dateFrom || ''}
-                  initialEndDate={isEntryUseOffset ? currentEntry?.dateFrom || '' : currentEntry?.dateTo || ''}
-                  maxRangeDays={isEntryUseOffset ? 1 : 2}
-                  onApply={(startYMD, endYMD) => {
-                    const idx = activeDateChoiceIndex;
-                    const finalEnd = isEntryUseOffset ? startYMD : endYMD;
-                    updateEntry(idx, { dateFrom: startYMD, dateTo: finalEnd });
-                    const isFuture = (startYMD && startYMD > todayStr) || (finalEnd && finalEnd > todayStr);
-                    const futureNotAllowed = !isPreApprovedMode && isFuture && entryTransKeys.length > 0 && !isEntryUseOffset && !isEntryObAlone;
-
-                    setValidationErrors((current) => ({
-                      ...current,
-                      [`entry_${idx}_dateFrom`]: futureNotAllowed
-                        ? (entryTransKeys.includes('ob')
-                          ? `Request #${idx + 1}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`
-                          : `Request #${idx + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT ahead of time, please use Apply Pre-approved OT.`)
-                        : undefined,
-                      [`entry_${idx}_dateTo`]: undefined,
-                      [`entry_${idx}_offsetHours`]: undefined,
-                      [`entry_${idx}_offsetBalance`]: undefined,
-                    }));
-                    setActiveDateChoiceIndex(null);
+                <ScrollableTimePickerModal
+                  visible={customScheduleTimePicker !== null}
+                  title={customScheduleTimePicker === 'start' ? 'Select Shift Start Time' : 'Select Shift End Time'}
+                  initialTime={customScheduleTimePicker === 'start' ? customStartTime : customEndTime}
+                  onConfirm={(time24) => {
+                    if (customScheduleTimePicker === 'start') {
+                      setCustomStartTime(time24);
+                    } else if (customScheduleTimePicker === 'end') {
+                      setCustomEndTime(time24);
+                    }
+                    setCustomScheduleTimePicker(null);
                   }}
-                  onClose={() => setActiveDateChoiceIndex(null)}
+                  onCancel={() => setCustomScheduleTimePicker(null)}
                 />
-              );
-            })()
-          ) : null}
+              </Modal>
+            ) : null
+          }
 
-          {activeScrollableTimePicker !== null ? (
-            <ScrollableTimePickerModal
-              visible
-              title={
-                activeScrollableTimePicker.field === 'time_from'
-                  ? 'Set Time From'
-                  : activeScrollableTimePicker.field === 'time_to'
-                    ? 'Set Time To'
-                    : activeScrollableTimePicker.field === 'break_from'
-                      ? 'Set Break Time From'
-                      : 'Set Break Time To'
-              }
-              initialTime={
-                activeScrollableTimePicker.field === 'time_from'
-                  ? entries[activeScrollableTimePicker.index]?.timeFrom || '09:00'
-                  : activeScrollableTimePicker.field === 'time_to'
-                    ? entries[activeScrollableTimePicker.index]?.timeTo || '18:00'
-                    : activeScrollableTimePicker.field === 'break_from'
-                      ? entries[activeScrollableTimePicker.index]?.breakFrom ||
-                      entries[activeScrollableTimePicker.index]?.timeFrom ||
-                      '18:00'
-                      : entries[activeScrollableTimePicker.index]?.breakTo ||
-                      entries[activeScrollableTimePicker.index]?.breakFrom ||
-                      '19:00'
-              }
-              onConfirm={(time24) => {
-                const idx = activeScrollableTimePicker.index;
-                if (activeScrollableTimePicker.field === 'time_from') {
-                  updateEntry(idx, { timeFrom: time24 });
-                } else if (activeScrollableTimePicker.field === 'time_to') {
-                  updateEntry(idx, { timeTo: time24 });
-                } else if (activeScrollableTimePicker.field === 'break_from') {
-                  updateEntry(idx, { breakFrom: time24 });
-                } else {
-                  updateEntry(idx, { breakTo: time24 });
+          {
+            activeTransactionSelectIndex !== null ? (
+              <Modal transparent animationType="fade" visible onRequestClose={() => setActiveTransactionSelectIndex(null)}>
+                <View style={styles.modalBackdrop}>
+                  <Pressable style={styles.modalDismissArea} onPress={() => setActiveTransactionSelectIndex(null)} />
+                  <View style={[styles.optionSheet, { paddingBottom: getSafeBottomInset(insets.bottom, spacing.md) }]}>
+                    <View style={styles.sheetHandle} />
+                    <Text style={styles.sheetTitle}>
+                      {isPreApprovedMode ? 'Select Transaction Type' : 'Select Transaction Type(s)'}
+                    </Text>
+                    <Text style={styles.transactionModalSubtitle}>
+                      {isPreApprovedMode
+                        ? 'Overtime (OT) is the transaction type for pre-approved OT requests.'
+                        : 'Choose one or more transaction types for this request entry.'}
+                    </Text>
+                    {(isPreApprovedMode
+                      ? transactionOptions.filter((option) => option.key === 'ot')
+                      : transactionOptions
+                    ).map((option) => {
+                      const currentTransStr = entries[activeTransactionSelectIndex]?.transaction || '';
+                      const currentSelectedKeys = parseEntryTransactions(currentTransStr);
+                      const selected = currentSelectedKeys.includes(option.key);
+                      const isOtDisabled = option.key === 'ot' && !isOtAllowed(payrollClass);
+                      const isOffsetDisabled = option.key === 'offset' && !isOffsetAllowed(payrollClass);
+                      const isConflictDisabled = !selected && isTransactionDisabled(option.key, currentSelectedKeys);
+                      const disabled = isOtDisabled || isOffsetDisabled || isConflictDisabled;
+                      const activeEntryHours = getEntryTotalHours(entries[activeTransactionSelectIndex]);
+                      const activeEntryOtHours = getEntryOffsetOvertimeHours(entries[activeTransactionSelectIndex]);
+                      const activeEntryCreditedHours = calculateCreditedOffsetHours(activeEntryOtHours);
+
+                      return (
+                        <Pressable
+                          key={option.key}
+                          disabled={disabled}
+                          style={[
+                            styles.transactionOptionRow,
+                            selected ? styles.transactionOptionRowActive : null,
+                            disabled ? styles.transactionOptionDisabled : null,
+                          ]}
+                          onPress={() => {
+                            let newKeys: string[];
+                            if (isPreApprovedMode) {
+                              newKeys = selected ? [] : [option.key];
+                            } else if (selected) {
+                              newKeys = currentSelectedKeys.filter((k) => k !== option.key);
+                            } else {
+                              newKeys = [...currentSelectedKeys, option.key];
+                            }
+                            const newTransStr = newKeys.join(',');
+                            const proofAllowed = !isPreApprovedMode && isProofAllowedForTransactions(newTransStr);
+                            const proofRequired = !isPreApprovedMode && isProofRequiredForTransactions(newTransStr);
+                            const isNowUseOffset = newKeys.includes('use_offset');
+                            const isNowObAlone = isObAloneTransaction(newTransStr);
+                            const hasNowOtOrOffset =
+                              newKeys.includes('ot') ||
+                              newKeys.includes('offset') ||
+                              isOvertimeTransaction(newTransStr) ||
+                              isOffsetTransaction(newTransStr);
+                            const activeEntry = entries[activeTransactionSelectIndex];
+                            const todayStr = formatDateInput(new Date());
+                            const hasFutureDate = Boolean(
+                              activeEntry &&
+                              ((activeEntry.dateFrom && activeEntry.dateFrom > todayStr) ||
+                                (activeEntry.dateTo && activeEntry.dateTo > todayStr))
+                            );
+                            const futureNotAllowed = !isPreApprovedMode && hasFutureDate && !isNowUseOffset && !isNowObAlone;
+
+                            updateEntry(activeTransactionSelectIndex, {
+                              transaction: newTransStr,
+                              ...(!proofAllowed ? { proof: null } : {}),
+                              ...(isNowUseOffset && activeEntry?.dateFrom ? { dateTo: activeEntry.dateFrom } : {}),
+                              ...(!hasNowOtOrOffset ? { breakFrom: '', breakTo: '', showBreakTime: false } : {}),
+                            });
+                            setValidationErrors((current) => ({
+                              ...current,
+                              [`entry_${activeTransactionSelectIndex}_transaction`]: undefined,
+                              [`entry_${activeTransactionSelectIndex}_dateFrom`]: futureNotAllowed
+                                ? (newKeys.includes('ob')
+                                  ? `Request #${activeTransactionSelectIndex + 1}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`
+                                  : `Request #${activeTransactionSelectIndex + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT ahead of time, please use Apply Pre-approved OT.`)
+                                : undefined,
+                              [`entry_${activeTransactionSelectIndex}_offsetHours`]: undefined,
+                              [`entry_${activeTransactionSelectIndex}_offsetBalance`]: undefined,
+                              [`entry_${activeTransactionSelectIndex}_dateTo`]: undefined,
+                              ...(!proofRequired
+                                ? { [`entry_${activeTransactionSelectIndex}_proof`]: undefined }
+                                : {}),
+                            }));
+                          }}
+                        >
+                          <View style={[styles.checkbox, selected ? styles.checkboxActive : null]}>
+                            {selected ? <Check size={14} color="#0f172a" strokeWidth={3} /> : null}
+                          </View>
+                          <View style={styles.transactionOptionTextCol}>
+                            <Text
+                              style={[
+                                styles.transactionOptionLabel,
+                                selected ? styles.transactionOptionLabelActive : null,
+                                disabled ? styles.transactionOptionLabelDisabled : null,
+                              ]}
+                            >
+                              {option.label}
+                            </Text>
+                            {option.key === 'offset' && !disabled && activeEntryOtHours >= MIN_OFFSETABLE_HOURS && !selected ? (
+                              <Text style={styles.transactionOptionHintText}>
+                                Eligible ({activeEntryCreditedHours.toFixed(2)} hrs {activeEntryCreditedHours >= WHOLE_DAY_OFFSET_HOURS ? 'whole day' : 'half day'} credited) • Tap to credit to offset balance
+                              </Text>
+                            ) : option.key === 'offset' && !disabled && activeEntryOtHours > 0 && activeEntryOtHours < MIN_OFFSETABLE_HOURS && !selected ? (
+                              <Text style={styles.transactionOptionWarningText}>
+                                Minimum {MIN_OFFSETABLE_HOURS.toFixed(2)} hrs overtime required (current OT: {activeEntryOtHours.toFixed(2)} hrs)
+                              </Text>
+                            ) : option.key === 'offset' && !disabled && entries[activeTransactionSelectIndex]?.timeFrom && entries[activeTransactionSelectIndex]?.timeTo && activeEntryOtHours === 0 && !selected ? (
+                              <Text style={styles.transactionOptionWarningText}>
+                                No overtime outside schedule (minimum {MIN_OFFSETABLE_HOURS.toFixed(2)} hrs OT required)
+                              </Text>
+                            ) : null}
+                          </View>
+                        </Pressable>
+                      );
+                    })}
+                    <Pressable
+                      style={styles.transactionDoneButton}
+                      onPress={() => setActiveTransactionSelectIndex(null)}
+                    >
+                      <Text style={styles.submitText}>Done</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </Modal>
+            ) : null
+          }
+
+          {
+            activeDateChoiceIndex !== null ? (
+              (() => {
+                const currentEntry = entries[activeDateChoiceIndex];
+                const entryTransKeys = parseEntryTransactions(currentEntry?.transaction);
+                const isEntryUseOffset = entryTransKeys.includes('use_offset');
+                const isEntryObAlone = isObAloneTransaction(currentEntry?.transaction);
+                const allowFutureDates = isPreApprovedMode || isEntryUseOffset || isEntryObAlone || entryTransKeys.length === 0;
+                const todayStr = formatDateInput(new Date());
+                const minDate = isPreApprovedMode ? todayStr : undefined;
+                return (
+                  <DateRangePickerModal
+                    key={`esarf-date-range-${activeDateChoiceIndex}-${currentEntry?.id || activeDateChoiceIndex}`}
+                    visible
+                    allowFutureDates={allowFutureDates}
+                    minDate={minDate}
+                    initialStartDate={currentEntry?.dateFrom || ''}
+                    initialEndDate={isEntryUseOffset ? currentEntry?.dateFrom || '' : currentEntry?.dateTo || ''}
+                    maxRangeDays={isEntryUseOffset ? 1 : 2}
+                    onApply={(startYMD, endYMD) => {
+                      const idx = activeDateChoiceIndex;
+                      const finalEnd = isEntryUseOffset ? startYMD : endYMD;
+                      updateEntry(idx, { dateFrom: startYMD, dateTo: finalEnd });
+                      const isFuture = (startYMD && startYMD > todayStr) || (finalEnd && finalEnd > todayStr);
+                      const futureNotAllowed = !isPreApprovedMode && isFuture && entryTransKeys.length > 0 && !isEntryUseOffset && !isEntryObAlone;
+
+                      setValidationErrors((current) => ({
+                        ...current,
+                        [`entry_${idx}_dateFrom`]: futureNotAllowed
+                          ? (entryTransKeys.includes('ob')
+                            ? `Request #${idx + 1}: Official Business (OB) can only be applied ahead of time if the transaction type is OB alone.`
+                            : `Request #${idx + 1}: Dates beyond the current date are disabled in Apply ESARF. For scheduled OT ahead of time, please use Apply Pre-approved OT.`)
+                          : undefined,
+                        [`entry_${idx}_dateTo`]: undefined,
+                        [`entry_${idx}_offsetHours`]: undefined,
+                        [`entry_${idx}_offsetBalance`]: undefined,
+                      }));
+                      setActiveDateChoiceIndex(null);
+                    }}
+                    onClose={() => setActiveDateChoiceIndex(null)}
+                  />
+                );
+              })()
+            ) : null
+          }
+
+          {
+            activeScrollableTimePicker !== null ? (
+              <ScrollableTimePickerModal
+                visible
+                title={
+                  activeScrollableTimePicker.field === 'time_from'
+                    ? 'Set Time From'
+                    : activeScrollableTimePicker.field === 'time_to'
+                      ? 'Set Time To'
+                      : activeScrollableTimePicker.field === 'break_from'
+                        ? 'Set Break Time From'
+                        : 'Set Break Time To'
                 }
-                setValidationErrors((current) => ({
-                  ...current,
-                  [`entry_${idx}_timeFrom`]: undefined,
-                  [`entry_${idx}_timeTo`]: undefined,
-                  [`entry_${idx}_offsetHours`]: undefined,
-                }));
-                setActiveScrollableTimePicker(null);
-              }}
-              onCancel={() => setActiveScrollableTimePicker(null)}
-            />
-          ) : null}
+                initialTime={
+                  activeScrollableTimePicker.field === 'time_from'
+                    ? entries[activeScrollableTimePicker.index]?.timeFrom || '09:00'
+                    : activeScrollableTimePicker.field === 'time_to'
+                      ? entries[activeScrollableTimePicker.index]?.timeTo || '18:00'
+                      : activeScrollableTimePicker.field === 'break_from'
+                        ? entries[activeScrollableTimePicker.index]?.breakFrom ||
+                        entries[activeScrollableTimePicker.index]?.timeFrom ||
+                        '18:00'
+                        : entries[activeScrollableTimePicker.index]?.breakTo ||
+                        entries[activeScrollableTimePicker.index]?.breakFrom ||
+                        '19:00'
+                }
+                onConfirm={(time24) => {
+                  const idx = activeScrollableTimePicker.index;
+                  if (activeScrollableTimePicker.field === 'time_from') {
+                    updateEntry(idx, { timeFrom: time24 });
+                  } else if (activeScrollableTimePicker.field === 'time_to') {
+                    updateEntry(idx, { timeTo: time24 });
+                  } else if (activeScrollableTimePicker.field === 'break_from') {
+                    updateEntry(idx, { breakFrom: time24 });
+                  } else {
+                    updateEntry(idx, { breakTo: time24 });
+                  }
+                  setValidationErrors((current) => ({
+                    ...current,
+                    [`entry_${idx}_timeFrom`]: undefined,
+                    [`entry_${idx}_timeTo`]: undefined,
+                    [`entry_${idx}_offsetHours`]: undefined,
+                  }));
+                  setActiveScrollableTimePicker(null);
+                }}
+                onCancel={() => setActiveScrollableTimePicker(null)}
+              />
+            ) : null
+          }
 
           <Modal
             transparent
@@ -5449,402 +5389,244 @@ export function ApplyEsarfScreen({
           </Modal>
 
           {/* Event Selection Modal (Apply ESARF only) */}
-          {!isPreApprovedMode ? (
-            <Modal
-              visible={activeEventModalIndex !== null}
-              transparent
-              animationType="slide"
-              onRequestClose={() => setActiveEventModalIndex(null)}
-            >
-            <View style={styles.eventModalOverlay}>
-              <Pressable
-                style={styles.eventModalBackdrop}
-                onPress={() => setActiveEventModalIndex(null)}
-              />
-              <View
-                style={[
-                  styles.eventModalSheet,
-                  { paddingBottom: Math.max(getSafeBottomInset(insets.bottom, 0), 16) },
-                ]}
+          {
+            !isPreApprovedMode ? (
+              <Modal
+                visible={activeEventModalIndex !== null}
+                transparent
+                animationType="slide"
+                onRequestClose={() => setActiveEventModalIndex(null)}
               >
-                <View style={styles.eventModalHandle} />
-                <View style={styles.eventModalHeader}>
-                  <View style={{ flex: 1 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                      <Text style={styles.eventModalTitle}>Select Event or Activity</Text>
-                      {!network.isOnline && (
-                        <View style={styles.eventOfflineBadge}>
-                          <Text style={styles.eventOfflineBadgeText}>OFFLINE</Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={styles.eventModalSubtitle}>
-                      {isPreApprovedMode
-                        ? 'Schedule ahead of time for upcoming events or activities.'
-                        : 'Select an event or activity that you attended.'}
-                    </Text>
-                  </View>
+                <View style={styles.eventModalOverlay}>
                   <Pressable
-                    style={styles.eventModalClose}
+                    style={styles.eventModalBackdrop}
                     onPress={() => setActiveEventModalIndex(null)}
-                    hitSlop={8}
-                  >
-                    <X size={20} color="#64748b" strokeWidth={2.4} />
-                  </Pressable>
-                </View>
-
-                {/* Search Filter */}
-                <View style={styles.eventSearchBox}>
-                  <Search size={16} color="#94a3b8" strokeWidth={2.2} />
-                  <TextInput
-                    style={styles.eventSearchInput}
-                    placeholder="Search events or activities..."
-                    placeholderTextColor="#94a3b8"
-                    value={eventSearchQuery}
-                    onChangeText={setEventSearchQuery}
                   />
-                  {eventSearchQuery ? (
-                    <Pressable onPress={() => setEventSearchQuery('')} hitSlop={6}>
-                      <X size={15} color="#94a3b8" />
-                    </Pressable>
-                  ) : null}
-                </View>
-
-                {/* Event List */}
-                <ScrollView
-                  style={styles.eventListScroll}
-                  showsVerticalScrollIndicator={false}
-                  keyboardShouldPersistTaps="handled"
-                >
-                  {(() => {
-                    const query = eventSearchQuery.trim().toLowerCase();
-                    const filtered = availableEvents.filter((ev) => {
-                      if (!query) return true;
-                      return (
-                        ev.title.toLowerCase().includes(query) ||
-                        (ev.description || '').toLowerCase().includes(query) ||
-                        (ev.location || '').toLowerCase().includes(query)
-                      );
-                    });
-
-                    if (filtered.length === 0) {
-                      return (
-                        <View style={styles.eventEmptyState}>
-                          <CalendarDays size={36} color="#cbd5e1" strokeWidth={1.8} />
-                          <Text style={styles.eventEmptyTitle}>
-                            {availableEvents.length === 0
-                              ? 'No Active Events or Activities'
-                              : 'No matching events found'}
-                          </Text>
-                          <Text style={styles.eventEmptySub}>
-                            {availableEvents.length === 0
-                              ? (!network.isOnline
-                                ? 'No cached events found. Connect to internet once to cache active events.'
-                                : 'Events added by admin in the portal will appear here.')
-                              : 'Try searching with different keywords.'}
-                          </Text>
+                  <View
+                    style={[
+                      styles.eventModalSheet,
+                      { paddingBottom: Math.max(getSafeBottomInset(insets.bottom, 0), 16) },
+                    ]}
+                  >
+                    <View style={styles.eventModalHandle} />
+                    <View style={styles.eventModalHeader}>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <Text style={styles.eventModalTitle}>Select Event or Activity</Text>
+                          {!network.isOnline && (
+                            <View style={styles.eventOfflineBadge}>
+                              <Text style={styles.eventOfflineBadgeText}>OFFLINE</Text>
+                            </View>
+                          )}
                         </View>
-                      );
-                    }
-
-                    const currentEntry = activeEventModalIndex !== null ? entries[activeEventModalIndex] : undefined;
-                    const isEntryObAlone = isObAloneTransaction(currentEntry?.transaction);
-
-                    // Sort: selectable events first, followed by disabled events
-                    const sorted = [...filtered].sort((a, b) => {
-                      const aClickable = isPreApprovedMode ? !isEventPassedOrDone(a) : (isEntryObAlone ? true : isEventPassedOrDone(a));
-                      const bClickable = isPreApprovedMode ? !isEventPassedOrDone(b) : (isEntryObAlone ? true : isEventPassedOrDone(b));
-                      if (aClickable && !bClickable) return -1;
-                      if (!aClickable && bClickable) return 1;
-                      return 0;
-                    });
-
-                    return sorted.map((ev) => {
-                      const isEvent = ev.type?.toLowerCase() === 'event';
-                      const isPassed = isEventPassedOrDone(ev);
-                      const isClickable = isPreApprovedMode ? !isPassed : (isEntryObAlone ? true : isPassed);
-                      const statusTagLabel = isPassed ? 'ALREADY ENDED' : 'UPCOMING';
-
-                      return (
-                        <Pressable
-                          key={ev.id}
-                          style={({ pressed }) => [
-                            styles.eventCardItem,
-                            !isClickable ? styles.eventCardItemDisabled : null,
-                            pressed && isClickable ? styles.eventCardItemPressed : null,
-                          ]}
-                          onPress={() => {
-                            if (!isClickable) {
-                              const title = isPreApprovedMode ? 'Event Already Ended' : 'Event Not Yet Ended';
-                              const message = isPreApprovedMode
-                                ? 'This event or activity has already ended. For past events, please file using regular Apply ESARF.'
-                                : 'In Apply ESARF, you cannot select events or activities ahead of time. You can only select events that have already passed or ended (unless the transaction type is OB alone). For upcoming events, please use Apply Pre-approved OT.';
-                              if (onToast) {
-                                onToast({ tone: 'warning', title, message });
-                              } else {
-                                platformAlert(title, message);
-                              }
-                              return;
-                            }
-                            if (activeEventModalIndex !== null) {
-                              handleSelectEvent(activeEventModalIndex, ev);
-                            }
-                          }}
-                        >
-                          <View style={styles.eventCardHeaderRow}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
-                              <View
-                                style={[
-                                  styles.eventTypeTag,
-                                  isEvent
-                                    ? styles.eventTypeTagEvent
-                                    : styles.eventTypeTagActivity,
-                                ]}
-                              >
-                                <Text
-                                  style={[
-                                    styles.eventTypeText,
-                                    isEvent
-                                      ? styles.eventTypeTextEvent
-                                      : styles.eventTypeTextActivity,
-                                  ]}
-                                >
-                                  {ev.type?.toUpperCase() || 'EVENT'}
-                                </Text>
-                              </View>
-                              {!isClickable ? (
-                                <View style={styles.eventStatusPillDisabled}>
-                                  <Lock size={10} color="#64748b" strokeWidth={2.4} />
-                                  <Text style={styles.eventStatusTextDisabled}>
-                                    {statusTagLabel}
-                                  </Text>
-                                </View>
-                              ) : null}
-                            </View>
-                            <View style={styles.eventHoursPill}>
-                              <Clock3 size={11} color={colors.brand.ink} strokeWidth={2.4} />
-                              <Text style={styles.eventHoursText}>
-                                {Number(ev.total_hours).toFixed(1)} hrs
-                              </Text>
-                            </View>
-                          </View>
-                          <Text style={[styles.eventCardTitle, !isClickable ? styles.eventCardTitleDisabled : null]}>
-                            {ev.title}
-                          </Text>
-                          {ev.description ? (
-                            <Text style={[styles.eventCardDesc, !isClickable ? styles.eventCardDescDisabled : null]} numberOfLines={2}>
-                              {ev.description}
-                            </Text>
-                          ) : null}
-                          <View style={styles.eventCardMetaRow}>
-                            <View style={styles.eventCardMetaItem}>
-                              <CalendarDays size={13} color={!isClickable ? '#94a3b8' : '#64748b'} strokeWidth={2} />
-                              <Text style={[styles.eventCardMetaText, !isClickable ? styles.eventCardMetaTextDisabled : null]}>
-                                {ev.event_date}{ev.end_date && ev.end_date !== ev.event_date ? ` to ${ev.end_date}` : ''}
-                              </Text>
-                            </View>
-                            <View style={styles.eventCardMetaItem}>
-                              <Clock3 size={13} color={!isClickable ? '#94a3b8' : '#64748b'} strokeWidth={2} />
-                              <Text style={[styles.eventCardMetaText, !isClickable ? styles.eventCardMetaTextDisabled : null]}>
-                                {ev.time_from} - {ev.time_to}
-                              </Text>
-                            </View>
-                            {ev.location ? (
-                              <View style={styles.eventCardMetaItem}>
-                                <MapPin size={13} color={!isClickable ? '#94a3b8' : '#64748b'} strokeWidth={2} />
-                                <Text style={[styles.eventCardMetaText, !isClickable ? styles.eventCardMetaTextDisabled : null]} numberOfLines={1}>
-                                  {ev.location}
-                                </Text>
-                              </View>
-                            ) : null}
-                          </View>
-                        </Pressable>
-                      );
-                    });
-                  })()}
-                </ScrollView>
-              </View>
-            </View>
-            </Modal>
-          ) : null}
-
-          {/* Reassign Approver Modal (matching Admin Desktop Requests Screen concept) */}
-          <Modal
-            visible={isReassignModalOpen}
-            transparent
-            animationType="slide"
-            onRequestClose={() => {
-              setIsReassignModalOpen(false);
-              setReassigningInfo(null);
-              setSelectedCandidate(null);
-            }}
-          >
-            <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-              style={styles.reassignModalBackdrop}
-            >
-              <View style={[styles.reassignModalCard, { paddingBottom: Math.max(getSafeBottomInset(insets.bottom, 0), 16) }]}>
-                {/* Header */}
-                <View style={styles.reassignModalHeader}>
-                  <View style={styles.reassignModalHeaderLeft}>
-                    <View style={styles.reassignModalIconBox}>
-                      <ArrowRightLeft size={20} color="#2563eb" strokeWidth={2.4} />
+                        <Text style={styles.eventModalSubtitle}>
+                          {isPreApprovedMode
+                            ? 'Schedule ahead of time for upcoming events or activities.'
+                            : 'Select an event or activity that you attended.'}
+                        </Text>
+                      </View>
+                      <Pressable
+                        style={styles.eventModalClose}
+                        onPress={() => setActiveEventModalIndex(null)}
+                        hitSlop={8}
+                      >
+                        <X size={20} color="#64748b" strokeWidth={2.4} />
+                      </Pressable>
                     </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.reassignModalTitle}>Reassign Approver</Text>
-                      <Text style={styles.reassignModalSub} numberOfLines={1}>
-                        Request #{reassigningInfo ? reassigningInfo.entryIndex + 1 : 1} • Step {reassigningInfo?.step?.step_order}: {reassigningInfo?.step?.role_name}
-                        {reassigningInfo?.step?.approver_position_name ? ` • ${reassigningInfo.step.approver_position_name}` : ''}
-                      </Text>
-                      {!isOnline ? (
-                        <View style={styles.reassignModalOfflineBadge}>
-                          <WifiOff size={10} color="#b45309" strokeWidth={2.4} />
-                          <Text style={styles.reassignModalOfflineText}>Offline Mode • Using cached approvers</Text>
-                        </View>
+
+                    {/* Search Filter */}
+                    <View style={styles.eventSearchBox}>
+                      <Search size={16} color="#94a3b8" strokeWidth={2.2} />
+                      <TextInput
+                        style={styles.eventSearchInput}
+                        placeholder="Search events or activities..."
+                        placeholderTextColor="#94a3b8"
+                        value={eventSearchQuery}
+                        onChangeText={setEventSearchQuery}
+                      />
+                      {eventSearchQuery ? (
+                        <Pressable onPress={() => setEventSearchQuery('')} hitSlop={6}>
+                          <X size={15} color="#94a3b8" />
+                        </Pressable>
                       ) : null}
                     </View>
-                  </View>
-                  <Pressable
-                    style={styles.eventModalClose}
-                    onPress={() => {
-                      setIsReassignModalOpen(false);
-                      setReassigningInfo(null);
-                      setSelectedCandidate(null);
-                    }}
-                    hitSlop={8}
-                  >
-                    <X size={20} color="#64748b" strokeWidth={2.4} />
-                  </Pressable>
-                </View>
 
-                {/* Search Bar */}
-                <View style={styles.candidateSearchBox}>
-                  <Search size={16} color="#94a3b8" strokeWidth={2.2} />
-                  <TextInput
-                    style={styles.candidateSearchInput}
-                    placeholder="Search employee by name, ID, position, store..."
-                    placeholderTextColor="#94a3b8"
-                    value={candidateSearchQuery}
-                    onChangeText={setCandidateSearchQuery}
-                  />
-                  {candidateSearchQuery ? (
-                    <Pressable onPress={() => setCandidateSearchQuery('')} hitSlop={6}>
-                      <X size={15} color="#94a3b8" />
-                    </Pressable>
-                  ) : null}
-                </View>
-
-                {/* Candidate List */}
-                <ScrollView
-                  style={styles.candidateListScroll}
-                  keyboardShouldPersistTaps="handled"
-                  showsVerticalScrollIndicator={false}
-                >
-                  {isLoadingCandidates ? (
-                    <View style={styles.candidateEmptyWrap}>
-                      <ActivityIndicator size="small" color="#2563eb" />
-                      <Text style={styles.candidateEmptyTitle}>Loading employees...</Text>
-                    </View>
-                  ) : filteredApproverCandidates.length === 0 ? (
-                    <View style={styles.candidateEmptyWrap}>
-                      <Users size={32} color="#cbd5e1" strokeWidth={1.8} />
-                      <Text style={styles.candidateEmptyTitle}>No matching employees found</Text>
-                      <Text style={styles.candidateEmptySub}>
-                        Try searching with a different name or employee number.
-                      </Text>
-                    </View>
-                  ) : (
-                    filteredApproverCandidates.map((candidate) => {
-                      const isSelected = selectedCandidate?.employee_id === candidate.employee_id;
-                      const initials = candidate.full_name
-                        .split(' ')
-                        .map((part) => part[0])
-                        .filter(Boolean)
-                        .slice(0, 2)
-                        .join('')
-                        .toUpperCase() || 'EMP';
-
-                      return (
-                        <Pressable
-                          key={candidate.employee_id}
-                          style={[styles.candidateRow, isSelected ? styles.candidateRowSelected : null]}
-                          onPress={() => setSelectedCandidate(candidate)}
-                        >
-                          <View style={[styles.candidateAvatar, isSelected ? styles.candidateAvatarSelected : null]}>
-                            <Text style={[styles.candidateAvatarText, isSelected ? styles.candidateAvatarTextSelected : null]}>
-                              {initials}
-                            </Text>
-                          </View>
-
-                          <View style={styles.candidateInfoCol}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                              <Text style={[styles.candidateName, isSelected ? styles.candidateNameSelected : null]}>
-                                {candidate.full_name}
-                              </Text>
-                              {candidate.authority_level ? (
-                                <View style={styles.candidateLevelBadge}>
-                                  <Text style={styles.candidateLevelBadgeText}>L{candidate.authority_level}</Text>
-                                </View>
-                              ) : null}
-                            </View>
-                            <Text style={styles.candidateRole} numberOfLines={1}>
-                              {[candidate.position_name, candidate.department_name].filter(Boolean).join(' • ')}
-                              {candidate.employee_no ? ` (${candidate.employee_no})` : ''}
-                            </Text>
-                            {(candidate.store_name || candidate.company_name) ? (
-                              <Text style={styles.candidateStore} numberOfLines={1}>
-                                {[candidate.store_name, candidate.company_name].filter(Boolean).join(' • ')}
-                              </Text>
-                            ) : null}
-                          </View>
-
-                          {isSelected ? (
-                            <CheckCircle2 size={20} color="#2563eb" strokeWidth={2.4} />
-                          ) : (
-                            <View style={{ width: 20, height: 20, borderRadius: 10, borderWidth: 1.5, borderColor: '#cbd5e1' }} />
-                          )}
-                        </Pressable>
-                      );
-                    })
-                  )}
-                </ScrollView>
-
-                {/* Footer Actions */}
-                <View style={styles.reassignModalActions}>
-                  {reassigningInfo?.step?.is_reassigned ? (
-                    <Pressable
-                      style={styles.reassignResetBtn}
-                      onPress={handleResetStepApprover}
+                    {/* Event List */}
+                    <ScrollView
+                      style={styles.eventListScroll}
+                      showsVerticalScrollIndicator={false}
+                      keyboardShouldPersistTaps="handled"
                     >
-                      <Text style={styles.reassignResetText}>Reset Default</Text>
-                    </Pressable>
-                  ) : null}
+                      {(() => {
+                        const query = eventSearchQuery.trim().toLowerCase();
+                        const filtered = availableEvents.filter((ev) => {
+                          if (!query) return true;
+                          return (
+                            ev.title.toLowerCase().includes(query) ||
+                            (ev.description || '').toLowerCase().includes(query) ||
+                            (ev.location || '').toLowerCase().includes(query)
+                          );
+                        });
 
-                  <Pressable
-                    style={styles.reassignCancelBtn}
-                    onPress={() => {
-                      setIsReassignModalOpen(false);
-                      setReassigningInfo(null);
-                      setSelectedCandidate(null);
-                    }}
-                  >
-                    <Text style={styles.reassignCancelText}>Cancel</Text>
-                  </Pressable>
+                        if (filtered.length === 0) {
+                          return (
+                            <View style={styles.eventEmptyState}>
+                              <CalendarDays size={36} color="#cbd5e1" strokeWidth={1.8} />
+                              <Text style={styles.eventEmptyTitle}>
+                                {availableEvents.length === 0
+                                  ? 'No Active Events or Activities'
+                                  : 'No matching events found'}
+                              </Text>
+                              <Text style={styles.eventEmptySub}>
+                                {availableEvents.length === 0
+                                  ? (!network.isOnline
+                                    ? 'No cached events found. Connect to internet once to cache active events.'
+                                    : 'Events added by admin in the portal will appear here.')
+                                  : 'Try searching with different keywords.'}
+                              </Text>
+                            </View>
+                          );
+                        }
 
-                  <Pressable
-                    disabled={!selectedCandidate}
-                    style={[
-                      styles.reassignConfirmBtn,
-                      !selectedCandidate ? styles.reassignConfirmBtnDisabled : null,
-                    ]}
-                    onPress={handleConfirmReassign}
-                  >
-                    <Text style={styles.reassignConfirmText}>Confirm Reassign</Text>
-                  </Pressable>
+                        const currentEntry = activeEventModalIndex !== null ? entries[activeEventModalIndex] : undefined;
+                        const isEntryObAlone = isObAloneTransaction(currentEntry?.transaction);
+
+                        // Sort: selectable events first, followed by disabled events
+                        const sorted = [...filtered].sort((a, b) => {
+                          const aClickable = isPreApprovedMode ? !isEventPassedOrDone(a) : (isEntryObAlone ? true : isEventPassedOrDone(a));
+                          const bClickable = isPreApprovedMode ? !isEventPassedOrDone(b) : (isEntryObAlone ? true : isEventPassedOrDone(b));
+                          if (aClickable && !bClickable) return -1;
+                          if (!aClickable && bClickable) return 1;
+                          return 0;
+                        });
+
+                        return sorted.map((ev) => {
+                          const isEvent = ev.type?.toLowerCase() === 'event';
+                          const isPassed = isEventPassedOrDone(ev);
+                          const isClickable = isPreApprovedMode ? !isPassed : (isEntryObAlone ? true : isPassed);
+                          const statusTagLabel = isPassed ? 'ALREADY ENDED' : 'UPCOMING';
+
+                          return (
+                            <Pressable
+                              key={ev.id}
+                              style={({ pressed }) => [
+                                styles.eventCardItem,
+                                !isClickable ? styles.eventCardItemDisabled : null,
+                                pressed && isClickable ? styles.eventCardItemPressed : null,
+                              ]}
+                              onPress={() => {
+                                if (!isClickable) {
+                                  const title = isPreApprovedMode ? 'Event Already Ended' : 'Event Not Yet Ended';
+                                  const message = isPreApprovedMode
+                                    ? 'This event or activity has already ended. For past events, please file using regular Apply ESARF.'
+                                    : 'In Apply ESARF, you cannot select events or activities ahead of time. You can only select events that have already passed or ended (unless the transaction type is OB alone). For upcoming events, please use Apply Pre-approved OT.';
+                                  if (onToast) {
+                                    onToast({ tone: 'warning', title, message });
+                                  } else {
+                                    platformAlert(title, message);
+                                  }
+                                  return;
+                                }
+                                if (activeEventModalIndex !== null) {
+                                  handleSelectEvent(activeEventModalIndex, ev);
+                                }
+                              }}
+                            >
+                              <View style={styles.eventCardHeaderRow}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
+                                  <View
+                                    style={[
+                                      styles.eventTypeTag,
+                                      isEvent
+                                        ? styles.eventTypeTagEvent
+                                        : styles.eventTypeTagActivity,
+                                    ]}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.eventTypeText,
+                                        isEvent
+                                          ? styles.eventTypeTextEvent
+                                          : styles.eventTypeTextActivity,
+                                      ]}
+                                    >
+                                      {ev.type?.toUpperCase() || 'EVENT'}
+                                    </Text>
+                                  </View>
+                                  {!isClickable ? (
+                                    <View style={styles.eventStatusPillDisabled}>
+                                      <Lock size={10} color="#64748b" strokeWidth={2.4} />
+                                      <Text style={styles.eventStatusTextDisabled}>
+                                        {statusTagLabel}
+                                      </Text>
+                                    </View>
+                                  ) : null}
+                                </View>
+                                <View style={styles.eventHoursPill}>
+                                  <Clock3 size={11} color={colors.brand.ink} strokeWidth={2.4} />
+                                  <Text style={styles.eventHoursText}>
+                                    {Number(ev.total_hours).toFixed(1)} hrs
+                                  </Text>
+                                </View>
+                              </View>
+                              <Text style={[styles.eventCardTitle, !isClickable ? styles.eventCardTitleDisabled : null]}>
+                                {ev.title}
+                              </Text>
+                              {ev.description ? (
+                                <Text style={[styles.eventCardDesc, !isClickable ? styles.eventCardDescDisabled : null]} numberOfLines={2}>
+                                  {ev.description}
+                                </Text>
+                              ) : null}
+                              <View style={styles.eventCardMetaRow}>
+                                <View style={styles.eventCardMetaItem}>
+                                  <CalendarDays size={13} color={!isClickable ? '#94a3b8' : '#64748b'} strokeWidth={2} />
+                                  <Text style={[styles.eventCardMetaText, !isClickable ? styles.eventCardMetaTextDisabled : null]}>
+                                    {ev.event_date}{ev.end_date && ev.end_date !== ev.event_date ? ` to ${ev.end_date}` : ''}
+                                  </Text>
+                                </View>
+                                <View style={styles.eventCardMetaItem}>
+                                  <Clock3 size={13} color={!isClickable ? '#94a3b8' : '#64748b'} strokeWidth={2} />
+                                  <Text style={[styles.eventCardMetaText, !isClickable ? styles.eventCardMetaTextDisabled : null]}>
+                                    {ev.time_from} - {ev.time_to}
+                                  </Text>
+                                </View>
+                                {ev.location ? (
+                                  <View style={styles.eventCardMetaItem}>
+                                    <MapPin size={13} color={!isClickable ? '#94a3b8' : '#64748b'} strokeWidth={2} />
+                                    <Text style={[styles.eventCardMetaText, !isClickable ? styles.eventCardMetaTextDisabled : null]} numberOfLines={1}>
+                                      {ev.location}
+                                    </Text>
+                                  </View>
+                                ) : null}
+                              </View>
+                            </Pressable>
+                          );
+                        });
+                      })()}
+                    </ScrollView>
+                  </View>
                 </View>
-              </View>
-            </KeyboardAvoidingView>
-          </Modal>
+              </Modal>
+            ) : null
+          }
+
+          <StoreDutyModal
+            visible={storeDutyEntryIndex !== null}
+            selectedStoreId={
+              storeDutyEntryIndex !== null ? entries[storeDutyEntryIndex]?.dutyStoreId || null : null
+            }
+            userCompanyName={profileCompanyName}
+            userStoreName={profileStoreName}
+            isOnline={isOnline}
+            subtitle={
+              storeDutyEntryIndex !== null
+                ? `Request #${storeDutyEntryIndex + 1} • Select the store where you had your duty.`
+                : undefined
+            }
+            onSelectStore={handleSelectStoreDuty}
+            onClearStore={() => handleClearStoreDuty()}
+            onClose={() => setStoreDutyEntryIndex(null)}
+          />
 
         </ScrollView>
       </KeyboardAvoidingView>
@@ -9211,6 +8993,62 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: fontWeights.heavy,
     color: '#334155',
+  },
+  storeDutyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: -4,
+    marginBottom: 12,
+  },
+  selectedStoreDutyPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#93c5fd',
+    backgroundColor: '#eff6ff',
+    flexShrink: 1,
+  },
+  selectedStoreDutyText: {
+    fontSize: 11,
+    fontWeight: fontWeights.semibold,
+    color: '#1d4ed8',
+    flexShrink: 1,
+  },
+  storeDutyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#f8fafc',
+  },
+  storeDutyBtnActive: {
+    borderColor: '#93c5fd',
+    backgroundColor: '#eff6ff',
+  },
+  storeDutyBtnText: {
+    fontSize: 11,
+    fontWeight: fontWeights.semibold,
+    color: '#475569',
+  },
+  storeDutyBtnTextActive: {
+    color: '#1d4ed8',
+  },
+  storeDutyClearBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   entryStoreRoutePill: {
     backgroundColor: '#f1f5f9',
